@@ -14,6 +14,7 @@ CHATWOOT_API_TOKEN  = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL        = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+BOT_PAUSE_LABEL     = os.getenv("BOT_PAUSE_LABEL", "pausar-bot")
 
 # Máximo de caracteres a extraer de un PDF (protege el límite de tokens)
 PDF_MAX_CHARS = int(os.getenv("PDF_MAX_CHARS", "30000"))
@@ -33,6 +34,26 @@ SYSTEM_PROMPT = (
 )
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/debug-webhook")
+async def debug_webhook(request: Request):
+    """Endpoint temporal para inspeccionar el payload de Chatwoot."""
+    payload = await request.json()
+    message = payload.get("data", {})
+    log.info("[DEBUG] payload=%s", payload)
+    return {
+        "event":        payload.get("event"),
+        "message_type": message.get("message_type"),
+        "sender_type":  message.get("sender", {}).get("type"),
+        "labels":       message.get("conversation", {}).get("labels"),
+        "content":      message.get("content"),
+    }
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     payload = await request.json()
@@ -42,16 +63,25 @@ async def webhook(request: Request):
 
     message = payload.get("data", {})
 
-    if message.get("message_type") != "incoming":
-        return {"status": "ignored", "reason": "not incoming"}
+    # Chatwoot envía message_type como int (0=incoming, 1=outgoing) o string
+    msg_type = message.get("message_type")
+    if msg_type not in ("incoming", 0):
+        return {"status": "ignored", "reason": f"not incoming (type={msg_type!r})"}
 
     sender_type = message.get("sender", {}).get("type", "")
     if sender_type in ("agent_bot", "agent"):
         return {"status": "ignored", "reason": "sent by agent"}
 
-    conversation_id = message.get("conversation", {}).get("id")
+    conversation   = message.get("conversation", {})
+    conversation_id = conversation.get("id")
     if not conversation_id:
         raise HTTPException(status_code=400, detail="No conversation_id in payload")
+
+    # Si la conversación tiene la etiqueta de pausa, el bot no responde
+    labels = conversation.get("labels") or []
+    if BOT_PAUSE_LABEL in labels:
+        log.info("[PAUSED] conversation=%s label=%s", conversation_id, BOT_PAUSE_LABEL)
+        return {"status": "ignored", "reason": "bot paused"}
 
     content     = message.get("content") or ""
     attachments = message.get("attachments") or []
