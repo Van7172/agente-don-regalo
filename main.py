@@ -202,7 +202,8 @@ async def webhook(request: Request):
 async def _download(url: str) -> bytes | None:
     """Descarga un archivo desde Chatwoot usando el token de acceso."""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # verify=False por certificado SSL interno de EasyPanel (hostname mismatch)
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
             r = await client.get(
                 url,
                 headers={"api_access_token": CHATWOOT_API_TOKEN},
