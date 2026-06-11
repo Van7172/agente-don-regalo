@@ -61,7 +61,8 @@ async def webhook(request: Request):
     if payload.get("event") != "message_created":
         return {"status": "ignored", "reason": "event != message_created"}
 
-    message = payload.get("data", {})
+    # Chatwoot envía los campos directamente en la raíz (sin wrapper "data")
+    message = payload.get("data") or payload
 
     # Chatwoot envía message_type como int (0=incoming, 1=outgoing) o string
     msg_type = message.get("message_type")
