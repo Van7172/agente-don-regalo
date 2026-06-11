@@ -3,6 +3,7 @@ import os
 import re
 import json
 import base64
+import asyncio
 import logging
 import httpx
 from urllib.parse import urlsplit, urlunsplit
@@ -23,6 +24,19 @@ BOT_ACTIVE_LABEL    = os.getenv("BOT_ACTIVE_LABEL", "agente_on")
 
 # Máximo de caracteres a extraer de un PDF (protege el límite de tokens)
 PDF_MAX_CHARS = int(os.getenv("PDF_MAX_CHARS", "30000"))
+
+# ── Buffer de mensajes (debounce) ─────────────────────────────────────────────
+# Espera N segundos de silencio antes de procesar; así varios mensajes seguidos
+# del cliente se agrupan y se responden una sola vez con contexto completo.
+BUFFER_SECONDS = float(os.getenv("BUFFER_SECONDS", "4"))
+# Estado en memoria por conversación: {conversation_id: {parts, contact_id, task}}
+_buffers: dict[int, dict] = {}
+_buffers_lock = asyncio.Lock()
+
+# Delay "humano" entre burbujas: simula el tiempo de escribir cada mensaje
+TYPING_SECONDS_PER_CHAR = float(os.getenv("TYPING_SECONDS_PER_CHAR", "0.03"))
+TYPING_MIN_DELAY        = float(os.getenv("TYPING_MIN_DELAY", "0.8"))
+TYPING_MAX_DELAY        = float(os.getenv("TYPING_MAX_DELAY", "4.0"))
 
 # ── Memoria de largo plazo: herramienta para guardar el perfil del cliente ────
 # Se ejecuta en main.py (no en tools.py) porque necesita el contact_id y las
@@ -293,6 +307,129 @@ async def webhook(request: Request):
         conversation_id, contact_id, content, len(attachments),
     )
 
+    # Convertir el mensaje entrante en partes de contenido (texto / imagen)
+    parts = await _message_to_parts(content, attachments)
+
+    # Bufferizar: acumular y reprogramar el flush tras BUFFER_SECONDS de silencio
+    async with _buffers_lock:
+        buf = _buffers.get(conversation_id)
+        if buf and buf.get("task"):
+            buf["task"].cancel()
+        if not buf:
+            buf = {"parts": [], "contact_id": contact_id}
+            _buffers[conversation_id] = buf
+        buf["parts"].extend(parts)
+        buf["contact_id"] = contact_id
+        buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
+
+    return {"status": "buffered"}
+
+
+# ─── Buffer: conversión, debounce y flush ─────────────────────────────────────
+
+async def _message_to_parts(content: str, attachments: list) -> list[dict]:
+    """Convierte un mensaje entrante de Chatwoot en partes de contenido OpenAI
+    (lista de {type: text} y/o {type: image_url})."""
+    if not attachments:
+        return [{"type": "text", "text": content}] if content else []
+
+    att      = attachments[0]
+    att_type = att.get("file_type", "")
+    att_url  = att.get("data_url") or att.get("download_url", "")
+    att_name = (att.get("file_name") or att_url).lower()
+
+    # ── AUDIO → transcribir con Whisper ──────────────────────────────────────
+    if att_type == "audio":
+        audio_bytes = await _download(att_url)
+        if audio_bytes:
+            transcription = await _transcribe_audio(audio_bytes, att_name)
+            if transcription:
+                log.info("[AUDIO] transcription=%r", transcription)
+                text = f"[Nota de voz transcrita]: {transcription}"
+                return [{"type": "text", "text": f"{content}\n{text}" if content else text}]
+            return [{"type": "text", "text": content or "[Nota de voz no transcribible]"}]
+        return [{"type": "text", "text": content or "[Nota de voz no descargable]"}]
+
+    # ── IMAGEN → visión con base64 ────────────────────────────────────────────
+    if att_type == "image":
+        image_bytes = await _download(att_url)
+        if image_bytes:
+            if att_name.endswith(".png"):
+                mime = "image/png"
+            elif att_name.endswith(".webp"):
+                mime = "image/webp"
+            elif att_name.endswith(".gif"):
+                mime = "image/gif"
+            else:
+                mime = "image/jpeg"
+            b64 = base64.b64encode(image_bytes).decode()
+            return [
+                {"type": "text", "text": content or "El usuario envió una imagen. Descríbela y responde apropiadamente."},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ]
+        return [{"type": "text", "text": content or "[Imagen no descargable]"}]
+
+    # ── PDF → extraer texto ───────────────────────────────────────────────────
+    if att_type == "file" and att_name.endswith(".pdf"):
+        pdf_bytes = await _download(att_url)
+        if pdf_bytes:
+            pdf_text = _extract_pdf_text(pdf_bytes)
+            if pdf_text:
+                log.info("[PDF] extracted %d chars", len(pdf_text))
+                prefix = f"{content}\n\n" if content else ""
+                return [{"type": "text", "text": f"{prefix}[Contenido del PDF]:\n{pdf_text}"}]
+            return [{"type": "text", "text": content or "[PDF sin texto extraíble]"}]
+        return [{"type": "text", "text": content or "[PDF no descargable]"}]
+
+    # ── Otro tipo de archivo ──────────────────────────────────────────────────
+    return [{"type": "text", "text": content or f"[Archivo adjunto de tipo: {att_type}]"}]
+
+
+def _collapse_parts(parts: list[dict]) -> str | list[dict]:
+    """Combina las partes acumuladas en el contenido de un único mensaje user.
+
+    Si no hay imágenes → une los textos en un string.
+    Si hay imágenes → devuelve la lista (texto unido + las imágenes)."""
+    texts  = [p["text"] for p in parts if p.get("type") == "text" and p.get("text")]
+    images = [p for p in parts if p.get("type") == "image_url"]
+    joined = "\n".join(texts)
+    if not images:
+        return joined
+    content = []
+    if joined:
+        content.append({"type": "text", "text": joined})
+    content.extend(images)
+    return content
+
+
+def _human_delay(text: str) -> float:
+    """Calcula una pausa proporcional a la longitud del texto, acotada
+    entre TYPING_MIN_DELAY y TYPING_MAX_DELAY, para simular escritura humana."""
+    secs = len(text or "") * TYPING_SECONDS_PER_CHAR
+    return max(TYPING_MIN_DELAY, min(secs, TYPING_MAX_DELAY))
+
+
+async def _flush_after_delay(conversation_id: int) -> None:
+    """Espera el silencio y luego procesa el buffer. Cancelable si llega otro mensaje."""
+    try:
+        await asyncio.sleep(BUFFER_SECONDS)
+    except asyncio.CancelledError:
+        return
+    await _flush_buffer(conversation_id)
+
+
+async def _flush_buffer(conversation_id: int) -> None:
+    """Procesa todos los mensajes acumulados de una conversación como uno solo."""
+    async with _buffers_lock:
+        buf = _buffers.pop(conversation_id, None)
+    if not buf or not buf.get("parts"):
+        return
+
+    contact_id = buf["contact_id"]
+    user_content = _collapse_parts(buf["parts"])
+    if not user_content:
+        return
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     # Memoria de largo plazo: inyectar el perfil conocido del cliente
@@ -310,112 +447,25 @@ async def webhook(request: Request):
             ),
         })
 
-    if attachments:
-        att      = attachments[0]
-        att_type = att.get("file_type", "")
-        att_url  = att.get("data_url") or att.get("download_url", "")
-        att_name = (att.get("file_name") or att_url).lower()
+    messages.append({"role": "user", "content": user_content})
 
-        # ── AUDIO → transcribir con Whisper ──────────────────────────────────
-        if att_type == "audio":
-            audio_bytes = await _download(att_url)
-            if audio_bytes:
-                transcription = await _transcribe_audio(audio_bytes, att_name)
-                if transcription:
-                    log.info("[AUDIO] transcription=%r", transcription)
-                    user_text = f"[Nota de voz transcrita]: {transcription}"
-                    if content:
-                        user_text = f"{content}\n{user_text}"
-                    messages.append({"role": "user", "content": user_text})
+    # Mostrar "escribiendo…" mientras el agente procesa y envía
+    await _set_typing(conversation_id, True)
+    try:
+        reply = await _run_agent(messages, contact_id)
+
+        if reply:
+            log.info("[OUT] conversation=%s reply=%r", conversation_id, reply)
+            for segment in _split_reply(reply):
+                if segment["type"] == "image":
+                    # Pausa breve según el caption antes de la imagen
+                    await asyncio.sleep(_human_delay(segment.get("caption", "")))
+                    await _send_image(conversation_id, segment["url"], segment["caption"])
                 else:
-                    messages.append({
-                        "role": "user",
-                        "content": content or "[El usuario envió una nota de voz pero no se pudo transcribir]",
-                    })
-            else:
-                messages.append({
-                    "role": "user",
-                    "content": content or "[El usuario envió una nota de voz pero no se pudo descargar]",
-                })
-
-        # ── IMAGEN → visión con base64 ────────────────────────────────────────
-        elif att_type == "image":
-            image_bytes = await _download(att_url)
-            if image_bytes:
-                # Detectar mime type por extensión
-                if att_name.endswith(".png"):
-                    mime = "image/png"
-                elif att_name.endswith(".webp"):
-                    mime = "image/webp"
-                elif att_name.endswith(".gif"):
-                    mime = "image/gif"
-                else:
-                    mime = "image/jpeg"
-
-                b64 = base64.b64encode(image_bytes).decode()
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": content or "El usuario envió una imagen. Descríbela y responde apropiadamente.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{b64}"},
-                        },
-                    ],
-                })
-            else:
-                messages.append({
-                    "role": "user",
-                    "content": content or "[El usuario envió una imagen pero no se pudo descargar]",
-                })
-
-        # ── PDF → extraer texto ───────────────────────────────────────────────
-        elif att_type == "file" and att_name.endswith(".pdf"):
-            pdf_bytes = await _download(att_url)
-            if pdf_bytes:
-                pdf_text = _extract_pdf_text(pdf_bytes)
-                if pdf_text:
-                    log.info("[PDF] extracted %d chars", len(pdf_text))
-                    user_text = (
-                        f"{content}\n\n" if content else ""
-                    ) + f"[Contenido del PDF]:\n{pdf_text}"
-                    messages.append({"role": "user", "content": user_text})
-                else:
-                    messages.append({
-                        "role": "user",
-                        "content": content or "[El usuario envió un PDF pero no se pudo extraer el texto]",
-                    })
-            else:
-                messages.append({
-                    "role": "user",
-                    "content": content or "[El usuario envió un PDF pero no se pudo descargar]",
-                })
-
-        # ── Otro tipo de archivo ──────────────────────────────────────────────
-        else:
-            messages.append({
-                "role": "user",
-                "content": content or f"[El usuario envió un archivo adjunto de tipo: {att_type}]",
-            })
-
-    else:
-        messages.append({"role": "user", "content": content})
-
-    reply = await _run_agent(messages, contact_id)
-
-    if reply:
-        log.info("[OUT] conversation=%s reply=%r", conversation_id, reply)
-        # Divide la respuesta en segmentos (imágenes + texto) y los envía por separado
-        for segment in _split_reply(reply):
-            if segment["type"] == "image":
-                await _send_image(conversation_id, segment["url"], segment["caption"])
-            else:
-                await _send_message(conversation_id, segment["text"])
-
-    return {"status": "ok"}
+                    await asyncio.sleep(_human_delay(segment["text"]))
+                    await _send_message(conversation_id, segment["text"])
+    finally:
+        await _set_typing(conversation_id, False)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -634,6 +684,28 @@ async def _send_message(conversation_id: int, content: str) -> None:
             r.raise_for_status()
     except Exception as e:
         log.error("Error enviando mensaje a conversación %s: %s", conversation_id, e)
+
+
+async def _set_typing(conversation_id: int, on: bool) -> None:
+    """Activa/desactiva el indicador 'escribiendo…' en Chatwoot."""
+    url = (
+        f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}"
+        f"/conversations/{conversation_id}/toggle_typing_status"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            r = await client.post(
+                url,
+                headers={
+                    "api_access_token": CHATWOOT_API_TOKEN,
+                    "Content-Type": "application/json",
+                },
+                json={"typing_status": "on" if on else "off"},
+            )
+            r.raise_for_status()
+    except Exception as e:
+        # No es crítico; si falla solo no se ve el indicador
+        log.warning("No se pudo cambiar typing status (%s): %s", conversation_id, e)
 
 
 async def _get_contact_attributes(contact_id: int) -> dict:
