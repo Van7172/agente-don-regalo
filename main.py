@@ -14,7 +14,7 @@ CHATWOOT_API_TOKEN  = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL        = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-BOT_PAUSE_LABEL     = os.getenv("BOT_PAUSE_LABEL", "pausar-bot")
+BOT_ACTIVE_LABEL    = os.getenv("BOT_ACTIVE_LABEL", "agente_on")
 
 # Máximo de caracteres a extraer de un PDF (protege el límite de tokens)
 PDF_MAX_CHARS = int(os.getenv("PDF_MAX_CHARS", "30000"))
@@ -77,11 +77,11 @@ async def webhook(request: Request):
     if not conversation_id:
         raise HTTPException(status_code=400, detail="No conversation_id in payload")
 
-    # Si la conversación tiene la etiqueta de pausa, el bot no responde
+    # El bot solo responde si la conversación tiene la etiqueta activa
     labels = conversation.get("labels") or []
-    if BOT_PAUSE_LABEL in labels:
-        log.info("[PAUSED] conversation=%s label=%s", conversation_id, BOT_PAUSE_LABEL)
-        return {"status": "ignored", "reason": "bot paused"}
+    if BOT_ACTIVE_LABEL not in labels:
+        log.info("[INACTIVE] conversation=%s labels=%s", conversation_id, labels)
+        return {"status": "ignored", "reason": "bot not active"}
 
     content     = message.get("content") or ""
     attachments = message.get("attachments") or []
