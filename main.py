@@ -3,6 +3,7 @@ import os
 import base64
 import logging
 import httpx
+from urllib.parse import urlsplit, urlunsplit
 from pypdf import PdfReader
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
@@ -199,8 +200,23 @@ async def webhook(request: Request):
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def _normalize_chatwoot_url(url: str) -> str:
+    """Reescribe el host del adjunto al de CHATWOOT_URL.
+
+    Chatwoot a veces devuelve el data_url con el hostname interno del contenedor
+    (con guiones bajos) que da 404. Forzamos el host público de CHATWOOT_URL.
+    """
+    if not CHATWOOT_URL or not url:
+        return url
+    base = urlsplit(CHATWOOT_URL)
+    parts = urlsplit(url)
+    # Reemplaza scheme + host (netloc) por los de CHATWOOT_URL, conserva path/query
+    return urlunsplit((base.scheme, base.netloc, parts.path, parts.query, parts.fragment))
+
+
 async def _download(url: str) -> bytes | None:
     """Descarga un archivo desde Chatwoot usando el token de acceso."""
+    url = _normalize_chatwoot_url(url)
     try:
         # verify=False por certificado SSL interno de EasyPanel (hostname mismatch)
         async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
