@@ -22,6 +22,12 @@ OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL        = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 BOT_ACTIVE_LABEL    = os.getenv("BOT_ACTIVE_LABEL", "agente_on")
 
+# Evolution API: para enviar imágenes directo a WhatsApp (el puente Chatwoot
+# no reenvía adjuntos salientes de forma fiable)
+EVOLUTION_API_URL  = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
+EVOLUTION_API_KEY  = os.getenv("EVOLUTION_API_KEY", "")
+EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
+
 # Máximo de caracteres a extraer de un PDF (protege el límite de tokens)
 PDF_MAX_CHARS = int(os.getenv("PDF_MAX_CHARS", "30000"))
 
@@ -297,10 +303,16 @@ async def webhook(request: Request):
     attachments = message.get("attachments") or []
 
     # id del contacto para la memoria de largo plazo
-    contact_id = (
-        conversation.get("meta", {}).get("sender", {}).get("id")
-        or message.get("sender", {}).get("id")
+    sender_meta = conversation.get("meta", {}).get("sender", {})
+    contact_id = sender_meta.get("id") or message.get("sender", {}).get("id")
+
+    # Identificador de WhatsApp (ej: 51946344918@s.whatsapp.net) para Evolution
+    wa_identifier = (
+        sender_meta.get("identifier")
+        or message.get("sender", {}).get("identifier")
+        or ""
     )
+    wa_number = wa_identifier.split("@")[0] if wa_identifier else ""
 
     log.info(
         "[IN] conversation=%s contact=%s content=%r attachments=%d",
@@ -316,10 +328,11 @@ async def webhook(request: Request):
         if buf and buf.get("task"):
             buf["task"].cancel()
         if not buf:
-            buf = {"parts": [], "contact_id": contact_id}
+            buf = {"parts": [], "contact_id": contact_id, "wa_number": wa_number}
             _buffers[conversation_id] = buf
         buf["parts"].extend(parts)
         buf["contact_id"] = contact_id
+        buf["wa_number"] = wa_number
         buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
 
     return {"status": "buffered"}
@@ -426,6 +439,7 @@ async def _flush_buffer(conversation_id: int) -> None:
         return
 
     contact_id = buf["contact_id"]
+    wa_number  = buf.get("wa_number", "")
     user_content = _collapse_parts(buf["parts"])
     if not user_content:
         return
@@ -460,7 +474,7 @@ async def _flush_buffer(conversation_id: int) -> None:
                 if segment["type"] == "image":
                     # Pausa breve según el caption antes de la imagen
                     await asyncio.sleep(_human_delay(segment.get("caption", "")))
-                    await _send_image(conversation_id, segment["url"], segment["caption"])
+                    await _send_image(conversation_id, wa_number, segment["url"], segment["caption"])
                 else:
                     await asyncio.sleep(_human_delay(segment["text"]))
                     await _send_message(conversation_id, segment["text"])
@@ -770,14 +784,43 @@ async def _save_contact_attributes(contact_id: int, new_attrs: dict) -> str:
         return json.dumps({"ok": False, "motivo": str(e)})
 
 
-async def _send_image(conversation_id: int, image_url: str, caption: str = "") -> None:
-    """Descarga una imagen de producto y la envía como adjunto a Chatwoot."""
+async def _send_image(conversation_id: int, wa_number: str, image_url: str, caption: str = "") -> None:
+    """Envía una imagen de producto a WhatsApp.
+
+    Vía preferida: Evolution API directo con la URL pública (el puente
+    Chatwoot no reenvía adjuntos salientes de forma fiable).
+    Fallback: subir el adjunto a Chatwoot.
+    """
+    # ── Vía Evolution API (directo a WhatsApp) ────────────────────────────────
+    if EVOLUTION_API_URL and EVOLUTION_API_KEY and EVOLUTION_INSTANCE and wa_number:
+        endpoint = f"{EVOLUTION_API_URL}/message/sendMedia/{EVOLUTION_INSTANCE}"
+        body = {
+            "number":    wa_number,
+            "mediatype": "image",
+            "media":     image_url,
+            "fileName":  image_url.split("/")[-1].split("?")[0] or "imagen.jpg",
+        }
+        if caption:
+            body["caption"] = caption
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    endpoint,
+                    headers={"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"},
+                    json=body,
+                )
+                r.raise_for_status()
+            log.info("[IMG] enviada vía Evolution a %s: %s", wa_number, image_url)
+            return
+        except Exception as e:
+            log.error("Error Evolution sendMedia (%s): %s — intentando Chatwoot", image_url, e)
+
+    # ── Fallback: subir adjunto a Chatwoot ────────────────────────────────────
     url = (
         f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}"
         f"/conversations/{conversation_id}/messages"
     )
     try:
-        # Descargar la imagen del producto (donregalo.pe)
         async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
             img = await client.get(image_url, follow_redirects=True)
             img.raise_for_status()
@@ -786,11 +829,7 @@ async def _send_image(conversation_id: int, image_url: str, caption: str = "") -
         filename = image_url.split("/")[-1].split("?")[0] or "imagen.jpg"
         mime = img.headers.get("content-type", "image/jpeg")
 
-        # Subir como adjunto multipart. content (caption) es opcional.
-        data = {
-            "message_type": "outgoing",
-            "private":      "false",
-        }
+        data = {"message_type": "outgoing", "private": "false"}
         if caption:
             data["content"] = caption
 
@@ -804,7 +843,7 @@ async def _send_image(conversation_id: int, image_url: str, caption: str = "") -
             r.raise_for_status()
     except Exception as e:
         log.error("Error enviando imagen %s a conversación %s: %s", image_url, conversation_id, e)
-        # Fallback: enviar la URL como texto para no perder el contenido
+        # Último recurso: enviar la URL como texto para no perder el contenido
         fallback = f"{caption}\n{image_url}".strip() if caption else image_url
         await _send_message(conversation_id, fallback)
 
