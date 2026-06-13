@@ -6,8 +6,10 @@ TOOLS  → esquema en formato OpenAI tools (type: function)
 execute_tool(name, args) → ejecuta la llamada HTTP y devuelve el JSON crudo
 """
 import os
+import re
 import json
 import logging
+import unicodedata
 from urllib.parse import urlparse
 
 import httpx
@@ -419,6 +421,43 @@ async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
 PREF_QUERY_WEIGHT = 0.75
 PREF_HISTORY_WEIGHT = 0.25
 
+# Búsqueda híbrida: se trae un pool mayor y se re-rankea sumando un bonus por
+# coincidencia léxica. Esto rescata restricciones duras (color, material, tamaño)
+# que la similitud semántica por sí sola ignora (ej: "rosas blancas" vs "rojas").
+HYBRID_POOL        = max(SEMANTIC_LIMIT * 4, 24)
+HYBRID_TERM_BONUS  = 0.12   # bonus por cada término diferenciador que aparece
+
+# Palabras demasiado genéricas para diferenciar productos (no aportan al bonus).
+_STOPWORDS = {
+    "para", "una", "unas", "unos", "con", "los", "las", "del", "que", "por",
+    "mas", "muy", "algo", "quiero", "quisiera", "busco", "mejor", "entonces",
+    "arreglo", "arreglos", "floral", "florales", "regalo", "regalos", "tienes",
+    "tienen", "quisieras", "necesito", "ramo", "ramos", "bonito", "bonita",
+}
+
+
+def _norm(s: str) -> str:
+    """Minúsculas sin acentos, para comparación robusta."""
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
+    return s.lower()
+
+
+def _keyword_terms(q: str) -> set[str]:
+    """Términos diferenciadores de la consulta (sin stopwords ni palabras cortas)."""
+    return {
+        t for t in re.findall(r"[a-z0-9]+", _norm(q))
+        if len(t) >= 4 and t not in _STOPWORDS
+    }
+
+
+def _keyword_bonus(terms: set[str], producto: dict) -> float:
+    """Bonus léxico: cuántos términos de la consulta aparecen en el producto."""
+    if not terms:
+        return 0.0
+    texto = _norm(f"{producto.get('nombre','')} {producto.get('descripcion_corta','')}")
+    aciertos = sum(1 for t in terms if t in texto)
+    return HYBRID_TERM_BONUS * aciertos
+
 
 def _build_filter(args: dict):
     """Filtros de payload comunes: excluir fúnebre por defecto + ocasión + precio."""
@@ -483,18 +522,32 @@ async def _buscar_semantico(client: httpx.AsyncClient, args: dict):
     # 2) Filtros de payload
     qfilter = _build_filter(args)
 
-    # 3) Consultar Qdrant (cliente sync → hilo aparte)
+    # 3) Consultar Qdrant: traemos un pool mayor para re-rankear (cliente sync → hilo)
     def _search():
         return qc.query_points(
             collection_name=QDRANT_COLLECTION,
             query=vector,
             query_filter=qfilter,
-            limit=SEMANTIC_LIMIT,
+            limit=HYBRID_POOL,
             with_payload=True,
         ).points
 
     hits = await asyncio.to_thread(_search)
-    productos = [_hit_to_producto(h) for h in hits]
+
+    # 4) Re-ranking híbrido: score semántico + bonus léxico por términos duros
+    terms = _keyword_terms(q)
+    candidatos = []
+    for h in hits:
+        p = _hit_to_producto(h)
+        p["_rank"] = h.score + _keyword_bonus(terms, p)
+        candidatos.append(p)
+    candidatos.sort(key=lambda p: p["_rank"], reverse=True)
+
+    productos = []
+    for p in candidatos[:SEMANTIC_LIMIT]:
+        p.pop("_rank", None)
+        productos.append(p)
+
     return {
         "data": productos,
         "total": len(productos),
