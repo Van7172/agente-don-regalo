@@ -27,6 +27,11 @@ OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
 EMBED_MODEL       = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 SEMANTIC_LIMIT    = int(os.getenv("SEMANTIC_LIMIT", "6"))
 
+# Base de conocimiento aprendida de los vendedores (ver knowledge.py)
+KB_COLLECTION = os.getenv("KB_COLLECTION", "respuestas_equipo")
+KB_LIMIT      = int(os.getenv("KB_LIMIT", "3"))
+KB_MIN_SCORE  = float(os.getenv("KB_MIN_SCORE", "0.5"))
+
 _qdrant_client = None
 
 
@@ -300,6 +305,31 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "buscar_conocimiento_equipo",
+            "description": (
+                "Consulta la base de conocimiento aprendida de los vendedores humanos. "
+                "Úsala cuando el cliente haga una pregunta que NO se resuelve con las otras "
+                "herramientas: dudas de políticas, casos especiales, objeciones (precio, "
+                "tiempos, desconfianza), coordinaciones o situaciones poco comunes. "
+                "Si encuentra una respuesta del equipo con buen puntaje, úsala como guía "
+                "para responder con el tono y los datos que ya funcionaron. Si no devuelve "
+                "nada útil, responde con tu criterio o deriva al equipo humano."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "description": "La duda o situación del cliente, redactada de forma clara.",
+                    },
+                },
+                "required": ["q"],
+            },
+        },
+    },
 ]
 
 
@@ -325,6 +355,9 @@ async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
 
     if name == "productos_similares":
         return await _productos_similares(args)
+
+    if name == "buscar_conocimiento_equipo":
+        return await _buscar_conocimiento(args)
 
     if name == "listar_categorias":
         return await _get(client, f"{API_BASE}/categorias")
@@ -509,6 +542,53 @@ async def _productos_similares(args: dict):
     # Excluir el producto de referencia del resultado
     productos = [_hit_to_producto(h) for h in hits if h.id != pid][:SEMANTIC_LIMIT]
     return {"data": productos, "total": len(productos), "fuente": "similares", "referencia": pid}
+
+
+# ─── Conocimiento del equipo (Qdrant) ─────────────────────────────────────────
+
+async def _buscar_conocimiento(args: dict):
+    """Busca en la base de conocimiento aprendida de los vendedores. Devuelve solo
+    respuestas con puntaje sobre el umbral, para no contaminar con ruido."""
+    import asyncio
+
+    q = (args.get("q") or "").strip()
+    if not q:
+        return {"error": "Falta la consulta 'q'."}
+
+    qc = _get_qdrant()
+    if qc is None:
+        return {"data": [], "total": 0, "fuente": "conocimiento_equipo"}
+
+    vector = await _embed_query(q)
+
+    def _search():
+        try:
+            return qc.query_points(
+                collection_name=KB_COLLECTION,
+                query=vector,
+                limit=KB_LIMIT,
+                with_payload=True,
+            ).points
+        except Exception as e:
+            # La colección puede no existir todavía (aún no se ha capturado nada)
+            log.info("[KB] consulta sin resultados (%s)", e)
+            return []
+
+    hits = await asyncio.to_thread(_search)
+
+    resultados = []
+    for h in hits:
+        if h.score < KB_MIN_SCORE:
+            continue
+        p = h.payload or {}
+        resultados.append({
+            "pregunta":  p.get("pregunta"),
+            "respuesta": p.get("respuesta"),
+            "categoria": p.get("categoria"),
+            "score":     round(h.score, 4),
+        })
+
+    return {"data": resultados, "total": len(resultados), "fuente": "conocimiento_equipo"}
 
 
 async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None):

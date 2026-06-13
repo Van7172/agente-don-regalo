@@ -1,0 +1,231 @@
+"""
+Aprendizaje del equipo de ventas (Nivel B).
+
+Cuando un vendedor humano atiende una conversación en Chatwoot, este módulo
+captura los pares "pregunta del cliente → respuesta del vendedor", los convierte
+en conocimiento reutilizable con el LLM y los indexa en una colección de Qdrant
+(`respuestas_equipo`). Luego el agente los consulta con la herramienta
+`buscar_conocimiento_equipo` (definida en tools.py).
+
+Flujo:
+  1. Se dispara cuando una conversación con intervención humana se resuelve.
+  2. Lee el transcript de Chatwoot y clasifica cada mensaje: cliente / vendedor / bot.
+  3. El LLM extrae items {pregunta, respuesta, categoria} reutilizables.
+  4. Embebe la pregunta y hace upsert en Qdrant (id estable = dedup por pregunta).
+"""
+import os
+import json
+import uuid
+import logging
+from datetime import date
+
+import httpx
+
+# Reutiliza la infraestructura de Qdrant/embeddings ya montada en tools.py
+from tools import _get_qdrant, _embed, _embed_query
+
+log = logging.getLogger(__name__)
+
+CHATWOOT_URL        = os.getenv("CHATWOOT_URL", "").rstrip("/")
+CHATWOOT_API_TOKEN  = os.getenv("CHATWOOT_API_TOKEN", "")
+CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "")
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL        = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+KB_COLLECTION = os.getenv("KB_COLLECTION", "respuestas_equipo")
+EMBED_DIM     = int(os.getenv("EMBED_DIM", "1536"))
+
+
+# ─── Clasificación de mensajes (cliente / vendedor / bot) ─────────────────────
+
+def _classify(m: dict) -> str | None:
+    """Clasifica un mensaje crudo de Chatwoot. Devuelve 'cliente', 'vendedor',
+    'bot' o None si debe ignorarse (privado, vacío, evento de sistema)."""
+    if m.get("private"):
+        return None
+    if (m.get("content") or "").strip() == "":
+        return None
+    mtype = m.get("message_type")
+    if mtype in (0, "incoming"):
+        return "cliente"
+    if mtype in (1, "outgoing"):
+        sender_type = (m.get("sender") or {}).get("type", "")
+        cattrs = m.get("content_attributes") or {}
+        # El bot marca sus propios mensajes con content_attributes.bot = True
+        if cattrs.get("bot") or sender_type in ("agent_bot", "AgentBot"):
+            return "bot"
+        return "vendedor"
+    return None
+
+
+async def _fetch_messages(conversation_id: int) -> list[dict]:
+    """Trae los mensajes crudos de una conversación, ordenados cronológicamente."""
+    url = (
+        f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}"
+        f"/conversations/{conversation_id}/messages"
+    )
+    async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
+        r = await client.get(url, headers={"api_access_token": CHATWOOT_API_TOKEN})
+        r.raise_for_status()
+        payload = r.json().get("payload", [])
+    payload.sort(key=lambda m: m.get("created_at") or 0)
+    return payload
+
+
+def _build_transcript(messages: list[dict]) -> tuple[str, bool]:
+    """Construye un transcript etiquetado y dice si hubo intervención humana."""
+    lines: list[str] = []
+    hay_vendedor = False
+    for m in messages:
+        tipo = _classify(m)
+        if tipo is None:
+            continue
+        if tipo == "vendedor":
+            hay_vendedor = True
+        etiqueta = {"cliente": "CLIENTE", "vendedor": "VENDEDOR", "bot": "BOT"}[tipo]
+        lines.append(f"{etiqueta}: {(m.get('content') or '').strip()}")
+    return "\n".join(lines), hay_vendedor
+
+
+# ─── Extracción de conocimiento con el LLM ────────────────────────────────────
+
+_EXTRACT_SYSTEM = """Eres un analista de calidad de Don Regalo (tienda de regalos en Lima).
+Recibes el transcript de una conversación de WhatsApp donde participaron el CLIENTE,
+a veces el BOT y un VENDEDOR humano.
+
+Tu tarea: extraer SOLO el conocimiento valioso que aportó el VENDEDOR y que serviría
+para responder mejor a futuros clientes. Enfócate en:
+- Respuestas a preguntas que el bot no supo o no cubría (políticas, dudas, casos especiales)
+- Manejo de objeciones (precio, tiempos, desconfianza) que funcionó
+- Datos operativos concretos (plazos, excepciones, coordinaciones, promociones puntuales)
+- Frases de cierre o aclaraciones útiles
+
+NO extraigas:
+- Charla trivial, saludos, confirmaciones vacías
+- Datos personales del cliente puntual (eso va a otro sistema)
+- Cosas que el bot ya respondía bien por sí mismo
+- Información sensible (números de cuenta completos, datos privados)
+
+Devuelve EXCLUSIVAMENTE un JSON con esta forma:
+{"items": [{"pregunta": "...", "respuesta": "...", "categoria": "..."}]}
+
+- "pregunta": la duda del cliente redactada de forma GENÉRICA y reutilizable (no con datos del cliente puntual)
+- "respuesta": la respuesta del vendedor, concisa, reutilizable y en el tono cordial de la tienda
+- "categoria": una etiqueta corta (ej: envios, pagos, plazos, objecion-precio, personalizacion)
+
+Si no hay nada reutilizable, devuelve {"items": []}. No inventes."""
+
+
+async def _extract_qa(transcript: str) -> list[dict]:
+    """Llama al LLM para extraer items de conocimiento del transcript."""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [
+                        {"role": "system", "content": _EXTRACT_SYSTEM},
+                        {"role": "user", "content": f"Transcript:\n\n{transcript}"},
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"]
+        data = json.loads(content)
+        items = data.get("items", [])
+        # Validar estructura mínima
+        return [
+            it for it in items
+            if isinstance(it, dict) and it.get("pregunta") and it.get("respuesta")
+        ]
+    except Exception as e:
+        log.error("[KB] error extrayendo conocimiento: %s", e)
+        return []
+
+
+# ─── Indexado en Qdrant ───────────────────────────────────────────────────────
+
+def _point_id(pregunta: str) -> str:
+    """Id estable derivado de la pregunta normalizada → dedup entre conversaciones."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, pregunta.strip().lower()))
+
+
+def ensure_kb_collection(qc) -> None:
+    """Crea la colección de conocimiento si no existe."""
+    from qdrant_client.models import Distance, VectorParams
+    existing = [c.name for c in qc.get_collections().collections]
+    if KB_COLLECTION not in existing:
+        log.info("[KB] creando colección '%s'", KB_COLLECTION)
+        qc.create_collection(
+            collection_name=KB_COLLECTION,
+            vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
+        )
+
+
+async def _index_items(items: list[dict], conversation_id: int | None) -> int:
+    """Embebe las preguntas y hace upsert en Qdrant. Devuelve cuántos indexó."""
+    import asyncio
+    from qdrant_client.models import PointStruct
+
+    qc = _get_qdrant()
+    if qc is None:
+        log.warning("[KB] Qdrant no configurado; no se indexa conocimiento.")
+        return 0
+
+    await asyncio.to_thread(ensure_kb_collection, qc)
+
+    # Embebemos "pregunta — respuesta" para capturar ambos lados semánticamente
+    textos = [f"{it['pregunta']}\n{it['respuesta']}" for it in items]
+    vectors = await _embed(textos)
+
+    points = []
+    for it, vec in zip(items, vectors):
+        points.append(PointStruct(
+            id=_point_id(it["pregunta"]),
+            vector=vec,
+            payload={
+                "pregunta":        it["pregunta"],
+                "respuesta":       it["respuesta"],
+                "categoria":       it.get("categoria", ""),
+                "conversation_id": conversation_id,
+                "fecha":           date.today().isoformat(),
+            },
+        ))
+
+    def _upsert():
+        qc.upsert(collection_name=KB_COLLECTION, points=points)
+
+    await asyncio.to_thread(_upsert)
+    return len(points)
+
+
+# ─── Orquestador ──────────────────────────────────────────────────────────────
+
+async def capturar_de_conversacion(conversation_id: int) -> int:
+    """Captura conocimiento del vendedor de una conversación. Devuelve cuántos
+    items se indexaron (0 si no hubo intervención humana o nada reutilizable)."""
+    try:
+        messages = await _fetch_messages(conversation_id)
+    except Exception as e:
+        log.error("[KB] no se pudo leer la conversación %s: %s", conversation_id, e)
+        return 0
+
+    transcript, hay_vendedor = _build_transcript(messages)
+    if not hay_vendedor:
+        log.info("[KB] conversación %s sin intervención humana; se omite.", conversation_id)
+        return 0
+
+    items = await _extract_qa(transcript)
+    if not items:
+        log.info("[KB] conversación %s: nada reutilizable.", conversation_id)
+        return 0
+
+    n = await _index_items(items, conversation_id)
+    log.info("[KB] conversación %s: %d items de conocimiento indexados.", conversation_id, n)
+    return n

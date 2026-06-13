@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 
 from tools import TOOLS, execute_tool
+import knowledge
 
 load_dotenv()
 
@@ -113,6 +114,7 @@ Antes de responder sobre productos, precios o disponibilidad, SIEMPRE consulta l
 | `metodos_pago` | Cuando pregunten cómo pagar |
 | `tipo_cambio` | Para convertir precios USD a Soles |
 | `rastrear_pedido` | Cuando quieran el estado de su pedido — SIEMPRE pide email + código primero |
+| `buscar_conocimiento_equipo` | Cuando el cliente haga una pregunta que NO resuelven las otras herramientas: dudas de políticas, casos especiales, objeciones (precio, tiempos, desconfianza), coordinaciones. Consulta lo que ya respondió el equipo humano antes de derivar |
 | `guardar_datos_cliente` | Cuando el cliente revele datos ESTABLES: su nombre, su distrito habitual o una preferencia durable — guárdalo para recordarlo después |
 
 ## FLUJO RECOMENDADO PARA SUGERIR PRODUCTOS
@@ -240,7 +242,7 @@ Si el cliente pide SOLO la foto de un producto:
 2. **Si el cliente nombra un producto específico, búscalo YA** — no hagas más preguntas
 3. **Solo pregunta lo que realmente necesitas** — no pidas datos que no usarás (ej: no pidas "código de producto", la API busca por nombre)
 4. Tono cordial y cercano al cliente peruano
-5. Si no sabes algo, deriva: "Te comunico con nuestro equipo: WhatsApp (+51) 977174485"
+5. Si no sabes algo, PRIMERO consulta `buscar_conocimiento_equipo` (puede que el equipo ya lo haya respondido antes). Solo si tampoco aparece ahí, deriva: "Te comunico con nuestro equipo: WhatsApp (+51) 977174485"
 6. Para rastrear pedido: pide email + código ANTES de llamar la herramienta
 7. Para imágenes, usa SIEMPRE el campo `imagen_url` del producto que viene en las listas (buscar_semantico, buscar_productos, catalogo_categoria, productos_destacados, etc.) — NUNCA uses los campos del array `imagenes[]` que devuelve detalle_producto
 8. **Eres una tienda de delivery de regalos — NUNCA preguntes:**
@@ -282,12 +284,42 @@ async def debug_webhook(request: Request):
     }
 
 
+# Conversaciones ya procesadas para captura de conocimiento (evita duplicar
+# cuando Chatwoot dispara varios conversation_updated por la misma resolución)
+_kb_captured: set[int] = set()
+
+
+async def _handle_conversation_event(payload: dict) -> dict:
+    """Cuando una conversación se resuelve, captura en segundo plano el
+    conocimiento que aportó el vendedor humano (Nivel B)."""
+    data = payload.get("data") or payload
+    status = data.get("status") or payload.get("status")
+    conversation_id = data.get("id") or payload.get("id")
+
+    if status != "resolved":
+        return {"status": "ignored", "reason": f"status={status!r}"}
+    if not conversation_id:
+        return {"status": "ignored", "reason": "sin conversation_id"}
+    if conversation_id in _kb_captured:
+        return {"status": "ignored", "reason": "ya capturada"}
+
+    _kb_captured.add(conversation_id)
+    # No bloquear el webhook: capturar en segundo plano
+    asyncio.create_task(knowledge.capturar_de_conversacion(conversation_id))
+    return {"status": "capturing", "conversation_id": conversation_id}
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     payload = await request.json()
+    event = payload.get("event")
 
-    if payload.get("event") != "message_created":
-        return {"status": "ignored", "reason": "event != message_created"}
+    # Conversación resuelta → capturar el conocimiento que aportó el vendedor
+    if event in ("conversation_resolved", "conversation_updated"):
+        return await _handle_conversation_event(payload)
+
+    if event != "message_created":
+        return {"status": "ignored", "reason": f"event {event!r} no manejado"}
 
     # Chatwoot envía los campos directamente en la raíz (sin wrapper "data")
     message = payload.get("data") or payload
@@ -485,7 +517,7 @@ async def _flush_buffer(conversation_id: int) -> None:
     # Mostrar "escribiendo…" mientras el agente procesa y envía
     await _set_typing(conversation_id, True)
     try:
-        reply = await _run_agent(messages, contact_id)
+        reply = await _run_agent(messages, contact_id, conversation_id)
 
         if reply:
             log.info("[OUT] conversation=%s reply=%r", conversation_id, reply)
@@ -578,10 +610,52 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
 MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "6"))
 
 
-async def _run_agent(messages: list, contact_id: int | None = None) -> str | None:
+# Mensaje cálido de "ya voy" que se envía al cliente mientras el agente trabaja,
+# según la herramienta que está por usar. Se manda UNA sola vez por respuesta.
+# Las herramientas rápidas/internas (no listadas) no disparan ningún mensaje.
+_FILLER_BY_TOOL: dict[str, list[str]] = {
+    "buscar_semantico":     ["¡Genial! Déjame buscarte las mejores opciones 🎁",
+                             "¡Claro! Ya te busco algo perfecto 😍"],
+    "buscar_productos":     ["Déjame buscar eso para ti 🔎",
+                             "¡Voy a revisar qué tenemos! 🎁"],
+    "productos_similares":  ["¡Buena elección! Te muestro otras opciones parecidas 😊",
+                             "Déjame buscarte alternativas similares 🎁"],
+    "catalogo_categoria":   ["¡Perfecto! Déjame mostrarte lo que tenemos 🎁",
+                             "Ya te traigo el catálogo 😊"],
+    "productos_por_ocasion":["¡Qué lindo detalle! Déjame buscar algo ideal 🎁",
+                             "Ya te busco opciones perfectas para la ocasión 😍"],
+    "productos_destacados": ["¡Con gusto! Déjame mostrarte lo más pedido ⭐",
+                             "Ya te traigo nuestras recomendaciones 😊"],
+    "productos_oferta":     ["¡Me encanta! Déjame buscar nuestras mejores ofertas 🔥",
+                             "Ya te traigo lo que está en promoción 🎁"],
+    "detalle_producto":     ["¡Claro! Déjame traerte los detalles 😊",
+                             "Un momentito, reviso ese producto 🎁"],
+    "distritos_cobertura":  ["Déjame revisar la cobertura de tu zona 🛵",
+                             "Ya verifico si llegamos a tu distrito 😊"],
+    "metodos_pago":         ["Déjame contarte las formas de pago 💳"],
+    "rastrear_pedido":      ["Déjame revisar el estado de tu pedido 📦"],
+    "buscar_conocimiento_equipo": ["Déjame verificar eso para darte la mejor respuesta 😊",
+                                   "Permíteme revisarlo un momento 🙌"],
+}
+
+
+def _filler_for_tools(tool_calls: list) -> str | None:
+    """Devuelve un mensaje de espera para la primera herramienta lenta del turno."""
+    import random
+    for call in tool_calls:
+        fn = call.get("function", {}).get("name", "")
+        opciones = _FILLER_BY_TOOL.get(fn)
+        if opciones:
+            return random.choice(opciones)
+    return None
+
+
+async def _run_agent(messages: list, contact_id: int | None = None,
+                     conversation_id: int | None = None) -> str | None:
     """Bucle agéntico: llama al modelo, ejecuta herramientas y repite hasta
     obtener una respuesta final de texto."""
     all_tools = TOOLS + ([MEMORY_TOOL] if contact_id else [])
+    filler_sent = False
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             for _ in range(MAX_TOOL_ROUNDS):
@@ -607,6 +681,14 @@ async def _run_agent(messages: list, contact_id: int | None = None) -> str | Non
 
                 # Registrar el turno del asistente con sus tool_calls
                 messages.append(msg)
+
+                # Avisar al cliente "ya voy" (una sola vez) según la herramienta
+                if not filler_sent and conversation_id is not None:
+                    filler = _filler_for_tools(tool_calls)
+                    if filler:
+                        await _send_message(conversation_id, filler)
+                        await _set_typing(conversation_id, True)  # seguir "escribiendo…"
+                        filler_sent = True
 
                 # Ejecutar cada herramienta y agregar su resultado
                 for call in tool_calls:
@@ -712,6 +794,8 @@ async def _send_message(conversation_id: int, content: str) -> None:
                     "content": content,
                     "message_type": "outgoing",
                     "private": False,
+                    # Marca para distinguir mensajes del bot vs del vendedor humano
+                    "content_attributes": {"bot": True},
                 },
             )
             r.raise_for_status()
