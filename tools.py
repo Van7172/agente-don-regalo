@@ -5,8 +5,11 @@ Cada herramienta mapea a un endpoint de la API REST de donregalo.pe.
 TOOLS  → esquema en formato OpenAI tools (type: function)
 execute_tool(name, args) → ejecuta la llamada HTTP y devuelve el JSON crudo
 """
+import os
 import json
 import logging
+from urllib.parse import urlparse
+
 import httpx
 
 log = logging.getLogger(__name__)
@@ -15,6 +18,48 @@ API_BASE = "https://donregalo.pe/clienteApiApp/api"
 
 # Productos por defecto a traer en listados
 DEFAULT_PER_PAGE = 6
+
+# ─── Qdrant (búsqueda semántica) ──────────────────────────────────────────────
+QDRANT_URL        = os.getenv("QDRANT_URL", "").rstrip("/")
+QDRANT_API_KEY    = os.getenv("QDRANT_API_KEY", "")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "productos")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
+EMBED_MODEL       = os.getenv("EMBED_MODEL", "text-embedding-3-small")
+SEMANTIC_LIMIT    = int(os.getenv("SEMANTIC_LIMIT", "6"))
+
+_qdrant_client = None
+
+
+def _get_qdrant():
+    """Crea (una vez) el cliente Qdrant vía REST. Devuelve None si no está configurado."""
+    global _qdrant_client
+    if not QDRANT_URL:
+        return None
+    if _qdrant_client is None:
+        from qdrant_client import QdrantClient
+        parsed = urlparse(QDRANT_URL)
+        _qdrant_client = QdrantClient(
+            host=parsed.hostname,
+            port=parsed.port or (443 if parsed.scheme == "https" else 80),
+            https=(parsed.scheme == "https"),
+            api_key=QDRANT_API_KEY or None,
+            prefer_grpc=False,
+            timeout=20,
+            check_compatibility=False,
+        )
+    return _qdrant_client
+
+
+async def _embed_query(text: str) -> list[float] | None:
+    """Embebe la consulta del cliente con OpenAI."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/embeddings",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            json={"model": EMBED_MODEL, "input": text},
+        )
+        r.raise_for_status()
+        return r.json()["data"][0]["embedding"]
 
 
 # ─── Esquema de herramientas (OpenAI function calling) ────────────────────────
@@ -39,14 +84,51 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "buscar_semantico",
+            "description": (
+                "BÚSQUEDA PRINCIPAL de productos. Úsala SIEMPRE que el cliente describa "
+                "lo que busca con palabras (intención, estilo, sentimiento, ocasión, "
+                "tipo de producto), ej: 'algo romántico para mi novia', 'un detalle "
+                "para felicitar a mi jefe', 'rosas blancas elegantes', 'desayuno "
+                "sorpresa'. Entiende el significado, no solo palabras exactas, así que "
+                "evita confundir 'rosas blancas' de cumpleaños con arreglos fúnebres. "
+                "Por defecto NO devuelve productos fúnebres (pon incluir_funebre=true "
+                "solo si el cliente pide explícitamente un arreglo de condolencia/fúnebre)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {
+                        "type": "string",
+                        "description": "Lo que el cliente busca, descrito de la forma más rica posible (incluye estilo, ocasión y características que mencionó).",
+                    },
+                    "id_ocasion": {
+                        "type": "integer",
+                        "description": "Opcional. Filtra por ocasión si el cliente la indicó: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
+                    },
+                    "precio_max": {
+                        "type": "number",
+                        "description": "Opcional. Precio máximo en USD si el cliente dio un presupuesto.",
+                    },
+                    "incluir_funebre": {
+                        "type": "boolean",
+                        "description": "Por defecto false. Ponlo en true SOLO si el cliente pide explícitamente un arreglo fúnebre o de condolencias.",
+                    },
+                },
+                "required": ["q"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "buscar_productos",
             "description": (
-                "Busca productos por nombre o característica. Úsala cuando el cliente "
-                "mencione un producto, flor o característica específica. Si también "
-                "conoces la ocasión (ej: 'rosas blancas para nacimiento'), pasa "
-                "`id_ocasion` para filtrar y evitar resultados de otra ocasión. "
-                "Por defecto NO devuelve arreglos fúnebres (usa catalogo_categoria si el "
-                "cliente pide explícitamente productos fúnebres)."
+                "Búsqueda por coincidencia de texto exacta (nombre o característica). "
+                "Úsala como respaldo cuando buscar_semantico no encuentre lo que el "
+                "cliente menciona, o cuando el cliente dé un nombre/término muy puntual. "
+                "Si conoces la ocasión, pasa `id_ocasion`. "
+                "Por defecto NO devuelve arreglos fúnebres."
             ),
             "parameters": {
                 "type": "object",
@@ -195,6 +277,9 @@ async def execute_tool(name: str, args: dict) -> str:
 
 
 async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
+    if name == "buscar_semantico":
+        return await _buscar_semantico(client, args)
+
     if name == "listar_categorias":
         return await _get(client, f"{API_BASE}/categorias")
 
@@ -247,6 +332,74 @@ async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
         return r.json()
 
     return {"error": f"Herramienta desconocida: {name}"}
+
+
+# ─── Búsqueda semántica (Qdrant) ──────────────────────────────────────────────
+
+async def _buscar_semantico(client: httpx.AsyncClient, args: dict):
+    """Busca productos por significado en Qdrant. Si Qdrant no está disponible,
+    cae de vuelta a la búsqueda por texto (buscar_productos)."""
+    import asyncio
+
+    q = (args.get("q") or "").strip()
+    if not q:
+        return {"error": "Falta el término de búsqueda 'q'."}
+
+    qc = _get_qdrant()
+    if qc is None:
+        # Fallback: búsqueda por texto
+        log.warning("Qdrant no configurado; usando búsqueda por texto.")
+        params = {"q": q, "per_page": DEFAULT_PER_PAGE}
+        if args.get("id_ocasion"):
+            params["ocasion"] = int(args["id_ocasion"])
+        return await _get(client, f"{API_BASE}/productos/buscar", params)
+
+    # 1) Embeber la consulta
+    vector = await _embed_query(q)
+
+    # 2) Construir filtros de payload
+    from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny, Range
+
+    must: list = []
+    if not args.get("incluir_funebre"):
+        must.append(FieldCondition(key="es_funebre", match=MatchValue(value=False)))
+    if args.get("id_ocasion"):
+        must.append(FieldCondition(
+            key="ocasiones_ids",
+            match=MatchAny(any=[int(args["id_ocasion"])]),
+        ))
+    if args.get("precio_max"):
+        must.append(FieldCondition(key="precio", range=Range(lte=float(args["precio_max"]))))
+
+    qfilter = Filter(must=must) if must else None
+
+    # 3) Consultar Qdrant (cliente sync → hilo aparte)
+    def _search():
+        return qc.query_points(
+            collection_name=QDRANT_COLLECTION,
+            query=vector,
+            query_filter=qfilter,
+            limit=SEMANTIC_LIMIT,
+            with_payload=True,
+        ).points
+
+    hits = await asyncio.to_thread(_search)
+
+    productos = []
+    for h in hits:
+        p = h.payload or {}
+        productos.append({
+            "id_producto":       p.get("id_producto"),
+            "nombre":            p.get("nombre"),
+            "precio":            p.get("precio"),
+            "categoria":         p.get("categoria"),
+            "descripcion_corta": p.get("descripcion_corta"),
+            "imagen_url":        p.get("imagen_url"),
+            "url":               p.get("url"),
+            "score":             round(h.score, 4),
+        })
+
+    return {"data": productos, "total": len(productos), "fuente": "semantico"}
 
 
 async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None):

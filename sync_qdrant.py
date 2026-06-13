@@ -167,7 +167,7 @@ def main() -> int:
         qc.upsert(collection_name=QDRANT_COLLECTION, points=points[i:i + 100])
         print(f"  upsert {min(i + 100, len(points))}/{len(points)}")
 
-    print(f"✅ Listo. {len(points)} productos indexados en '{QDRANT_COLLECTION}'.")
+    print(f"[OK] Listo. {len(points)} productos indexados en '{QDRANT_COLLECTION}'.")
     return 0
 
 
