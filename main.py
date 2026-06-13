@@ -315,7 +315,7 @@ async def webhook(request: Request):
     event = payload.get("event")
 
     # Conversación resuelta → capturar el conocimiento que aportó el vendedor
-    if event in ("conversation_resolved", "conversation_updated"):
+    if event in ("conversation_status_changed", "conversation_resolved", "conversation_updated"):
         return await _handle_conversation_event(payload)
 
     if event != "message_created":
