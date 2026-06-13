@@ -2,6 +2,7 @@ import io
 import os
 import re
 import json
+import time
 import base64
 import asyncio
 import logging
@@ -43,6 +44,10 @@ _buffers_lock = asyncio.Lock()
 TYPING_SECONDS_PER_CHAR = float(os.getenv("TYPING_SECONDS_PER_CHAR", "0.03"))
 TYPING_MIN_DELAY        = float(os.getenv("TYPING_MIN_DELAY", "0.8"))
 TYPING_MAX_DELAY        = float(os.getenv("TYPING_MAX_DELAY", "4.0"))
+
+# Memoria de corto plazo: ventana del historial de conversación (horas) y tope de mensajes
+MEMORY_WINDOW_HOURS = float(os.getenv("MEMORY_WINDOW_HOURS", "24"))
+MEMORY_MAX_MESSAGES = int(os.getenv("MEMORY_MAX_MESSAGES", "30"))
 
 # ── Memoria de largo plazo: herramienta para guardar el perfil del cliente ────
 # Se ejecuta en main.py (no en tools.py) porque necesita el contact_id y las
@@ -461,6 +466,12 @@ async def _flush_buffer(conversation_id: int) -> None:
             ),
         })
 
+    # Memoria de corto plazo: historial reciente de la conversación (24h)
+    history = await _get_conversation_history(conversation_id)
+    if history:
+        log.info("[CTX] conversation=%s history=%d mensajes", conversation_id, len(history))
+        messages.extend(history)
+
     messages.append({"role": "user", "content": user_content})
 
     # Mostrar "escribiendo…" mientras el agente procesa y envía
@@ -700,6 +711,59 @@ async def _send_message(conversation_id: int, content: str) -> None:
         log.error("Error enviando mensaje a conversación %s: %s", conversation_id, e)
 
 
+async def _get_conversation_history(conversation_id: int) -> list[dict]:
+    """Lee el transcript reciente de Chatwoot como memoria de corto plazo.
+
+    Devuelve una lista de mensajes en formato OpenAI ({role, content}) de las
+    últimas MEMORY_WINDOW_HOURS horas. Excluye el turno actual del cliente
+    (la racha final de mensajes 'user'), que se agrega aparte ya procesado.
+    """
+    url = (
+        f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}"
+        f"/conversations/{conversation_id}/messages"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            r = await client.get(url, headers={"api_access_token": CHATWOOT_API_TOKEN})
+            r.raise_for_status()
+            payload = r.json().get("payload", [])
+    except Exception as e:
+        log.error("Error leyendo historial %s: %s", conversation_id, e)
+        return []
+
+    # Ordenar cronológicamente (más antiguo primero)
+    payload.sort(key=lambda m: m.get("created_at") or 0)
+
+    cutoff  = time.time() - MEMORY_WINDOW_HOURS * 3600
+    history: list[dict] = []
+    for m in payload:
+        if m.get("private"):
+            continue
+        mtype = m.get("message_type")
+        if mtype not in (0, 1):  # 0=incoming (cliente), 1=outgoing (bot/agente)
+            continue
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        created = m.get("created_at")
+        if isinstance(created, (int, float)) and created < cutoff:
+            continue
+        history.append({
+            "role":    "user" if mtype == 0 else "assistant",
+            "content": content,
+        })
+
+    # Quitar la racha final de mensajes 'user' = el turno actual (se agrega aparte)
+    while history and history[-1]["role"] == "user":
+        history.pop()
+
+    # Limitar a los últimos N mensajes para controlar tokens
+    if len(history) > MEMORY_MAX_MESSAGES:
+        history = history[-MEMORY_MAX_MESSAGES:]
+
+    return history
+
+
 async def _set_typing(conversation_id: int, on: bool) -> None:
     """Activa/desactiva el indicador 'escribiendo…' en Chatwoot."""
     url = (
@@ -791,6 +855,13 @@ async def _send_image(conversation_id: int, wa_number: str, image_url: str, capt
     Chatwoot no reenvía adjuntos salientes de forma fiable).
     Fallback: subir el adjunto a Chatwoot.
     """
+    # Diagnóstico: mostrar qué condición de Evolution falta (si alguna)
+    log.info(
+        "[IMG] evolution_check url=%s key=%s instance=%s wa_number=%r",
+        bool(EVOLUTION_API_URL), bool(EVOLUTION_API_KEY),
+        EVOLUTION_INSTANCE or "(vacío)", wa_number,
+    )
+
     # ── Vía Evolution API (directo a WhatsApp) ────────────────────────────────
     if EVOLUTION_API_URL and EVOLUTION_API_KEY and EVOLUTION_INSTANCE and wa_number:
         endpoint = f"{EVOLUTION_API_URL}/message/sendMedia/{EVOLUTION_INSTANCE}"

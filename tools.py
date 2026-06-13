@@ -40,13 +40,24 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "buscar_productos",
-            "description": "Busca productos por nombre o descripción. Úsala cuando el cliente mencione un producto específico, un precio o una característica.",
+            "description": (
+                "Busca productos por nombre o característica. Úsala cuando el cliente "
+                "mencione un producto, flor o característica específica. Si también "
+                "conoces la ocasión (ej: 'rosas blancas para nacimiento'), pasa "
+                "`id_ocasion` para filtrar y evitar resultados de otra ocasión. "
+                "Por defecto NO devuelve arreglos fúnebres (usa catalogo_categoria si el "
+                "cliente pide explícitamente productos fúnebres)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "q": {
                         "type": "string",
                         "description": "Término de búsqueda del producto que el cliente mencionó (ej: rosas, peluche, desayuno)",
+                    },
+                    "id_ocasion": {
+                        "type": "integer",
+                        "description": "Opcional. Filtra por ocasión: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7. Úsalo si el cliente indicó la ocasión.",
                     },
                     "orden": {
                         "type": "string",
@@ -194,6 +205,8 @@ async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
         params = {"q": args.get("q", ""), "per_page": DEFAULT_PER_PAGE}
         if args.get("orden") in ("asc", "desc"):
             params["orden"] = args["orden"]
+        if args.get("id_ocasion"):
+            params["ocasion"] = int(args["id_ocasion"])
         return await _get(client, f"{API_BASE}/productos/buscar", params)
 
     if name == "catalogo_categoria":
