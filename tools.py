@@ -50,16 +50,28 @@ def _get_qdrant():
     return _qdrant_client
 
 
-async def _embed_query(text: str) -> list[float] | None:
-    """Embebe la consulta del cliente con OpenAI."""
+async def _embed(texts: list[str]) -> list[list[float]]:
+    """Embebe uno o varios textos con OpenAI (una sola llamada)."""
     async with httpx.AsyncClient(timeout=20.0) as client:
         r = await client.post(
             "https://api.openai.com/v1/embeddings",
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"model": EMBED_MODEL, "input": text},
+            json={"model": EMBED_MODEL, "input": texts},
         )
         r.raise_for_status()
-        return r.json()["data"][0]["embedding"]
+        data = sorted(r.json()["data"], key=lambda d: d["index"])
+        return [d["embedding"] for d in data]
+
+
+async def _embed_query(text: str) -> list[float]:
+    """Embebe un solo texto."""
+    return (await _embed([text]))[0]
+
+
+def _blend(v1: list[float], w1: float, v2: list[float], w2: float) -> list[float]:
+    """Combina dos vectores con pesos (mezcla consulta + preferencias del cliente).
+    Para distancia coseno la magnitud no afecta, así que no normalizamos."""
+    return [a * w1 + b * w2 for a, b in zip(v1, v2)]
 
 
 # ─── Esquema de herramientas (OpenAI function calling) ────────────────────────
@@ -114,8 +126,39 @@ TOOLS = [
                         "type": "boolean",
                         "description": "Por defecto false. Ponlo en true SOLO si el cliente pide explícitamente un arreglo fúnebre o de condolencias.",
                     },
+                    "preferencias": {
+                        "type": "string",
+                        "description": "Opcional. Gustos DURABLES del cliente que conoces de su historial (DATOS CONOCIDOS), ej: 'le gustan los girasoles y los colores pastel, prefiere detalles con chocolate'. Se usan para personalizar el ranking sin sobreescribir lo que pide ahora. No inventes: solo lo que realmente sabes del cliente.",
+                    },
                 },
                 "required": ["q"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "productos_similares",
+            "description": (
+                "Devuelve productos PARECIDOS a uno que el cliente ya vio y le gustó. "
+                "Úsala cuando el cliente diga cosas como 'muéstrame algo similar', "
+                "'¿tienes otros parecidos?', 'algo así pero diferente', o cuando quieras "
+                "ofrecer alternativas a un producto que acaba de ver. Pasa el id_producto "
+                "de ese producto. Por defecto NO incluye fúnebres."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id_producto": {
+                        "type": "integer",
+                        "description": "id_producto del producto de referencia (el que le gustó al cliente).",
+                    },
+                    "incluir_funebre": {
+                        "type": "boolean",
+                        "description": "Por defecto false. true solo en contexto fúnebre explícito.",
+                    },
+                },
+                "required": ["id_producto"],
             },
         },
     },
@@ -280,6 +323,9 @@ async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
     if name == "buscar_semantico":
         return await _buscar_semantico(client, args)
 
+    if name == "productos_similares":
+        return await _productos_similares(args)
+
     if name == "listar_categorias":
         return await _get(client, f"{API_BASE}/categorias")
 
@@ -336,9 +382,46 @@ async def _dispatch(client: httpx.AsyncClient, name: str, args: dict):
 
 # ─── Búsqueda semántica (Qdrant) ──────────────────────────────────────────────
 
+# Peso de la consulta actual vs. las preferencias del cliente al mezclar vectores.
+PREF_QUERY_WEIGHT = 0.75
+PREF_HISTORY_WEIGHT = 0.25
+
+
+def _build_filter(args: dict):
+    """Filtros de payload comunes: excluir fúnebre por defecto + ocasión + precio."""
+    from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny, Range
+
+    must: list = []
+    if not args.get("incluir_funebre"):
+        must.append(FieldCondition(key="es_funebre", match=MatchValue(value=False)))
+    if args.get("id_ocasion"):
+        must.append(FieldCondition(
+            key="ocasiones_ids",
+            match=MatchAny(any=[int(args["id_ocasion"])]),
+        ))
+    if args.get("precio_max"):
+        must.append(FieldCondition(key="precio", range=Range(lte=float(args["precio_max"]))))
+    return Filter(must=must) if must else None
+
+
+def _hit_to_producto(h) -> dict:
+    p = h.payload or {}
+    return {
+        "id_producto":       p.get("id_producto"),
+        "nombre":            p.get("nombre"),
+        "precio":            p.get("precio"),
+        "categoria":         p.get("categoria"),
+        "descripcion_corta": p.get("descripcion_corta"),
+        "imagen_url":        p.get("imagen_url"),
+        "url":               p.get("url"),
+        "score":             round(h.score, 4),
+    }
+
+
 async def _buscar_semantico(client: httpx.AsyncClient, args: dict):
-    """Busca productos por significado en Qdrant. Si Qdrant no está disponible,
-    cae de vuelta a la búsqueda por texto (buscar_productos)."""
+    """Busca productos por significado en Qdrant, opcionalmente personalizado con
+    las preferencias durables del cliente. Si Qdrant no está disponible, cae de
+    vuelta a la búsqueda por texto (buscar_productos)."""
     import asyncio
 
     q = (args.get("q") or "").strip()
@@ -354,24 +437,18 @@ async def _buscar_semantico(client: httpx.AsyncClient, args: dict):
             params["ocasion"] = int(args["id_ocasion"])
         return await _get(client, f"{API_BASE}/productos/buscar", params)
 
-    # 1) Embeber la consulta
-    vector = await _embed_query(q)
+    # 1) Embeber la consulta (y las preferencias del cliente, si las hay)
+    prefs = (args.get("preferencias") or "").strip()
+    personalizado = False
+    if prefs:
+        q_vec, pref_vec = await _embed([q, prefs])
+        vector = _blend(q_vec, PREF_QUERY_WEIGHT, pref_vec, PREF_HISTORY_WEIGHT)
+        personalizado = True
+    else:
+        vector = await _embed_query(q)
 
-    # 2) Construir filtros de payload
-    from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny, Range
-
-    must: list = []
-    if not args.get("incluir_funebre"):
-        must.append(FieldCondition(key="es_funebre", match=MatchValue(value=False)))
-    if args.get("id_ocasion"):
-        must.append(FieldCondition(
-            key="ocasiones_ids",
-            match=MatchAny(any=[int(args["id_ocasion"])]),
-        ))
-    if args.get("precio_max"):
-        must.append(FieldCondition(key="precio", range=Range(lte=float(args["precio_max"]))))
-
-    qfilter = Filter(must=must) if must else None
+    # 2) Filtros de payload
+    qfilter = _build_filter(args)
 
     # 3) Consultar Qdrant (cliente sync → hilo aparte)
     def _search():
@@ -384,22 +461,54 @@ async def _buscar_semantico(client: httpx.AsyncClient, args: dict):
         ).points
 
     hits = await asyncio.to_thread(_search)
+    productos = [_hit_to_producto(h) for h in hits]
+    return {
+        "data": productos,
+        "total": len(productos),
+        "fuente": "semantico",
+        "personalizado": personalizado,
+    }
 
-    productos = []
-    for h in hits:
-        p = h.payload or {}
-        productos.append({
-            "id_producto":       p.get("id_producto"),
-            "nombre":            p.get("nombre"),
-            "precio":            p.get("precio"),
-            "categoria":         p.get("categoria"),
-            "descripcion_corta": p.get("descripcion_corta"),
-            "imagen_url":        p.get("imagen_url"),
-            "url":               p.get("url"),
-            "score":             round(h.score, 4),
-        })
 
-    return {"data": productos, "total": len(productos), "fuente": "semantico"}
+async def _productos_similares(args: dict):
+    """Devuelve productos parecidos a uno de referencia, usando su propio vector
+    en Qdrant como consulta (recomendación por vecindad)."""
+    import asyncio
+
+    pid = int(args["id_producto"])
+
+    qc = _get_qdrant()
+    if qc is None:
+        return {"error": "La búsqueda de similares no está disponible.", "tool": "productos_similares"}
+
+    qfilter = _build_filter(args)
+
+    def _query():
+        # Recupera el vector del producto de referencia…
+        recs = qc.retrieve(
+            collection_name=QDRANT_COLLECTION,
+            ids=[pid],
+            with_vectors=True,
+        )
+        if not recs:
+            return None
+        ref_vec = recs[0].vector
+        # …y busca los más cercanos (pedimos uno extra para descartar el propio).
+        return qc.query_points(
+            collection_name=QDRANT_COLLECTION,
+            query=ref_vec,
+            query_filter=qfilter,
+            limit=SEMANTIC_LIMIT + 1,
+            with_payload=True,
+        ).points
+
+    hits = await asyncio.to_thread(_query)
+    if hits is None:
+        return {"error": f"No se encontró el producto {pid} en el índice.", "tool": "productos_similares"}
+
+    # Excluir el producto de referencia del resultado
+    productos = [_hit_to_producto(h) for h in hits if h.id != pid][:SEMANTIC_LIMIT]
+    return {"data": productos, "total": len(productos), "fuente": "similares", "referencia": pid}
 
 
 async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None):

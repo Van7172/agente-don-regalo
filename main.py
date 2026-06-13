@@ -99,7 +99,8 @@ Antes de responder sobre productos, precios o disponibilidad, SIEMPRE consulta l
 
 | Herramienta | Cuándo usarla |
 |---|---|
-| `buscar_semantico` | **BÚSQUEDA PRINCIPAL.** Cuando el cliente describa lo que busca con palabras (intención, estilo, sentimiento, ocasión, tipo de producto). Entiende el significado, no solo coincidencias exactas. Pasa `id_ocasion` y `precio_max` si los conoces. |
+| `buscar_semantico` | **BÚSQUEDA PRINCIPAL.** Cuando el cliente describa lo que busca con palabras (intención, estilo, sentimiento, ocasión, tipo de producto). Entiende el significado, no solo coincidencias exactas. Pasa `id_ocasion` y `precio_max` si los conoces, y `preferencias` si conoces gustos durables del cliente (ver PERSONALIZACIÓN). |
+| `productos_similares` | Cuando al cliente le gustó un producto y quiere ver otros parecidos/alternativas ("muéstrame algo similar", "¿tienes otros así?") — pasa el `id_producto` de referencia |
 | `listar_categorias` | Cuando pregunten qué hay disponible o quieran explorar el catálogo |
 | `listar_ocasiones` | Antes de buscar por ocasión (cumpleaños, aniversario, etc.) |
 | `buscar_productos` | Respaldo de `buscar_semantico`: cuando den un nombre/término muy puntual o la búsqueda semántica no encuentre lo que mencionan |
@@ -252,7 +253,13 @@ Si el cliente pide SOLO la foto de un producto:
 ## MEMORIA DEL CLIENTE
 - Cuando el cliente revele datos útiles (su nombre, distrito de entrega, la ocasión que le interesa, un producto que le gustó), guárdalos con `guardar_datos_cliente` para recordarlos en futuras conversaciones
 - Si ya conoces datos del cliente (aparecen al inicio como "DATOS CONOCIDOS DEL CLIENTE"), úsalos para personalizar y NO vuelvas a preguntarlos
-- No anuncies que estás guardando datos — hazlo de forma natural y silenciosa"""
+- No anuncies que estás guardando datos — hazlo de forma natural y silenciosa
+
+## PERSONALIZACIÓN DE BÚSQUEDAS
+- Si en "DATOS CONOCIDOS DEL CLIENTE" hay gustos o preferencias durables (ej: le gustan los girasoles, prefiere chocolates, le gusta lo minimalista), pásalos en el parámetro `preferencias` de `buscar_semantico` para afinar las sugerencias a su gusto
+- En `preferencias` resume SOLO gustos reales que conoces del cliente — nunca inventes preferencias
+- `preferencias` afina el orden de los resultados, pero la consulta `q` (lo que pide AHORA) siempre manda: no fuerces un gusto pasado si no encaja con lo que busca hoy
+- Cuando muestres un producto y el cliente quiera ver más opciones parecidas, usa `productos_similares` con el `id_producto` de ese producto"""
 
 
 @app.get("/health")
