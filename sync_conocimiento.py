@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import knowledge  # usa la misma lógica de captura que el webhook
+from app.services import knowledge  # usa la misma lógica de captura que el webhook
 
 CHATWOOT_URL        = os.getenv("CHATWOOT_URL", "").rstrip("/")
 CHATWOOT_API_TOKEN  = os.getenv("CHATWOOT_API_TOKEN", "")

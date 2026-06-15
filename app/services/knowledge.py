@@ -3,9 +3,8 @@ Aprendizaje del equipo de ventas (Nivel B).
 
 Cuando un vendedor humano atiende una conversación en Chatwoot, este módulo
 captura los pares "pregunta del cliente → respuesta del vendedor", los convierte
-en conocimiento reutilizable con el LLM y los indexa en una colección de Qdrant
-(`respuestas_equipo`). Luego el agente los consulta con la herramienta
-`buscar_conocimiento_equipo` (definida en tools.py).
+en conocimiento reutilizable con el LLM y los indexa en Qdrant
+(`respuestas_equipo`). El agente los consulta con `buscar_conocimiento_equipo`.
 
 Flujo:
   1. Se dispara cuando una conversación con intervención humana se resuelve.
@@ -13,34 +12,24 @@ Flujo:
   3. El LLM extrae items {pregunta, respuesta, categoria} reutilizables.
   4. Embebe la pregunta y hace upsert en Qdrant (id estable = dedup por pregunta).
 """
-import os
 import json
 import uuid
+import asyncio
 import logging
 from datetime import date
 
 import httpx
 
-# Reutiliza la infraestructura de Qdrant/embeddings ya montada en tools.py
-from tools import _get_qdrant, _embed, _embed_query
+from app.config import settings
+from app.tools.search import get_qdrant, embed
 
 log = logging.getLogger(__name__)
-
-CHATWOOT_URL        = os.getenv("CHATWOOT_URL", "").rstrip("/")
-CHATWOOT_API_TOKEN  = os.getenv("CHATWOOT_API_TOKEN", "")
-CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "")
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL        = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-KB_COLLECTION = os.getenv("KB_COLLECTION", "respuestas_equipo")
-EMBED_DIM     = int(os.getenv("EMBED_DIM", "1536"))
 
 
 # ─── Clasificación de mensajes (cliente / vendedor / bot) ─────────────────────
 
 def _classify(m: dict) -> str | None:
-    """Clasifica un mensaje crudo de Chatwoot. Devuelve 'cliente', 'vendedor',
-    'bot' o None si debe ignorarse (privado, vacío, evento de sistema)."""
+    """Clasifica un mensaje crudo de Chatwoot. None si debe ignorarse."""
     if m.get("private"):
         return None
     if (m.get("content") or "").strip() == "":
@@ -51,7 +40,6 @@ def _classify(m: dict) -> str | None:
     if mtype in (1, "outgoing"):
         sender_type = (m.get("sender") or {}).get("type", "")
         cattrs = m.get("content_attributes") or {}
-        # El bot marca sus propios mensajes con content_attributes.bot = True
         if cattrs.get("bot") or sender_type in ("agent_bot", "AgentBot"):
             return "bot"
         return "vendedor"
@@ -61,11 +49,11 @@ def _classify(m: dict) -> str | None:
 async def _fetch_messages(conversation_id: int) -> list[dict]:
     """Trae los mensajes crudos de una conversación, ordenados cronológicamente."""
     url = (
-        f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}"
+        f"{settings.chatwoot_url}/api/v1/accounts/{settings.chatwoot_account_id}"
         f"/conversations/{conversation_id}/messages"
     )
     async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
-        r = await client.get(url, headers={"api_access_token": CHATWOOT_API_TOKEN})
+        r = await client.get(url, headers={"api_access_token": settings.chatwoot_api_token})
         r.raise_for_status()
         payload = r.json().get("payload", [])
     payload.sort(key=lambda m: m.get("created_at") or 0)
@@ -123,11 +111,11 @@ async def _extract_qa(transcript: str) -> list[dict]:
             r = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {settings.openai_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": OPENAI_MODEL,
+                    "model": settings.openai_model,
                     "messages": [
                         {"role": "system", "content": _EXTRACT_SYSTEM},
                         {"role": "user", "content": f"Transcript:\n\n{transcript}"},
@@ -137,9 +125,8 @@ async def _extract_qa(transcript: str) -> list[dict]:
             )
             r.raise_for_status()
             content = r.json()["choices"][0]["message"]["content"]
-        data = json.loads(content)
+        data  = json.loads(content)
         items = data.get("items", [])
-        # Validar estructura mínima
         return [
             it for it in items
             if isinstance(it, dict) and it.get("pregunta") and it.get("respuesta")
@@ -160,29 +147,27 @@ def ensure_kb_collection(qc) -> None:
     """Crea la colección de conocimiento si no existe."""
     from qdrant_client.models import Distance, VectorParams
     existing = [c.name for c in qc.get_collections().collections]
-    if KB_COLLECTION not in existing:
-        log.info("[KB] creando colección '%s'", KB_COLLECTION)
+    if settings.kb_collection not in existing:
+        log.info("[KB] creando colección '%s'", settings.kb_collection)
         qc.create_collection(
-            collection_name=KB_COLLECTION,
-            vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
+            collection_name=settings.kb_collection,
+            vectors_config=VectorParams(size=settings.embed_dim, distance=Distance.COSINE),
         )
 
 
 async def _index_items(items: list[dict], conversation_id: int | None) -> int:
     """Embebe las preguntas y hace upsert en Qdrant. Devuelve cuántos indexó."""
-    import asyncio
     from qdrant_client.models import PointStruct
 
-    qc = _get_qdrant()
+    qc = get_qdrant()
     if qc is None:
         log.warning("[KB] Qdrant no configurado; no se indexa conocimiento.")
         return 0
 
     await asyncio.to_thread(ensure_kb_collection, qc)
 
-    # Embebemos "pregunta — respuesta" para capturar ambos lados semánticamente
-    textos = [f"{it['pregunta']}\n{it['respuesta']}" for it in items]
-    vectors = await _embed(textos)
+    textos  = [f"{it['pregunta']}\n{it['respuesta']}" for it in items]
+    vectors = await embed(textos)
 
     points = []
     for it, vec in zip(items, vectors):
@@ -199,7 +184,7 @@ async def _index_items(items: list[dict], conversation_id: int | None) -> int:
         ))
 
     def _upsert():
-        qc.upsert(collection_name=KB_COLLECTION, points=points)
+        qc.upsert(collection_name=settings.kb_collection, points=points)
 
     await asyncio.to_thread(_upsert)
     return len(points)

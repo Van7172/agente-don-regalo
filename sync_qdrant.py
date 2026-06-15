@@ -201,6 +201,35 @@ def main() -> int:
         qc.upsert(collection_name=QDRANT_COLLECTION, points=points[i:i + 100])
         print(f"  upsert {min(i + 100, len(points))}/{len(points)}")
 
+    # Limpieza: eliminar de Qdrant los productos que ya no existen en la API
+    print("Verificando productos obsoletos en Qdrant...")
+    api_ids: set[int] = {p["id_producto"] for p in productos}
+    qdrant_ids: set[int] = set()
+    offset = None
+    while True:
+        result, offset = qc.scroll(
+            collection_name=QDRANT_COLLECTION,
+            limit=1000,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        for rec in result:
+            qdrant_ids.add(rec.id)
+        if offset is None:
+            break
+
+    stale_ids = qdrant_ids - api_ids
+    if stale_ids:
+        from qdrant_client.models import PointIdsList
+        print(f"Eliminando {len(stale_ids)} productos obsoletos: {sorted(stale_ids)}")
+        qc.delete(
+            collection_name=QDRANT_COLLECTION,
+            points_selector=PointIdsList(points=list(stale_ids)),
+        )
+    else:
+        print("Sin productos obsoletos.")
+
     print(f"[OK] Listo. {len(points)} productos indexados en '{QDRANT_COLLECTION}'.")
     return 0
 
