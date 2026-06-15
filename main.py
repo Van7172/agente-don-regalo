@@ -7,7 +7,7 @@ import base64
 import asyncio
 import logging
 import httpx
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, quote
 from pypdf import PdfReader
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
@@ -361,6 +361,9 @@ async def evolution_webhook(request: Request):
     quoted_text = (
         quoted_msg.get("conversation")
         or quoted_msg.get("extendedTextMessage", {}).get("text")
+        or quoted_msg.get("imageMessage", {}).get("caption")
+        or quoted_msg.get("videoMessage", {}).get("caption")
+        or quoted_msg.get("documentMessage", {}).get("caption")
         or ""
     ).strip()
 
