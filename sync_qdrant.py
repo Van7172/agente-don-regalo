@@ -112,6 +112,40 @@ def ensure_collection(qc: QdrantClient) -> None:
         print(f"Colección '{QDRANT_COLLECTION}' ya existe.")
 
 
+_SLUG_PARENT: dict[str, str] = {
+    # Desayunos
+    "desayunos-criollos":        "desayunos",
+    "desayunos-de-amor":         "desayunos",
+    "desayunos-light":           "desayunos",
+    "desayunos-tematicos":       "desayunos",
+    # Arreglos florales
+    "arreglos-florales-variados":       "arreglos-florales",
+    "en-canasta":                       "arreglos-florales",
+    "arreglos-florales-con-peluche":    "arreglos-florales",
+    "cajas":                            "arreglos-florales",
+    "corporativos":                     "arreglos-florales",
+    "ramos-de-flores":                  "arreglos-florales",
+    "floreros":                         "arreglos-florales",
+    "arreglos-florales-de-navidad":     "arreglos-florales",
+    # Arreglos fúnebres
+    "cruces-funebres":      "arreglos-funebres",
+    "lagrimas-funebres":    "arreglos-funebres",
+    "coronas-para-difuntos":"arreglos-funebres",
+    "mantos-funebres":      "arreglos-funebres",
+    # Plantas
+    "terrarios":    "plantas",
+    "orquideas":    "plantas",
+    "suculentas":   "plantas",
+    # Otros ya son padres o no tienen sub
+    "regalos-corporativos": "cestas",
+}
+
+
+def _parent_slug(slug: str) -> str:
+    """Normaliza el slug de subcategoría al slug padre para filtros consistentes."""
+    return _SLUG_PARENT.get(slug, slug)
+
+
 def main() -> int:
     if not OPENAI_API_KEY or not QDRANT_URL:
         print("ERROR: faltan OPENAI_API_KEY o QDRANT_URL en el entorno.")
@@ -152,7 +186,7 @@ def main() -> int:
                 "nombre":        p.get("nombre", ""),
                 "precio":        p.get("precio", 0),
                 "categoria":     p.get("categoria", ""),
-                "categoria_slug": p.get("categoria_slug", ""),
+                "categoria_slug": _parent_slug(p.get("categoria_slug", "")),
                 "ocasiones_ids": p.get("ocasiones_ids", []),
                 "es_funebre":    bool(p.get("es_funebre", False)),
                 "stock":         p.get("stock", 0),
