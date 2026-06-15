@@ -346,10 +346,17 @@ async def evolution_webhook(request: Request):
         return {"status": "error", "reason": "invalid json"}
 
     event = payload.get("event")
+    # Log completo para diagnosticar la estructura del payload de Evolution
+    log.info("[EVO-RAW] event=%r data_type=%s keys=%s",
+             event, type(payload.get("data")).__name__,
+             list(payload.get("data", {}).keys()) if isinstance(payload.get("data"), dict) else "LIST")
+
     if event != "messages.upsert":
         return {"status": "ignored", "reason": f"event={event!r}"}
 
-    data = payload.get("data", {})
+    # Evolution v1 puede enviar data como lista; v2 como objeto
+    raw_data = payload.get("data", {})
+    data = raw_data[0] if isinstance(raw_data, list) else raw_data
     key  = data.get("key", {})
 
     # Solo mensajes entrantes
@@ -376,6 +383,10 @@ async def evolution_webhook(request: Request):
         or quoted_msg.get("documentMessage", {}).get("caption")
         or ""
     ).strip()
+
+    log.info("[EVO-DBG] msg_id=%r fromMe=%r msg_keys=%s context_keys=%s quoted_keys=%s quoted_text=%r",
+             msg_id, key.get("fromMe"), list(message.keys()),
+             list(context_info.keys()), list(quoted_msg.keys()), quoted_text[:60])
 
     if msg_id and quoted_text:
         source_id = f"WAID:{msg_id}"
