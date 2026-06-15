@@ -41,6 +41,11 @@ BUFFER_SECONDS = float(os.getenv("BUFFER_SECONDS", "4"))
 _buffers: dict[int, dict] = {}
 _buffers_lock = asyncio.Lock()
 
+# Contexto de mensajes citados (WhatsApp reply) recibidos desde Evolution API.
+# Chatwoot no forwrdea este contexto, así que lo capturamos directamente.
+# Clave: source_id del mensaje ("WAID:..."), valor: texto del mensaje citado.
+_evo_quoted: dict[str, str] = {}
+
 # Delay "humano" entre burbujas: simula el tiempo de escribir cada mensaje
 TYPING_SECONDS_PER_CHAR = float(os.getenv("TYPING_SECONDS_PER_CHAR", "0.03"))
 TYPING_MIN_DELAY        = float(os.getenv("TYPING_MIN_DELAY", "0.8"))
@@ -320,6 +325,58 @@ async def health():
     return {"status": "ok"}
 
 
+@app.post("/evolution-webhook")
+async def evolution_webhook(request: Request):
+    """Recibe el webhook nativo de Evolution API para capturar el contexto de
+    mensajes citados (WhatsApp reply). Chatwoot no forwrdea este dato, por eso
+    lo guardamos aquí antes de que llegue el webhook de Chatwoot."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "error", "reason": "invalid json"}
+
+    event = payload.get("event")
+    if event != "messages.upsert":
+        return {"status": "ignored", "reason": f"event={event!r}"}
+
+    data = payload.get("data", {})
+    key  = data.get("key", {})
+
+    # Solo mensajes entrantes
+    if key.get("fromMe"):
+        return {"status": "ignored", "reason": "fromMe"}
+
+    msg_id  = key.get("id", "")
+    message = data.get("message", {})
+
+    # El contexto de cita puede estar en varios tipos de mensaje
+    context_info = (
+        message.get("extendedTextMessage", {}).get("contextInfo")
+        or message.get("imageMessage", {}).get("contextInfo")
+        or message.get("videoMessage", {}).get("contextInfo")
+        or message.get("audioMessage", {}).get("contextInfo")
+        or {}
+    )
+    quoted_msg  = context_info.get("quotedMessage", {})
+    quoted_text = (
+        quoted_msg.get("conversation")
+        or quoted_msg.get("extendedTextMessage", {}).get("text")
+        or ""
+    ).strip()
+
+    if msg_id and quoted_text:
+        source_id = f"WAID:{msg_id}"
+        _evo_quoted[source_id] = quoted_text
+        log.info("[EVO] cita guardada source_id=%s texto=%r", source_id, quoted_text[:80])
+        # Limpiar entradas antiguas para no crecer sin límite
+        if len(_evo_quoted) > 500:
+            oldest = list(_evo_quoted.keys())[:100]
+            for k in oldest:
+                _evo_quoted.pop(k, None)
+
+    return {"status": "ok"}
+
+
 @app.post("/debug-webhook")
 async def debug_webhook(request: Request):
     """Endpoint temporal para inspeccionar el payload de Chatwoot."""
@@ -399,8 +456,11 @@ async def webhook(request: Request):
     content     = message.get("content") or ""
     attachments = message.get("attachments") or []
 
-    # Si el cliente citó/respondió a un mensaje específico de WhatsApp,
-    # Chatwoot lo indica en content_attributes.in_reply_to (ID del mensaje citado)
+    # source_id del mensaje en WhatsApp (ej: "WAID:ABC123") — sirve para cruzar
+    # con el contexto de cita que llegó antes desde Evolution API
+    source_id = message.get("source_id", "")
+
+    # Fallback: si Chatwoot algún día forwrdea el in_reply_to (API oficial de Meta)
     in_reply_to_id = (message.get("content_attributes") or {}).get("in_reply_to")
 
     # id del contacto para la memoria de largo plazo
@@ -434,7 +494,9 @@ async def webhook(request: Request):
         buf["parts"].extend(parts)
         buf["contact_id"] = contact_id
         buf["wa_number"] = wa_number
-        # Guardar el mensaje citado solo si viene en este turno
+        if source_id:
+            buf["source_id"] = source_id
+        # Fallback Meta API: in_reply_to viene del lado de Chatwoot
         if in_reply_to_id:
             buf["in_reply_to_id"] = in_reply_to_id
         buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
@@ -544,6 +606,7 @@ async def _flush_buffer(conversation_id: int) -> None:
 
     contact_id     = buf["contact_id"]
     wa_number      = buf.get("wa_number", "")
+    source_id      = buf.get("source_id", "")
     in_reply_to_id = buf.get("in_reply_to_id")
     user_content   = _collapse_parts(buf["parts"])
     if not user_content:
@@ -551,15 +614,24 @@ async def _flush_buffer(conversation_id: int) -> None:
 
     # Si el cliente respondió a un mensaje específico (WhatsApp reply), inyectar
     # el texto del mensaje citado para que el agente sepa a qué producto se refiere.
-    if in_reply_to_id:
+    # Fuente 1: push desde /evolution-webhook (si está configurado)
+    quoted = ""
+    if source_id:
+        quoted = _evo_quoted.pop(source_id, "")
+    # Fuente 2: pull directo a Evolution API (no requiere configuración extra)
+    if not quoted and source_id:
+        quoted = await _get_evolution_quoted(source_id)
+    # Fuente 3: fallback Meta Cloud API (in_reply_to viene de Chatwoot)
+    if not quoted and in_reply_to_id:
         quoted = await _get_quoted_message(conversation_id, in_reply_to_id)
-        if quoted:
-            quoted_short = quoted[:400] + "…" if len(quoted) > 400 else quoted
-            prefix = f"[El cliente está respondiendo al mensaje: «{quoted_short}»]\n"
-            if isinstance(user_content, str):
-                user_content = prefix + user_content
-            else:
-                user_content = [{"type": "text", "text": prefix}] + user_content
+    if quoted:
+        quoted_short = quoted[:400] + "…" if len(quoted) > 400 else quoted
+        prefix = f"[El cliente está respondiendo al mensaje: «{quoted_short}»]\n"
+        log.info("[QUOTED] conversation=%s prefix=%r", conversation_id, prefix[:120])
+        if isinstance(user_content, str):
+            user_content = prefix + user_content
+        else:
+            user_content = [{"type": "text", "text": prefix}] + user_content
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -891,6 +963,55 @@ async def _get_quoted_message(conversation_id: int, message_id: int) -> str:
                     return (m.get("content") or "").strip()
     except Exception as e:
         log.warning("No se pudo leer mensaje citado id=%s: %s", message_id, e)
+    return ""
+
+
+async def _get_evolution_quoted(source_id: str) -> str:
+    """Consulta Evolution API para obtener el texto del mensaje citado.
+
+    Chatwoot no forwrdea el contextInfo.quotedMessage de WhatsApp, así que
+    lo consultamos directamente al source de Evolution usando el source_id
+    del mensaje ("WAID:<whatsapp_msg_id>"). Se llama dentro de la ventana
+    BUFFER_SECONDS, así que no agrega latencia perceptible al usuario.
+    """
+    if not EVOLUTION_API_URL or not EVOLUTION_API_KEY or not EVOLUTION_INSTANCE:
+        return ""
+    if not source_id.startswith("WAID:"):
+        return ""
+
+    msg_id = source_id[5:]  # quita el prefijo "WAID:"
+    url = f"{EVOLUTION_API_URL}/chat/findMessages/{EVOLUTION_INSTANCE}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(
+                url,
+                headers={"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"},
+                json={"where": {"key": {"id": msg_id}}},
+            )
+            r.raise_for_status()
+            msgs = r.json()
+            if not isinstance(msgs, list) or not msgs:
+                return ""
+            message = msgs[0].get("message", {})
+            ctx = (
+                message.get("extendedTextMessage", {}).get("contextInfo")
+                or message.get("imageMessage", {}).get("contextInfo")
+                or message.get("videoMessage", {}).get("contextInfo")
+                or message.get("audioMessage", {}).get("contextInfo")
+                or {}
+            )
+            quoted_msg = ctx.get("quotedMessage", {})
+            quoted_text = (
+                quoted_msg.get("conversation")
+                or quoted_msg.get("extendedTextMessage", {}).get("text")
+                or ""
+            ).strip()
+            if quoted_text:
+                log.info("[EVO-PULL] quoted encontrado para source_id=%s texto=%r",
+                         source_id, quoted_text[:80])
+            return quoted_text
+    except Exception as e:
+        log.warning("Error consultando Evolution quoted para %s: %s", source_id, e)
     return ""
 
 
