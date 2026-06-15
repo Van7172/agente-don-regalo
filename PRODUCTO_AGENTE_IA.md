@@ -59,10 +59,14 @@ sin olvidar y sin cometer errores de precio.
 | **Búsqueda híbrida** | Combina comprensión semántica (IA) + coincidencia de términos clave para resultados más precisos. Ej: "rosas BLANCAS" devuelve rosas blancas, no rojas |
 | **Honestidad ante stock limitado** | Si no tiene exactamente lo que el cliente pide, lo dice claramente y ofrece la alternativa más cercana |
 | **Lógica de contexto fúnebre** | Muestra arreglos de condolencias SOLO cuando el cliente lo pide explícitamente; los excluye en todos los demás casos automáticamente |
-| **Agrupación de mensajes** | Si el cliente envía varios mensajes seguidos, los espera y los procesa juntos (no responde a medias) |
-| **Mensajes "ya voy"** | Mientras busca productos (que tarda 1-3 seg), envía un mensaje cálido para que el cliente sepa que está procesando |
+| **Agrupación de mensajes (debounce 6s)** | Si el cliente envía varios mensajes seguidos, los agrupa y procesa juntos — evita respuestas parciales o duplicadas |
+| **Mensajes "ya voy"** | Mientras busca productos (1-3 seg de latencia), envía un mensaje cálido para que el cliente sepa que está procesando |
 | **Indicador de escritura** | Simula que escribe, con delay proporcional al largo del mensaje — se siente humano |
-| **Aprendizaje de vendedores humanos (Nivel B)** | Cuando un vendedor humano toma el control y resuelve un caso, el agente extrae el conocimiento de esa conversación y lo indexa. La próxima vez que un cliente haga la misma pregunta, el agente responde como lo hizo el vendedor |
+| **Aprendizaje de vendedores humanos (Nivel B)** | Cuando un vendedor humano resuelve un caso, el agente extrae el conocimiento y lo indexa. La próxima vez que llegue la misma pregunta, responde como lo hizo el vendedor |
+| **Detección de mensajes citados** | Cuando el cliente cita un producto en WhatsApp, el agente detecta el nombre del producto citado y distingue si el cliente pide más info o quiere comprarlo — sin volver a buscar |
+| **Flujo de cierre secuencial** | Al confirmar compra, recoge datos en este orden exacto: (1) distrito → verifica cobertura + tarifa, (2) fecha, (3) horario (5 opciones enumeradas), (4) mensaje de tarjeta, (5) resumen, (6) deriva a pago. Una pregunta por turno |
+| **Búsqueda secuencial sin duplicados** | `buscar_semantico` y `catalogo_categoria` se llaman siempre en secuencia, nunca en paralelo — evita que el mismo producto aparezca dos veces |
+| **Normalización de slugs en catálogo** | Los productos de subcategorías (ej: `desayunos-tematicos`) se almacenan bajo el slug padre (`desayunos`) para que los filtros del agente sean consistentes |
 
 ### 2.4 Herramientas del agente (visión técnica)
 
@@ -536,9 +540,19 @@ y no comete errores de precio.
 
 ## 13. Hoja de ruta tecnológica (para el proveedor)
 
-### Ya implementado (v1.0)
+### Ya implementado (v1.1)
 - [x] Motor IA (OpenAI function calling)
 - [x] Búsqueda semántica + híbrida (Qdrant)
+- [x] Filtro por `categoria_slug` (padre normalizado) en búsquedas semánticas
+- [x] Normalización de slugs subcategoría → padre en sync_qdrant.py
+- [x] Búsqueda secuencial obligatoria (`buscar_semantico` → `catalogo_categoria`) — sin duplicados
+- [x] Fallback categoría-específico (nunca mezcla categorías en el fallback)
+- [x] Detección de mensajes citados de WhatsApp vía Evolution API webhook
+- [x] Distinción cita = detalle vs cita = intención de compra
+- [x] Flujo de cierre en 6 pasos secuenciales (una pregunta por turno)
+- [x] Franja horaria presentada en lista numerada (5 opciones)
+- [x] `distritos_cobertura` llamado una sola vez por pedido
+- [x] Catálogo general sin mostrar categoría fúnebre proactivamente
 - [x] Memoria corto y largo plazo
 - [x] Personalización por preferencias del cliente
 - [x] Aprendizaje de vendedores humanos (Nivel B)
@@ -546,6 +560,7 @@ y no comete errores de precio.
 - [x] Canal WhatsApp vía Evolution API
 - [x] Plataforma Chatwoot (bandeja omnicanal)
 - [x] Mensajes de espera y typing humano
+- [x] Debounce de mensajes a 6 segundos (agrupa mensajes rápidos del usuario)
 
 ### Próximas versiones
 - [ ] Panel de administración web para que el cliente gestione su prompt y catálogo sin intervención técnica
@@ -560,4 +575,5 @@ y no comete errores de precio.
 ---
 
 *Documento generado el 14 de junio de 2026 — Proyecto Agente Regalito / Don Regalo*
-*Versión 1.0 — Para uso interno y propuestas comerciales*
+*Versión 1.1 — Actualizado el 15 de junio de 2026 con mejoras de flujo de conversación, normalización de catálogo y correcciones de comportamiento*
+*Para uso interno y propuestas comerciales*

@@ -36,7 +36,7 @@ PDF_MAX_CHARS = int(os.getenv("PDF_MAX_CHARS", "30000"))
 # ── Buffer de mensajes (debounce) ─────────────────────────────────────────────
 # Espera N segundos de silencio antes de procesar; así varios mensajes seguidos
 # del cliente se agrupan y se responden una sola vez con contexto completo.
-BUFFER_SECONDS = float(os.getenv("BUFFER_SECONDS", "4"))
+BUFFER_SECONDS = float(os.getenv("BUFFER_SECONDS", "6"))
 # Estado en memoria por conversación: {conversation_id: {parts, contact_id, task}}
 _buffers: dict[int, dict] = {}
 _buffers_lock = asyncio.Lock()
@@ -124,17 +124,24 @@ Antes de responder sobre productos, precios o disponibilidad, SIEMPRE consulta l
 
 ## FLUJO RECOMENDADO PARA SUGERIR PRODUCTOS
 
+⚠️ **REGLA DE ORO DE BÚSQUEDA — lee esto primero:**
+`buscar_semantico` y `catalogo_categoria` son SIEMPRE secuenciales, NUNCA paralelas.
+Pasos: (1) llama `buscar_semantico` → (2) espera el resultado → (3) cuenta los productos → (4) solo si hay menos de 3, llama `catalogo_categoria`. Si llamas las dos al mismo tiempo, los productos se duplicarán en la respuesta.
+
 **Si el cliente describe lo que busca con palabras** (ej: "algo romántico para mi novia", "rosas blancas elegantes", "un detalle para felicitar a mi jefe", "quiero el desayuno cars"):
 → Llama `buscar_semantico` directamente — NO preguntes nada. Pasa en `q` la descripción más rica posible (incluye estilo y ocasión si los mencionó), y `id_ocasion`/`precio_max` si los conoces.
 → Si el cliente mencionó una categoría específica (ej: "desayuno", "arreglo floral", "peluche"), pasa también `categoria_slug`. Ejemplo: "desayuno para cumpleaños" → `q="desayuno para cumpleaños"`, `id_ocasion=1`, `categoria_slug="desayunos"`.
-→ **Si el resultado tiene menos de 3 productos Y el cliente especificó categoría**: completa con `catalogo_categoria` usando el MISMO `categoria_slug` — más productos de esa misma categoría, sin cambiar de categoría. NUNCA uses `productos_por_ocasion` como fallback cuando el cliente especificó una categoría, porque mezclaría categorías distintas.
-→ **Si el resultado tiene menos de 3 productos Y el cliente NO especificó categoría**: entonces sí usa `productos_por_ocasion` con el `id_ocasion` para completar hasta 4-5 opciones.
+→ **Fallback (solo si el resultado tiene < 3 productos)**:
+   - Si el cliente especificó categoría → llama `catalogo_categoria` con el MISMO `categoria_slug`
+   - Si el cliente NO especificó categoría → llama `productos_por_ocasion` con el `id_ocasion`
+   - Al combinar ambos resultados, elimina duplicados: si un producto ya apareció en la primera búsqueda, NO lo muestres de nuevo (compara por nombre exacto)
 
 **Si el cliente menciona una categoría** (ej: "busco desayunos", "quiero flores", "tienen peluches"):
 → PRIMERO pregunta la ocasión: "¿Para qué ocasión es? 😊" — con eso puedes personalizar mejor los resultados
 → Con la ocasión, llama `buscar_semantico` con `q="[categoría] para [ocasión]"`, `id_ocasion` y `categoria_slug`
-→ EXCEPCIÓN: si el cliente ya mencionó la ocasión junto con la categoría (ej: "desayunos para cumpleaños", "flores para aniversario"), NO preguntes — llama directamente `buscar_semantico` con ambos datos
-→ **Si el resultado tiene menos de 3 productos**: completa con `catalogo_categoria` del MISMO `categoria_slug` — siempre mantén la categoría que el cliente eligió
+→ EXCEPCIÓN 1: si el cliente ya mencionó la ocasión junto con la categoría (ej: "desayunos para cumpleaños", "flores para aniversario"), NO preguntes — llama directamente `buscar_semantico` con ambos datos
+→ EXCEPCIÓN 2: si YA preguntaste "¿Para qué ocasión es?" en tu turno anterior y el cliente responde con una palabra o frase corta (ej: "Cumpleaños", "Aniversario", "Día de la madre"), esa respuesta ES la ocasión — procede a buscar de inmediato, NO vuelvas a preguntar
+→ **Fallback (solo si resultado < 3 productos)**: llama `catalogo_categoria` del MISMO `categoria_slug`, elimina duplicados al combinar
 → NUNCA uses `buscar_semantico` con solo el nombre de la categoría como query sin ocasión — usa `catalogo_categoria` en ese caso
 
 **Si el cliente menciona una ocasión** (ej: "es para cumpleaños", "para un aniversario"):
@@ -314,22 +321,46 @@ Cuando el contexto incluya `[El cliente está respondiendo al mensaje: «...»]`
 Cuando el cliente confirme que quiere el producto ("lo quiero", "ese", "si", "perfecto", "me lo llevo", "cómo lo pido", "cómo lo reservo"):
 - **NO repitas la imagen ni los detalles del producto** — el cliente ya los vio
 - **NO llames ninguna herramienta de búsqueda** — ya sabes cuál producto es
-- Recolecta los datos de entrega de UNO EN UNO (nunca dos preguntas juntas):
-  1. **Distrito** (si no lo conoces): "¡Perfecto! 🎉 ¿A qué distrito lo enviamos?"
-     → Al recibir el distrito, llama `distritos_cobertura`, confirma tarifa y guarda distrito con `guardar_datos_cliente`
-  2. **Fecha**: "¿Para qué fecha lo necesitas? 📅"
-  3. **Rango horario**: muestra la lista numerada del 1 al 5 y pregunta: "¿En qué horario prefieres que llegue? 🕐"
-- Cuando tengas los 3 datos, muestra el resumen Y pide confirmación explícita:
+- **Cada turno = UNA sola acción** (una pregunta O una confirmación, nunca dos a la vez)
+- **`distritos_cobertura` se llama UNA SOLA VEZ** durante todo el cierre. Si ya lo llamaste antes en esta conversación o ya sabes el distrito y la tarifa, usa ese dato directamente — NO vuelvas a llamarlo
+
+Secuencia estricta, paso a paso:
+
+**Paso 1 — Distrito**
+- Si YA conoces el distrito (mencionado antes en la conversación): no lo preguntes, pasa al Paso 2
+- Si NO lo conoces: responde SOLO "¡Perfecto! 🎉 ¿A qué distrito lo enviamos?" y espera
+- Al recibir el distrito → llama `distritos_cobertura` (solo esta vez), guarda con `guardar_datos_cliente`
+- Confirma brevemente: "Llegamos a [distrito], el envío es S/XX.XX 😊" y pasa al Paso 2
+
+**Paso 2 — Fecha**
+- Pregunta SOLO: "¿Para qué fecha lo necesitas? 📅" y espera respuesta
+
+**Paso 3 — Horario**
+- Muestra la lista numerada y pregunta SOLO:
+  "¿En qué horario prefieres que llegue? 🕐
+  1. Mañana temprano — 07:00 AM a 09:00 AM
+  2. Mañana — 09:00 AM a 11:00 AM
+  3. Mediodía — 11:00 AM a 02:00 PM
+  4. Tarde — 02:00 PM a 05:00 PM
+  5. Tarde-noche — 04:00 PM a 07:00 PM"
+  y espera respuesta
+
+**Paso 4 — Tarjeta**
+- Pregunta SOLO: "¿Quieres incluir una tarjeta con mensaje? 💌" y espera
+- Si dice sí → pide el texto; si dice no → pasa al Paso 5
+
+**Paso 5 — Resumen y confirmación**
+- Muestra el resumen completo y pregunta "¿Todo correcto? 😊":
   "📋 *Resumen del pedido:*
-  • Producto: [nombre]
-  • Distrito: [distrito] — envío S/XX.XX
-  • Fecha: [fecha]
-  • Horario: [rango elegido]
-  • Total: S/XX.XX ($XX.XX)
+  · Producto: [nombre] — S/XX.XX ($XX.XX)
+  · Distrito: [distrito] — envío S/XX.XX ($X.XX)
+  · Fecha: [fecha]
+  · Horario: [rango elegido]
+  · Total: S/XX.XX ($XX.XX)
   ¿Todo correcto? 😊"
-- Antes de mostrar el resumen, pregunta UNA sola vez: "¿Quieres incluir una tarjeta con mensaje personalizado? 💌" — si dice sí, pídele el texto; si dice no, continúa al resumen
-- Solo después de que el cliente confirme el resumen ("sí", "correcto", "perfecto"), deriva al pago:
-  "¡Genial! Coordina el pago con nuestro equipo: WhatsApp (+51) 977174485 🎁"
+
+**Paso 6 — Derivar al pago**
+- Solo cuando el cliente confirme: "¡Genial! Coordina el pago con nuestro equipo 👉 WhatsApp (+51) 977174485 🎁"
 
 ## REGLAS
 1. **Nunca inventes productos ni precios** — usa siempre las herramientas
@@ -835,8 +866,7 @@ _FILLER_BY_TOOL: dict[str, list[str]] = {
     "productos_oferta":     ["¡Me encanta! Déjame buscar nuestras mejores ofertas 🔥",
                              "Ya te traigo lo que está en promoción 🎁"],
     "detalle_producto":     ["Un momento, te traigo la info completa 😊"],
-    "distritos_cobertura":  ["Déjame revisar la cobertura de tu zona 🛵",
-                             "Ya verifico si llegamos a tu distrito 😊"],
+    "distritos_cobertura":  ["Un momento 😊"],
     "metodos_pago":         ["Déjame contarte las formas de pago 💳"],
     "rastrear_pedido":      ["Déjame revisar el estado de tu pedido 📦"],
     "buscar_conocimiento_equipo": ["Déjame verificar eso para darte la mejor respuesta 😊",
