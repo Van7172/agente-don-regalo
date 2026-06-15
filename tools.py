@@ -137,6 +137,10 @@ TOOLS = [
                         "type": "string",
                         "description": "Opcional. Gustos DURABLES del cliente que conoces de su historial (DATOS CONOCIDOS), ej: 'le gustan los girasoles y los colores pastel, prefiere detalles con chocolate'. Se usan para personalizar el ranking sin sobreescribir lo que pide ahora. No inventes: solo lo que realmente sabes del cliente.",
                     },
+                    "categoria_slug": {
+                        "type": "string",
+                        "description": "Opcional. Restringe la búsqueda a una categoría exacta. Úsalo cuando el cliente mencionó explícitamente una categoría. Slugs válidos: desayunos, arreglos-florales, peluches, plantas, cestas, regalo-para-bebe, arreglos-funebres, dia-de-la-madre.",
+                    },
                 },
                 "required": ["q"],
             },
@@ -460,7 +464,7 @@ def _keyword_bonus(terms: set[str], producto: dict) -> float:
 
 
 def _build_filter(args: dict):
-    """Filtros de payload comunes: excluir fúnebre por defecto + ocasión + precio."""
+    """Filtros de payload comunes: excluir fúnebre por defecto + ocasión + precio + categoría."""
     from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny, Range
 
     must: list = []
@@ -473,6 +477,11 @@ def _build_filter(args: dict):
         ))
     if args.get("precio_max"):
         must.append(FieldCondition(key="precio", range=Range(lte=float(args["precio_max"]))))
+    if args.get("categoria_slug"):
+        must.append(FieldCondition(
+            key="categoria_slug",
+            match=MatchValue(value=str(args["categoria_slug"])),
+        ))
     return Filter(must=must) if must else None
 
 
