@@ -366,12 +366,16 @@ async def evolution_webhook(request: Request):
     msg_id  = key.get("id", "")
     message = data.get("message", {})
 
-    # El contexto de cita puede estar en varios tipos de mensaje
+    # El contextInfo de la cita puede estar:
+    # - Dentro de message.extendedTextMessage.contextInfo (WhatsApp reply de texto)
+    # - Dentro de message.imageMessage.contextInfo (reply de imagen)
+    # - En data.contextInfo directamente (Evolution API v2 lo pone aquí para mensajes de texto plano)
     context_info = (
         message.get("extendedTextMessage", {}).get("contextInfo")
         or message.get("imageMessage", {}).get("contextInfo")
         or message.get("videoMessage", {}).get("contextInfo")
         or message.get("audioMessage", {}).get("contextInfo")
+        or data.get("contextInfo")  # Evolution v2: contextInfo al nivel de data
         or {}
     )
     quoted_msg  = context_info.get("quotedMessage", {})
@@ -1016,12 +1020,14 @@ async def _get_evolution_quoted(source_id: str) -> str:
             msgs = r.json()
             if not isinstance(msgs, list) or not msgs:
                 return ""
-            message = msgs[0].get("message", {})
+            msg_obj = msgs[0]
+            message = msg_obj.get("message", {})
             ctx = (
                 message.get("extendedTextMessage", {}).get("contextInfo")
                 or message.get("imageMessage", {}).get("contextInfo")
                 or message.get("videoMessage", {}).get("contextInfo")
                 or message.get("audioMessage", {}).get("contextInfo")
+                or msg_obj.get("contextInfo")  # Evolution v2: contextInfo al nivel raíz
                 or {}
             )
             quoted_msg = ctx.get("quotedMessage", {})
