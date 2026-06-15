@@ -317,14 +317,15 @@ async def health():
 async def debug_webhook(request: Request):
     """Endpoint temporal para inspeccionar el payload de Chatwoot."""
     payload = await request.json()
-    message = payload.get("data", {})
-    log.info("[DEBUG] payload=%s", payload)
+    message = payload.get("data") or payload
+    log.info("[DEBUG] payload=%s", json.dumps(payload, default=str))
     return {
-        "event":        payload.get("event"),
-        "message_type": message.get("message_type"),
-        "sender_type":  message.get("sender", {}).get("type"),
-        "labels":       message.get("conversation", {}).get("labels"),
-        "content":      message.get("content"),
+        "event":              payload.get("event"),
+        "message_type":       message.get("message_type"),
+        "sender_type":        message.get("sender", {}).get("type"),
+        "labels":             message.get("conversation", {}).get("labels"),
+        "content":            message.get("content"),
+        "content_attributes": message.get("content_attributes"),
     }
 
 
