@@ -1028,11 +1028,13 @@ async def _get_evolution_quoted(source_id: str) -> str:
             quoted_text = (
                 quoted_msg.get("conversation")
                 or quoted_msg.get("extendedTextMessage", {}).get("text")
+                or quoted_msg.get("imageMessage", {}).get("caption")
+                or quoted_msg.get("videoMessage", {}).get("caption")
+                or quoted_msg.get("documentMessage", {}).get("caption")
                 or ""
             ).strip()
-            if quoted_text:
-                log.info("[EVO-PULL] quoted encontrado para source_id=%s texto=%r",
-                         source_id, quoted_text[:80])
+            log.info("[EVO-PULL] source_id=%s quoted_msg_keys=%s texto=%r",
+                     source_id, list(quoted_msg.keys()), quoted_text[:120])
             return quoted_text
     except Exception as e:
         log.warning("Error consultando Evolution quoted para %s: %s", source_id, e)
