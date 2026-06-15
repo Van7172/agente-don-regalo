@@ -123,8 +123,10 @@ Antes de responder sobre productos, precios o disponibilidad, SIEMPRE consulta l
 → Llama `buscar_semantico` directamente — NO preguntes nada. Pasa en `q` la descripción más rica posible (incluye estilo y ocasión si los mencionó), y `id_ocasion`/`precio_max` si los conoces.
 
 **Si el cliente menciona una categoría** (ej: "busco desayunos", "quiero flores", "tienen peluches"):
-→ Llama `catalogo_categoria` con el slug correspondiente — NO preguntes nada
-→ Si también menciona una ocasión (ej: "desayunos para el día del padre") → usa ambos datos para la búsqueda
+→ PRIMERO pregunta la ocasión: "¿Para qué ocasión es? 😊" — con eso puedes personalizar mejor los resultados
+→ Con la ocasión, llama `buscar_semantico` con `q="[categoría] para [ocasión]"` y `id_ocasion` si corresponde
+→ EXCEPCIÓN: si el cliente ya mencionó la ocasión junto con la categoría (ej: "desayunos para cumpleaños", "flores para aniversario"), NO preguntes — llama directamente `buscar_semantico` o `catalogo_categoria` con ambos datos
+→ NUNCA uses `buscar_semantico` con solo el nombre de la categoría como query — eso mezcla categorías; usa siempre `catalogo_categoria` cuando no haya descripción adicional
 
 **Si el cliente menciona una ocasión** (ej: "es para cumpleaños", "para un aniversario"):
 → Llama `productos_por_ocasion` con el id correcto — NO preguntes nada más
@@ -200,6 +202,22 @@ EXCLUIDOS de las búsquedas; solo se incluyen en contexto de luto/condolencias.
 - **Desayunos sorpresa**: solicitar con **1 día de anticipación**
 - Notificación al cliente por email y WhatsApp al realizar la entrega
 
+## RANGOS HORARIOS DE ENTREGA
+Al coordinar un pedido, el cliente puede elegir uno de estos rangos de llegada:
+
+| Rango | Horario |
+|---|---|
+| Mañana temprano | 07:00 AM – 09:00 AM |
+| Mañana | 09:00 AM – 11:00 AM |
+| Mediodía | 11:00 AM – 02:00 PM |
+| Tarde | 02:00 PM – 05:00 PM |
+| Tarde-noche | 04:00 PM – 07:00 PM |
+
+- Cuando el cliente pregunte **a qué hora llega** o quiera coordinar la entrega, preséntale estos rangos para que elija
+- Si el cliente da una hora exacta (ej: "a las 3 pm"), ubícalo en el rango correspondiente ("Tarde: 02:00 PM – 05:00 PM") y confírmalo
+- Para **desayunos sorpresa**: los rangos disponibles son Mañana temprano (07-09h) y Mañana (09-11h); aclarar que debe pedirse con 1 día de anticipación
+- Para **cerrar el rango**, di algo como: "¿En qué horario prefieres que llegue? 🕐" y lista las opciones
+
 ## DETECCIÓN DE DISTRITOS
 - Cuando el cliente mencione un lugar, barrio o zona junto a su pedido (ej: "para Comas", "en Miraflores", "delivery a San Isidro"), interpreta SIEMPRE como el distrito de entrega en Lima
 - Inmediatamente llama `distritos_cobertura` para verificar si hay cobertura y obtener la tarifa
@@ -256,7 +274,8 @@ Reglas de formato:
 - Si un producto tiene imagen_url null/vacío → omite su línea de URL, solo escribe la viñeta
 - Nunca escribas la etiqueta: solo la URL sola (sin "imagen_url:" ni texto extra)
 - Precio siempre en ambas monedas: S/XX.XX ($XX.XX)
-- Máximo 4-5 productos por mensaje
+- Muestra SIEMPRE entre 4 y 5 productos si la herramienta devuelve esa cantidad o más — nunca cortes en 2 o 3 sin razón
+- Si la herramienta devuelve menos de 4 productos, muéstralos todos igual
 - La pregunta "¿Quieres más detalles de alguno? 😊" va al final, sola, sin URL
 
 Si el cliente pide SOLO la foto de un producto:
@@ -372,6 +391,10 @@ async def webhook(request: Request):
     content     = message.get("content") or ""
     attachments = message.get("attachments") or []
 
+    # Si el cliente citó/respondió a un mensaje específico de WhatsApp,
+    # Chatwoot lo indica en content_attributes.in_reply_to (ID del mensaje citado)
+    in_reply_to_id = (message.get("content_attributes") or {}).get("in_reply_to")
+
     # id del contacto para la memoria de largo plazo
     sender_meta = conversation.get("meta", {}).get("sender", {})
     contact_id = sender_meta.get("id") or message.get("sender", {}).get("id")
@@ -385,8 +408,8 @@ async def webhook(request: Request):
     wa_number = wa_identifier.split("@")[0] if wa_identifier else ""
 
     log.info(
-        "[IN] conversation=%s contact=%s content=%r attachments=%d",
-        conversation_id, contact_id, content, len(attachments),
+        "[IN] conversation=%s contact=%s content=%r attachments=%d in_reply_to=%s",
+        conversation_id, contact_id, content, len(attachments), in_reply_to_id,
     )
 
     # Convertir el mensaje entrante en partes de contenido (texto / imagen)
@@ -403,6 +426,9 @@ async def webhook(request: Request):
         buf["parts"].extend(parts)
         buf["contact_id"] = contact_id
         buf["wa_number"] = wa_number
+        # Guardar el mensaje citado solo si viene en este turno
+        if in_reply_to_id:
+            buf["in_reply_to_id"] = in_reply_to_id
         buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
 
     return {"status": "buffered"}
@@ -508,11 +534,24 @@ async def _flush_buffer(conversation_id: int) -> None:
     if not buf or not buf.get("parts"):
         return
 
-    contact_id = buf["contact_id"]
-    wa_number  = buf.get("wa_number", "")
-    user_content = _collapse_parts(buf["parts"])
+    contact_id     = buf["contact_id"]
+    wa_number      = buf.get("wa_number", "")
+    in_reply_to_id = buf.get("in_reply_to_id")
+    user_content   = _collapse_parts(buf["parts"])
     if not user_content:
         return
+
+    # Si el cliente respondió a un mensaje específico (WhatsApp reply), inyectar
+    # el texto del mensaje citado para que el agente sepa a qué producto se refiere.
+    if in_reply_to_id:
+        quoted = await _get_quoted_message(conversation_id, in_reply_to_id)
+        if quoted:
+            quoted_short = quoted[:400] + "…" if len(quoted) > 400 else quoted
+            prefix = f"[El cliente está respondiendo al mensaje: «{quoted_short}»]\n"
+            if isinstance(user_content, str):
+                user_content = prefix + user_content
+            else:
+                user_content = [{"type": "text", "text": prefix}] + user_content
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -826,6 +865,25 @@ async def _send_message(conversation_id: int, content: str) -> None:
             r.raise_for_status()
     except Exception as e:
         log.error("Error enviando mensaje a conversación %s: %s", conversation_id, e)
+
+
+async def _get_quoted_message(conversation_id: int, message_id: int) -> str:
+    """Devuelve el texto del mensaje que el cliente citó (WhatsApp reply).
+    Hace la misma llamada que _get_conversation_history pero solo busca un ID."""
+    url = (
+        f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}"
+        f"/conversations/{conversation_id}/messages"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            r = await client.get(url, headers={"api_access_token": CHATWOOT_API_TOKEN})
+            r.raise_for_status()
+            for m in r.json().get("payload", []):
+                if m.get("id") == message_id:
+                    return (m.get("content") or "").strip()
+    except Exception as e:
+        log.warning("No se pudo leer mensaje citado id=%s: %s", message_id, e)
+    return ""
 
 
 async def _get_conversation_history(conversation_id: int) -> list[dict]:
