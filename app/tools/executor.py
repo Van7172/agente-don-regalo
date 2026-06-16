@@ -35,7 +35,7 @@ async def execute_tool(name: str, args: dict) -> str:
             elif name == "buscar_semantico":
                 result = await search.buscar_semantico(client, args or {})
             elif name == "productos_similares":
-                result = await search.productos_similares(args or {})
+                result = await search.productos_similares(client, args or {})
             elif name == "buscar_conocimiento_equipo":
                 result = await search.buscar_conocimiento(args or {})
             else:

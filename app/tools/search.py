@@ -119,6 +119,34 @@ def _build_filter(args: dict):
     return Filter(must=must) if must else None
 
 
+async def _filtrar_activos(client: httpx.AsyncClient, productos: list[dict]) -> list[dict]:
+    """Valida contra la API cuáles productos siguen activos en el catálogo.
+
+    Qdrant se sincroniza periódicamente, así que puede devolver productos
+    desactivados desde la última sync. Este filtro consulta el estado real en
+    una sola llamada batch. Si la API falla, devuelve la lista SIN filtrar
+    (fail-open) para no romper la búsqueda por un problema transitorio.
+    """
+    ids = [p["id_producto"] for p in productos if p.get("id_producto")]
+    if not ids:
+        return productos
+    try:
+        r = await client.get(
+            f"{settings.donregalo_api_base}/productos/activos",
+            params={"ids": ",".join(str(i) for i in ids)},
+        )
+        r.raise_for_status()
+        activos = set(r.json().get("data") or [])
+    except Exception as e:
+        log.warning("No se pudo validar productos activos (%s); devolviendo sin filtrar.", e)
+        return productos
+    filtrados = [p for p in productos if p.get("id_producto") in activos]
+    descartados = len(productos) - len(filtrados)
+    if descartados:
+        log.info("[ACTIVOS] %d producto(s) descartado(s) por estar inactivos", descartados)
+    return filtrados
+
+
 def _hit_to_producto(h) -> dict:
     p = h.payload or {}
     return {
@@ -181,6 +209,10 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
         candidatos.append(p)
     candidatos.sort(key=lambda p: p["_rank"], reverse=True)
 
+    # Validar estado activo contra la API ANTES de truncar, para rellenar el
+    # cupo con productos vigentes y no devolver menos de la cuenta.
+    candidatos = await _filtrar_activos(client, candidatos)
+
     productos = []
     for p in candidatos[:settings.semantic_limit]:
         p.pop("_rank", None)
@@ -194,7 +226,7 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
     }
 
 
-async def productos_similares(args: dict):
+async def productos_similares(client: httpx.AsyncClient, args: dict):
     """Vecinos más cercanos al vector de un producto de referencia."""
     pid = int(args["id_producto"])
     qc  = get_qdrant()
@@ -224,7 +256,9 @@ async def productos_similares(args: dict):
     if hits is None:
         return {"error": f"No se encontró el producto {pid} en el índice.", "tool": "productos_similares"}
 
-    productos = [_hit_to_producto(h) for h in hits if h.id != pid][:settings.semantic_limit]
+    candidatos = [_hit_to_producto(h) for h in hits if h.id != pid]
+    candidatos = await _filtrar_activos(client, candidatos)
+    productos  = candidatos[:settings.semantic_limit]
     return {"data": productos, "total": len(productos), "fuente": "similares", "referencia": pid}
 
 
