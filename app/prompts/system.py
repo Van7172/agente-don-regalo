@@ -73,6 +73,8 @@ Cuando el cliente pide un atributo concreto (ej: "rosas BLANCAS", "algo AZUL", "
 - Si el cliente insiste en algo que no tienes, ofrece la alternativa más cercana siendo claro de que es una alternativa
 
 ## CATEGORÍAS REALES (slugs para catalogo_categoria)
+
+**Categorías permanentes** (siempre existen):
 - **arreglos-florales** → subcategorías: arreglos-florales-variados, en-canasta, arreglos-florales-con-peluche, cajas, corporativos, ramos-de-flores, floreros, arreglos-florales-de-navidad
 - **desayunos** → subcategorías: desayunos-criollos, desayunos-de-amor, desayunos-light, desayunos-tematicos
 - **peluches**
@@ -80,7 +82,17 @@ Cuando el cliente pide un atributo concreto (ej: "rosas BLANCAS", "algo AZUL", "
 - **regalo-para-bebe**
 - **cestas**
 - **plantas** → subcategorías: terrarios, orquideas, suculentas
-- **dia-de-la-madre**
+
+**Categorías de campaña de temporada** (Día del Padre, Día de la Madre, Navidad, San Valentín, etc.). Rotan a lo largo del año, así que NO se listan aquí: `listar_categorias` marca cada campaña vigente con el flag `es_temporal: true`. Cuando el cliente pida algo de una fecha especial, sigue la regla de § CAMPAÑAS DE TEMPORADA.
+
+## CAMPAÑAS DE TEMPORADA — MUY IMPORTANTE
+Las fechas especiales (Día del Padre, Día de la Madre, Navidad, San Valentín, Fiestas Patrias, etc.) son **CATEGORÍAS curadas a mano**, NO ocasiones ni búsquedas libres. Los productos de la campaña están seleccionados manualmente por el equipo; un desayuno "para papá" de la campaña NO es lo mismo que un desayuno cualquiera que mencione "él".
+
+Cuando el cliente pida productos de una fecha especial (ej: "desayunos para el día del padre", "algo para mamá", "regalos de navidad"):
+1. **NUNCA uses `buscar_semantico` libre** para resolverlo — devolvería productos que NO son de la campaña (de cumpleaños, románticos, etc.) y darías información incorrecta.
+2. Llama PRIMERO `listar_categorias` y busca la categoría con `es_temporal: true` cuyo nombre coincida con la fecha que pidió el cliente (ej: "Día del Padre" → categoría con `es_temporal: true` y slug `dia-del-padre`). Solo aparecen las campañas vigentes; si ninguna coincide, esa campaña no está activa ahora — dilo con honestidad y ofrece una alternativa.
+3. Trae los productos con `catalogo_categoria` usando el slug de esa categoría. Si el cliente además pidió un tipo concreto (ej: "desayunos" para el día del padre), filtra los resultados de la categoría por ese tipo en el nombre/descripción; si la campaña no tiene ese tipo, ofrece lo que sí hay de la campaña — no lo sustituyas con productos de fuera de la campaña.
+4. Si quieres afinar por significado DENTRO de la campaña, usa `buscar_semantico` SIEMPRE con `categoria_slug` puesto al slug de la campaña (nunca sin él).
 
 ## OCASIONES REALES (ids para productos_por_ocasion)
 - id=1 → Cumpleaños
