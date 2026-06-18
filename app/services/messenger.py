@@ -11,6 +11,7 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 _IMG_LINE = re.compile(r'^\s*(https?://\S+\.(?:jpg|jpeg|png|webp))\s*$', re.IGNORECASE)
+_SEND_PRODUCT_MEDIA = False
 
 
 def human_delay(text: str) -> float:
@@ -172,9 +173,16 @@ async def _send_image_via_evolution(wa_number: str, image_url: str, caption: str
 async def send_image(conversation_id: int, wa_number: str, image_url: str, caption: str = "") -> None:
     """Envia una imagen de producto a WhatsApp.
 
-    Preferencia: adjunto en Chatwoot. Evolution directo queda como respaldo
-    porque un 201 de Evolution no garantiza que el cliente lo vea en WhatsApp.
+    El puente Chatwoot/Evolution puede aceptar adjuntos o media con HTTP 200/201
+    y aun asi no entregarlos al celular. Para catalogos priorizamos entrega:
+    mandamos texto puro con el enlace de foto.
     """
+    if not _SEND_PRODUCT_MEDIA:
+        text_fallback = f"{caption}\nFoto: {image_url}".strip() if caption else image_url
+        await send_message(conversation_id, text_fallback)
+        log.info("[IMG] enviada como texto conversation=%s: %s", conversation_id, image_url)
+        return
+
     try:
         await _send_image_via_chatwoot(conversation_id, image_url, caption)
         return
