@@ -104,67 +104,93 @@ async def set_typing(conversation_id: int, on: bool) -> None:
         log.warning("No se pudo cambiar typing status (%s): %s", conversation_id, e)
 
 
-async def send_image(conversation_id: int, wa_number: str, image_url: str, caption: str = "") -> None:
-    """Envía una imagen de producto a WhatsApp.
-
-    Preferencia: Evolution API directo. Fallback: adjunto en Chatwoot.
-    """
-    log.info(
-        "[IMG] evolution_check url=%s key=%s instance=%s wa_number=%r",
-        bool(settings.evolution_api_url), bool(settings.evolution_api_key),
-        settings.evolution_instance or "(vacío)", wa_number,
-    )
-
-    if settings.evolution_api_url and settings.evolution_api_key and settings.evolution_instance and wa_number:
-        endpoint = f"{settings.evolution_api_url}/message/sendMedia/{settings.evolution_instance}"
-        body: dict = {
-            "number":    wa_number,
-            "mediatype": "image",
-            "media":     image_url,
-            "fileName":  image_url.split("/")[-1].split("?")[0] or "imagen.jpg",
-        }
-        if caption:
-            body["caption"] = caption
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post(
-                    endpoint,
-                    headers={"apikey": settings.evolution_api_key, "Content-Type": "application/json"},
-                    json=body,
-                )
-                r.raise_for_status()
-            log.info("[IMG] enviada vía Evolution a %s: %s", wa_number, image_url)
-            return
-        except Exception as e:
-            log.error("Error Evolution sendMedia (%s): %s — intentando Chatwoot", image_url, e)
-
-    # Fallback: subir adjunto a Chatwoot
+async def _send_image_via_chatwoot(conversation_id: int, image_url: str, caption: str = "") -> None:
+    """Sube una imagen como adjunto saliente de Chatwoot."""
     url = (
         f"{settings.chatwoot_url}/api/v1/accounts/{settings.chatwoot_account_id}"
         f"/conversations/{conversation_id}/messages"
     )
+
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        img = await client.get(image_url, follow_redirects=True)
+        img.raise_for_status()
+        image_bytes = img.content
+
+    filename = image_url.split("/")[-1].split("?")[0] or "imagen.jpg"
+    mime = img.headers.get("content-type", "image/jpeg")
+
+    data: dict = {"message_type": "outgoing", "private": "false"}
+    if caption:
+        data["content"] = caption
+
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        r = await client.post(
+            url,
+            headers={"api_access_token": settings.chatwoot_api_token},
+            data=data,
+            files={"attachments[]": (filename, image_bytes, mime)},
+        )
+        r.raise_for_status()
+    log.info("[IMG] enviada via Chatwoot conversation=%s: %s", conversation_id, image_url)
+
+
+async def _send_image_via_evolution(wa_number: str, image_url: str, caption: str = "") -> None:
+    """Envia una imagen directo por Evolution API."""
+    if not (
+        settings.evolution_api_url
+        and settings.evolution_api_key
+        and settings.evolution_instance
+        and wa_number
+    ):
+        raise RuntimeError("Evolution API no configurada o wa_number vacio")
+
+    endpoint = f"{settings.evolution_api_url}/message/sendMedia/{settings.evolution_instance}"
+    body: dict = {
+        "number":    wa_number,
+        "mediatype": "image",
+        "media":     image_url,
+        "fileName":  image_url.split("/")[-1].split("?")[0] or "imagen.jpg",
+    }
+    if caption:
+        body["caption"] = caption
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            endpoint,
+            headers={"apikey": settings.evolution_api_key, "Content-Type": "application/json"},
+            json=body,
+        )
+        r.raise_for_status()
+        log.info(
+            "[IMG] enviada via Evolution a %s: %s response=%s",
+            wa_number,
+            image_url,
+            r.text[:300],
+        )
+
+
+async def send_image(conversation_id: int, wa_number: str, image_url: str, caption: str = "") -> None:
+    """Envia una imagen de producto a WhatsApp.
+
+    Preferencia: adjunto en Chatwoot. Evolution directo queda como respaldo
+    porque un 201 de Evolution no garantiza que el cliente lo vea en WhatsApp.
+    """
     try:
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-            img = await client.get(image_url, follow_redirects=True)
-            img.raise_for_status()
-            image_bytes = img.content
-
-        filename = image_url.split("/")[-1].split("?")[0] or "imagen.jpg"
-        mime = img.headers.get("content-type", "image/jpeg")
-
-        data: dict = {"message_type": "outgoing", "private": "false"}
-        if caption:
-            data["content"] = caption
-
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-            r = await client.post(
-                url,
-                headers={"api_access_token": settings.chatwoot_api_token},
-                data=data,
-                files={"attachments[]": (filename, image_bytes, mime)},
-            )
-            r.raise_for_status()
+        await _send_image_via_chatwoot(conversation_id, image_url, caption)
+        return
     except Exception as e:
-        log.error("Error enviando imagen %s a conversación %s: %s", image_url, conversation_id, e)
-        fallback = f"{caption}\n{image_url}".strip() if caption else image_url
-        await send_message(conversation_id, fallback)
+        log.error("Error enviando imagen por Chatwoot (%s): %s - intentando Evolution", image_url, e)
+
+    try:
+        log.info(
+            "[IMG] evolution_check url=%s key=%s instance=%s wa_number=%r",
+            bool(settings.evolution_api_url), bool(settings.evolution_api_key),
+            settings.evolution_instance or "(vacio)", wa_number,
+        )
+        await _send_image_via_evolution(wa_number, image_url, caption)
+        return
+    except Exception as e:
+        log.error("Error Evolution sendMedia (%s): %s - enviando fallback texto", image_url, e)
+
+    fallback = f"{caption}\n{image_url}".strip() if caption else image_url
+    await send_message(conversation_id, fallback)
