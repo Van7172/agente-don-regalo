@@ -3,6 +3,7 @@ Punto de entrada único para ejecutar cualquier herramienta del agente.
 """
 import json
 import logging
+import unicodedata
 
 import httpx
 
@@ -25,6 +26,37 @@ _CATALOG_TOOLS = {
     "rastrear_pedido":     catalog.rastrear_pedido,
 }
 
+_CAMPAIGN_TERMS = (
+    "dia del padre",
+    "dia de padre",
+    "para papa",
+    "para el papa",
+    "para papas",
+    "feliz dia papa",
+    "feliz dia del padre",
+    "dia de la madre",
+    "dia madre",
+    "navidad",
+    "san valentin",
+    "fiestas patrias",
+)
+
+
+def _norm_text(value: object) -> str:
+    text = str(value or "").lower()
+    text = "".join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
+    return " ".join(text.replace("-", " ").split())
+
+
+def _is_free_campaign_search(args: dict) -> bool:
+    if args.get("categoria_slug"):
+        return False
+    q = _norm_text(args.get("q"))
+    return any(term in q for term in _CAMPAIGN_TERMS)
+
 
 async def execute_tool(name: str, args: dict) -> str:
     """Ejecuta una herramienta y devuelve el resultado como string JSON."""
@@ -33,7 +65,19 @@ async def execute_tool(name: str, args: dict) -> str:
             if name in _CATALOG_TOOLS:
                 result = await _CATALOG_TOOLS[name](client, args or {})
             elif name == "buscar_semantico":
-                result = await search.buscar_semantico(client, args or {})
+                if _is_free_campaign_search(args or {}):
+                    result = {
+                        "error": (
+                            "Búsqueda semántica libre bloqueada para campaña de temporada. "
+                            "Usa listar_categorias y luego catalogo_categoria con el slug "
+                            "temporal correspondiente, por ejemplo dia-del-padre. Si luego "
+                            "usas buscar_semantico, debe llevar categoria_slug."
+                        ),
+                        "tool": name,
+                        "blocked": True,
+                    }
+                else:
+                    result = await search.buscar_semantico(client, args or {})
             elif name == "productos_similares":
                 result = await search.productos_similares(client, args or {})
             elif name == "buscar_conocimiento_equipo":

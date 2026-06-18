@@ -25,6 +25,10 @@ TOOLS = [
         "function": {
             "name": "buscar_semantico",
             "description": (
+                "NO la uses como busqueda libre para campanas temporales como Dia del "
+                "Padre, Dia de la Madre, Navidad o San Valentin. En esos casos usa "
+                "listar_categorias y catalogo_categoria; si necesitas semantica dentro "
+                "de la campana, debes enviar categoria_slug con el slug temporal. "
                 "BÚSQUEDA PRINCIPAL de productos. Úsala SIEMPRE que el cliente describa "
                 "lo que busca con palabras (intención, estilo, sentimiento, ocasión, "
                 "tipo de producto), ej: 'algo romántico para mi novia', 'un detalle "
@@ -179,7 +183,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "productos_por_ocasion",
-            "description": "Obtiene productos sugeridos para una ocasión. IDs: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
+            "description": "Obtiene productos sugeridos para una ocasion permanente. No la uses para campanas temporales como Dia del Padre, Dia de la Madre, Navidad o San Valentin; esas van por listar_categorias y catalogo_categoria. IDs: Cumpleanos=1, Aniversario=2, Felicitacion=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
             "parameters": {
                 "type": "object",
                 "properties": {
