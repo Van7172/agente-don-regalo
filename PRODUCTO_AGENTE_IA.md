@@ -57,6 +57,7 @@ sin olvidar y sin cometer errores de precio.
 | Función | Descripción |
 |---|---|
 | **Búsqueda híbrida** | Combina comprensión semántica (IA) + coincidencia de términos clave para resultados más precisos. Ej: "rosas BLANCAS" devuelve rosas blancas, no rojas |
+| **Campañas temporales como catálogo curado** | Fechas como Día del Padre, Día de la Madre, Navidad o San Valentín se resuelven desde la categoría curada del sitio, no desde búsqueda semántica libre |
 | **Honestidad ante stock limitado** | Si no tiene exactamente lo que el cliente pide, lo dice claramente y ofrece la alternativa más cercana |
 | **Lógica de contexto fúnebre** | Muestra arreglos de condolencias SOLO cuando el cliente lo pide explícitamente; los excluye en todos los demás casos automáticamente |
 | **Agrupación de mensajes (debounce 6s)** | Si el cliente envía varios mensajes seguidos, los agrupa y procesa juntos — evita respuestas parciales o duplicadas |
@@ -72,6 +73,8 @@ sin olvidar y sin cometer errores de precio.
 
 ```
 buscar_semantico          → búsqueda vectorial en Qdrant (285+ productos indexados)
+listar_categorias         → categorías reales del sitio, incluyendo campañas temporales activas
+listar_ocasiones          → ocasiones permanentes (Cumpleaños, Aniversario, etc.)
 buscar_productos          → búsqueda textual exacta (respaldo)
 catalogo_categoria        → listado por categoría (arreglos, desayunos, peluches…)
 productos_por_ocasion     → filtro por ocasión (Cumpleaños, Aniversario…)
@@ -545,6 +548,8 @@ y no comete errores de precio.
 - [x] Búsqueda semántica + híbrida (Qdrant)
 - [x] Filtro por `categoria_slug` (padre normalizado) en búsquedas semánticas
 - [x] Normalización de slugs subcategoría → padre en sync_qdrant.py
+- [x] Campañas temporales como categorías curadas: Día del Padre, Día de la Madre, Navidad, etc. se resuelven con `listar_categorias` → `catalogo_categoria`
+- [x] Bloqueo de `buscar_semantico` libre cuando el usuario pide una campaña temporal sin `categoria_slug`
 - [x] Búsqueda secuencial obligatoria (`buscar_semantico` → `catalogo_categoria`) — sin duplicados
 - [x] Fallback categoría-específico (nunca mezcla categorías en el fallback)
 - [x] Detección de mensajes citados de WhatsApp vía Evolution API webhook
@@ -558,6 +563,7 @@ y no comete errores de precio.
 - [x] Aprendizaje de vendedores humanos (Nivel B)
 - [x] Lógica de contexto (fúnebre, ocasiones, honestidad de stock)
 - [x] Canal WhatsApp vía Evolution API
+- [x] Envío de imágenes de productos por Evolution API directo, con conversión WebP → JPEG antes de enviar media
 - [x] Plataforma Chatwoot (bandeja omnicanal)
 - [x] Mensajes de espera y typing humano
 - [x] Debounce de mensajes a 6 segundos (agrupa mensajes rápidos del usuario)
@@ -575,5 +581,5 @@ y no comete errores de precio.
 ---
 
 *Documento generado el 14 de junio de 2026 — Proyecto Agente Regalito / Don Regalo*
-*Versión 1.1 — Actualizado el 15 de junio de 2026 con mejoras de flujo de conversación, normalización de catálogo y correcciones de comportamiento*
+*Versión 1.2 — Actualizado el 18 de junio de 2026 con reglas de campañas temporales, bloqueo de búsqueda semántica libre para campañas y mejoras de envío de imágenes por Evolution API*
 *Para uso interno y propuestas comerciales*
