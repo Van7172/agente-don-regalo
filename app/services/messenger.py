@@ -2,6 +2,7 @@
 Envío de mensajes y control de estado de escritura en Chatwoot y Evolution API.
 """
 import re
+import io
 import logging
 
 import httpx
@@ -11,7 +12,8 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 _IMG_LINE = re.compile(r'^\s*(https?://\S+\.(?:jpg|jpeg|png|webp))\s*$', re.IGNORECASE)
-_SEND_PRODUCT_MEDIA = False
+_SEND_PRODUCT_MEDIA = True
+_DIRECT_IMAGE_MIMES = {"image/jpeg", "image/png"}
 
 
 def human_delay(text: str) -> float:
@@ -119,6 +121,7 @@ async def _send_image_via_chatwoot(conversation_id: int, image_url: str, caption
 
     filename = image_url.split("/")[-1].split("?")[0] or "imagen.jpg"
     mime = img.headers.get("content-type", "image/jpeg")
+    image_bytes, filename, mime = _prepare_image_for_whatsapp(image_bytes, filename, mime)
 
     data: dict = {"message_type": "outgoing", "private": "false"}
     if caption:
@@ -133,6 +136,31 @@ async def _send_image_via_chatwoot(conversation_id: int, image_url: str, caption
         )
         r.raise_for_status()
     log.info("[IMG] enviada via Chatwoot conversation=%s: %s", conversation_id, image_url)
+
+
+def _prepare_image_for_whatsapp(image_bytes: bytes, filename: str, mime: str) -> tuple[bytes, str, str]:
+    """Convierte formatos poco confiables para WhatsApp a JPEG."""
+    clean_mime = (mime or "image/jpeg").split(";")[0].strip().lower()
+    lower_name = filename.lower()
+    if clean_mime in _DIRECT_IMAGE_MIMES and not lower_name.endswith(".webp"):
+        return image_bytes, filename, clean_mime
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        if img.mode in ("RGBA", "LA") or "transparency" in img.info:
+            rgba = img.convert("RGBA")
+            background = Image.new("RGB", rgba.size, "white")
+            background.paste(rgba, mask=rgba.getchannel("A"))
+            rgb = background
+        else:
+            rgb = img.convert("RGB")
+
+        out = io.BytesIO()
+        rgb.save(out, format="JPEG", quality=90, optimize=True)
+
+    stem = re.sub(r"\.[^.]+$", "", filename) or "imagen"
+    return out.getvalue(), f"{stem}.jpg", "image/jpeg"
 
 
 async def _send_image_via_evolution(wa_number: str, image_url: str, caption: str = "") -> None:
@@ -173,9 +201,9 @@ async def _send_image_via_evolution(wa_number: str, image_url: str, caption: str
 async def send_image(conversation_id: int, wa_number: str, image_url: str, caption: str = "") -> None:
     """Envia una imagen de producto a WhatsApp.
 
-    El puente Chatwoot/Evolution puede aceptar adjuntos o media con HTTP 200/201
-    y aun asi no entregarlos al celular. Para catalogos priorizamos entrega:
-    mandamos texto puro con el enlace de foto.
+    Envia media real. Las imagenes WebP se convierten a JPEG antes de subirlas
+    porque WhatsApp/Evolution puede aceptar WebP con HTTP 200/201 y no mostrarlo
+    como imagen normal en el celular.
     """
     if not _SEND_PRODUCT_MEDIA:
         text_fallback = f"{caption}\nFoto: {image_url}".strip() if caption else image_url
