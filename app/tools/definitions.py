@@ -65,6 +65,11 @@ TOOLS = [
                         "type": "string",
                         "description": "Opcional. Restringe la búsqueda a una categoría exacta. Úsalo cuando el cliente mencionó explícitamente una categoría, y OBLIGATORIAMENTE cuando busques dentro de una campaña de temporada (día del padre, navidad, etc.). Slugs permanentes: desayunos, arreglos-florales, peluches, plantas, cestas, regalo-para-bebe, arreglos-funebres. Slugs de campaña (rotan, confírmalos con listar_categorias): dia-del-padre, dia-de-la-madre, etc.",
                     },
+                    "excluir_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Opcional. id_producto de productos que YA mostraste al cliente en esta conversación. Úsalo cuando el cliente pida 'más opciones', 'otras', 'algo diferente' o 'no lo mismo', para que la búsqueda NO repita lo ya enviado. Junta todos los id_producto que aparecieron en tus resultados anteriores.",
+                    },
                 },
                 "required": ["q"],
             },

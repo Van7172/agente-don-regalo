@@ -67,6 +67,14 @@ async def webhook(request: Request):
         raise HTTPException(status_code=400, detail="No conversation_id in payload")
 
     labels = conversation.get("labels") or []
+
+    # Si la conversación está escalada a un asesor humano, el bot NO interviene
+    # (tiene prioridad sobre la etiqueta de activación). El equipo quita la
+    # etiqueta cuando termina y el bot se reactiva solo.
+    if settings.human_support_label in labels:
+        log.info("[HUMAN] conversation=%s en soporte humano; bot no interviene (labels=%s)", conversation_id, labels)
+        return {"status": "ignored", "reason": "soporte humano activo"}
+
     if settings.bot_active_label not in labels:
         log.info("[INACTIVE] conversation=%s labels=%s", conversation_id, labels)
         return {"status": "ignored", "reason": "bot not active"}

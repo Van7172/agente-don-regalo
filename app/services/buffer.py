@@ -11,7 +11,7 @@ from app.config import settings
 from app.prompts.system import SYSTEM_PROMPT
 from app.services.content import message_to_parts, collapse_parts
 from app.services.memory import get_contact_attributes, get_conversation_history
-from app.services.messenger import send_message, send_image, set_typing, human_delay, split_reply
+from app.services.messenger import send_message, send_image, set_typing, human_delay, split_reply, add_label
 from app.services.agent import run_agent
 
 log = logging.getLogger(__name__)
@@ -204,5 +204,19 @@ async def _flush_buffer(conversation_id: int) -> None:
                 else:
                     await asyncio.sleep(human_delay(segment["text"]))
                     await send_message(conversation_id, segment["text"])
+        else:
+            # El agente no produjo respuesta (error, límite de rondas o salida
+            # vacía). Escalar a un asesor humano en lugar de quedar mudo.
+            log.warning("[OUT] conversation=%s sin respuesta del agente; escalando a soporte humano", conversation_id)
+            # 1) PRIMERO el mensaje de espera para el cliente.
+            await send_message(
+                conversation_id,
+                "Permíteme un momento por favor 🙏 En seguida un asesor de "
+                "nuestro equipo continúa contigo.",
+            )
+            # 2) Luego etiquetar la conversación para que el equipo intervenga.
+            #    Mientras la etiqueta esté activa, el bot deja de responder
+            #    (ver gate en app/api/webhook.py).
+            await add_label(conversation_id, settings.human_support_label)
     finally:
         await set_typing(conversation_id, False)

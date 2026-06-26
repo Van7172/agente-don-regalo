@@ -99,6 +99,20 @@ def _keyword_bonus(terms: set[str], producto: dict) -> float:
     return _HYBRID_TERM_BONUS * aciertos
 
 
+def _exclude_ids(args: dict) -> list[int]:
+    """IDs de producto a excluir (ya mostrados al cliente), saneados a enteros."""
+    raw = args.get("excluir_ids") or []
+    if isinstance(raw, (str, int)):
+        raw = [raw]
+    ids = []
+    for x in raw:
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def _build_filter(args: dict):
     from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny, Range
     must: list = []
@@ -116,7 +130,16 @@ def _build_filter(args: dict):
             key="categoria_slug",
             match=MatchValue(value=str(args["categoria_slug"])),
         ))
-    return Filter(must=must) if must else None
+
+    # Excluir productos ya mostrados (para "más opciones" sin repetir).
+    must_not: list = []
+    excl = _exclude_ids(args)
+    if excl:
+        must_not.append(FieldCondition(key="id_producto", match=MatchAny(any=excl)))
+
+    if not must and not must_not:
+        return None
+    return Filter(must=must or None, must_not=must_not or None)
 
 
 async def _filtrar_activos(client: httpx.AsyncClient, productos: list[dict]) -> list[dict]:

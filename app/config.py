@@ -14,6 +14,9 @@ class Settings:
         self.openai_model: str         = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
         self.bot_active_label: str     = os.getenv("BOT_ACTIVE_LABEL", "agente_on")
+        # Etiqueta que marca una conversación escalada a un asesor humano.
+        # Mientras esté presente, el bot NO responde (el equipo la quita al terminar).
+        self.human_support_label: str  = os.getenv("HUMAN_SUPPORT_LABEL", "soporte_humano")
 
         self.evolution_api_url: str    = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
         self.evolution_api_key: str    = os.getenv("EVOLUTION_API_KEY", "")

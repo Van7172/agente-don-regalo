@@ -87,6 +87,32 @@ async def send_message(conversation_id: int, content: str) -> None:
         log.error("Error enviando mensaje a conversación %s: %s", conversation_id, e)
 
 
+async def add_label(conversation_id: int, label: str) -> None:
+    """Agrega una etiqueta a la conversación SIN borrar las existentes.
+
+    El endpoint de Chatwoot reemplaza la lista completa de etiquetas, así que
+    primero leemos las actuales y enviamos la unión.
+    """
+    base = (
+        f"{settings.chatwoot_url}/api/v1/accounts/{settings.chatwoot_account_id}"
+        f"/conversations/{conversation_id}/labels"
+    )
+    headers = {"api_access_token": settings.chatwoot_api_token, "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            r = await client.get(base, headers={"api_access_token": settings.chatwoot_api_token})
+            r.raise_for_status()
+            current = r.json().get("payload") or []
+            if label in current:
+                return
+            nuevas = list(dict.fromkeys([*current, label]))
+            r2 = await client.post(base, headers=headers, json={"labels": nuevas})
+            r2.raise_for_status()
+        log.info("[LABEL] '%s' agregada a conversation=%s (labels=%s)", label, conversation_id, nuevas)
+    except Exception as e:
+        log.error("No se pudo agregar etiqueta '%s' a conversación %s: %s", label, conversation_id, e)
+
+
 async def set_typing(conversation_id: int, on: bool) -> None:
     """Activa/desactiva el indicador 'escribiendo…' en Chatwoot."""
     url = (
