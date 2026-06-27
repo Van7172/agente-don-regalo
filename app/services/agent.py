@@ -48,6 +48,12 @@ def _filler_for_tools(tool_calls: list) -> str | None:
     return None
 
 
+# Conversaciones que ya recibieron un mensaje de espera (filler). Se envía solo
+# UNA vez por conversación: en búsquedas sucesivas resultaba repetitivo y robótico
+# (el cliente ya sabe que estamos buscando, y el indicador "escribiendo…" basta).
+_filler_conversations: set[int] = set()
+
+
 async def run_agent(
     messages: list,
     contact_id: int | None = None,
@@ -55,7 +61,7 @@ async def run_agent(
 ) -> str | None:
     """Ejecuta el loop de function calling hasta obtener respuesta final."""
     all_tools  = TOOLS + ([MEMORY_TOOL] if contact_id else [])
-    filler_sent = False
+    filler_sent = conversation_id in _filler_conversations
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             for _ in range(settings.max_tool_rounds):
@@ -87,6 +93,10 @@ async def run_agent(
                         await send_message(conversation_id, filler)
                         await set_typing(conversation_id, True)
                         filler_sent = True
+                        _filler_conversations.add(conversation_id)
+                        # Cota de memoria: el set vive en el proceso.
+                        if len(_filler_conversations) > 5000:
+                            _filler_conversations.clear()
 
                 for call in tool_calls:
                     fn = call["function"]["name"]

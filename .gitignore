@@ -15,3 +15,6 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# Dumps SQL (no versionar volcados de BD)
+*.sql
