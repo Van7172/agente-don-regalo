@@ -12,6 +12,7 @@ Flujo:
   3. El LLM extrae items {pregunta, respuesta, categoria} reutilizables.
   4. Embebe la pregunta y hace upsert en Qdrant (id estable = dedup por pregunta).
 """
+import re
 import json
 import uuid
 import asyncio
@@ -94,6 +95,12 @@ NO extraigas:
 - Cosas que el bot ya respondía bien por sí mismo
 - Información sensible (números de cuenta completos, datos privados)
 
+REGLA DE PRIVACIDAD (obligatoria): la pregunta y la respuesta deben ser GENÉRICAS.
+- Reemplaza nombres propios de personas por "el cliente" o "un cliente".
+- NUNCA incluyas teléfonos, emails, direcciones, distritos puntuales, DNI ni números
+  de cuenta/tarjeta de un cliente. (Sí puedes incluir los datos de contacto PÚBLICOS
+  de Don Regalo si son parte de la respuesta útil.)
+
 Devuelve EXCLUSIVAMENTE un JSON con esta forma:
 {"items": [{"pregunta": "...", "respuesta": "...", "categoria": "..."}]}
 
@@ -102,6 +109,53 @@ Devuelve EXCLUSIVAMENTE un JSON con esta forma:
 - "categoria": una etiqueta corta (ej: envios, pagos, plazos, objecion-precio, personalizacion)
 
 Si no hay nada reutilizable, devuelve {"items": []}. No inventes."""
+
+
+# ─── Filtro de datos personales (PII) ─────────────────────────────────────────
+# Red de seguridad determinista: aunque el LLM debería genericizar, redactamos
+# por regex cualquier email/teléfono/documento de una persona ANTES de indexar,
+# para que datos de un cliente nunca lleguen a la base de conocimiento.
+# Se preservan los datos PÚBLICOS del negocio (su WhatsApp, teléfono, email, Yape).
+
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+# Secuencia tipo teléfono/documento: 7 a 15 dígitos con espacios o guiones simples
+# (no usa puntos, así no captura precios como 149.60 ni horas como 07:00).
+_NUM_RE = re.compile(r"\+?\d(?:[\s-]?\d){6,14}")
+
+# Datos públicos del negocio que SÍ deben conservarse (normalizados a solo dígitos).
+_BUSINESS_PHONES = {
+    "977174485", "51977174485",   # WhatsApp
+    "5351616", "923149666",       # teléfonos
+    "943113807",                  # Yape / Plin
+}
+_BUSINESS_EMAILS = {"ventas@donregalo.pe"}
+
+
+def _scrub_pii(text: str) -> str:
+    """Redacta emails y números personales, conservando los datos del negocio."""
+    if not text:
+        return text
+
+    def _email_sub(m: re.Match) -> str:
+        return m.group(0) if m.group(0).lower() in _BUSINESS_EMAILS else "[dato omitido]"
+
+    def _num_sub(m: re.Match) -> str:
+        digits = re.sub(r"\D", "", m.group(0))
+        if len(digits) < 7 or digits in _BUSINESS_PHONES:
+            return m.group(0)
+        return "[dato omitido]"
+
+    text = _EMAIL_RE.sub(_email_sub, text)
+    text = _NUM_RE.sub(_num_sub, text)
+    return text
+
+
+def _scrub_items(items: list[dict]) -> list[dict]:
+    """Aplica el filtro de PII a la pregunta y la respuesta de cada item."""
+    for it in items:
+        it["pregunta"]  = _scrub_pii(it.get("pregunta", ""))
+        it["respuesta"] = _scrub_pii(it.get("respuesta", ""))
+    return items
 
 
 async def _extract_qa(transcript: str) -> list[dict]:
@@ -127,10 +181,12 @@ async def _extract_qa(transcript: str) -> list[dict]:
             content = r.json()["choices"][0]["message"]["content"]
         data  = json.loads(content)
         items = data.get("items", [])
-        return [
+        validos = [
             it for it in items
             if isinstance(it, dict) and it.get("pregunta") and it.get("respuesta")
         ]
+        # Red de seguridad: redactar PII aunque el LLM la haya dejado pasar.
+        return _scrub_items(validos)
     except Exception as e:
         log.error("[KB] error extrayendo conocimiento: %s", e)
         return []
