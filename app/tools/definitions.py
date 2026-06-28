@@ -297,3 +297,29 @@ MEMORY_TOOL = {
         },
     },
 }
+
+HUMAN_HANDOFF_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "escalar_a_humano",
+        "description": (
+            "Escala la conversación a un asesor humano. Úsala cuando el cliente PIDA "
+            "explícitamente hablar con una persona ('quiero hablar con un humano', "
+            "'pásame con un asesor', 'quiero un agente real', 'atención humana'), o cuando "
+            "muestre frustración/enojo sostenido que no puedas resolver. "
+            "Tras llamarla NO escribas nada más: el sistema ya envía el mensaje de espera al "
+            "cliente y avisa al equipo, y dejarás de intervenir hasta que un asesor termine. "
+            "NO la uses para dudas normales que puedes resolver con las otras herramientas."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "motivo": {
+                    "type": "string",
+                    "description": "Motivo breve de la escalación (ej: 'cliente pidió hablar con una persona', 'cliente molesto por demora').",
+                },
+            },
+            "required": [],
+        },
+    },
+}

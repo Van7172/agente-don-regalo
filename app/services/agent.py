@@ -9,11 +9,21 @@ import logging
 import httpx
 
 from app.config import settings
-from app.tools import TOOLS, MEMORY_TOOL, execute_tool
+from app.tools import TOOLS, MEMORY_TOOL, HUMAN_HANDOFF_TOOL, execute_tool
 from app.services.memory import save_contact_attributes
-from app.services.messenger import send_message, set_typing
+from app.services.messenger import send_message, set_typing, add_label
 
 log = logging.getLogger(__name__)
+
+# Sentinela que devuelve run_agent cuando ya escaló a un humano: el mensaje de
+# espera y la etiqueta ya se enviaron, así que buffer no debe mandar nada más.
+HANDOFF_DONE = "__handoff_done__"
+
+# Mensaje de espera al escalar a un asesor humano (se envía ANTES de etiquetar).
+_HANDOFF_WAIT_MSG = (
+    "¡Claro! Te conecto con un asesor de nuestro equipo 🙏 "
+    "Dame un momento, en seguida continúan contigo."
+)
 
 # Mensaje de espera según la primera herramienta lenta del turno.
 _FILLER_BY_TOOL: dict[str, list[str]] = {
@@ -61,6 +71,8 @@ async def run_agent(
 ) -> str | None:
     """Ejecuta el loop de function calling hasta obtener respuesta final."""
     all_tools  = TOOLS + ([MEMORY_TOOL] if contact_id else [])
+    if conversation_id is not None:
+        all_tools = all_tools + [HUMAN_HANDOFF_TOOL]
     filler_sent = conversation_id in _filler_conversations
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -105,6 +117,16 @@ async def run_agent(
                     except json.JSONDecodeError:
                         args = {}
                     log.info("[TOOL] %s args=%s", fn, args)
+
+                    if fn == "escalar_a_humano":
+                        # Escalación a un asesor humano. Orden requerido:
+                        # 1) mensaje de espera al cliente, 2) etiqueta de soporte.
+                        # Tras esto NO se genera más respuesta (el gate del webhook
+                        # bloquea al bot mientras la etiqueta esté activa).
+                        log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, args.get("motivo"))
+                        await send_message(conversation_id, _HANDOFF_WAIT_MSG)
+                        await add_label(conversation_id, settings.human_support_label)
+                        return HANDOFF_DONE
 
                     if fn == "guardar_datos_cliente":
                         result = await save_contact_attributes(contact_id, args)

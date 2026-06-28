@@ -12,7 +12,7 @@ from app.prompts.system import SYSTEM_PROMPT
 from app.services.content import message_to_parts, collapse_parts
 from app.services.memory import get_contact_attributes, get_conversation_history
 from app.services.messenger import send_message, send_image, set_typing, human_delay, split_reply, add_label
-from app.services.agent import run_agent
+from app.services.agent import run_agent, HANDOFF_DONE
 
 log = logging.getLogger(__name__)
 
@@ -195,7 +195,11 @@ async def _flush_buffer(conversation_id: int) -> None:
     await set_typing(conversation_id, True)
     try:
         reply = await run_agent(messages, contact_id, conversation_id)
-        if reply:
+        if reply == HANDOFF_DONE:
+            # El agente ya escaló a un humano (mensaje de espera + etiqueta
+            # enviados dentro de run_agent). No mandar nada más.
+            log.info("[OUT] conversation=%s escalada a soporte humano por solicitud", conversation_id)
+        elif reply:
             log.info("[OUT] conversation=%s reply=%r", conversation_id, reply)
             for segment in split_reply(reply):
                 if segment["type"] == "image":

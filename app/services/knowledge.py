@@ -125,7 +125,7 @@ _NUM_RE = re.compile(r"\+?\d(?:[\s-]?\d){6,14}")
 # Datos públicos del negocio que SÍ deben conservarse (normalizados a solo dígitos).
 _BUSINESS_PHONES = {
     "977174485", "51977174485",   # WhatsApp
-    "5351616", "923149666",       # teléfonos
+    "923149666",                  # teléfono
     "943113807",                  # Yape / Plin
 }
 _BUSINESS_EMAILS = {"ventas@donregalo.pe"}
