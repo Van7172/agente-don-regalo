@@ -87,6 +87,21 @@ async def send_message(conversation_id: int, content: str) -> None:
         log.error("Error enviando mensaje a conversación %s: %s", conversation_id, e)
 
 
+async def notify_team(text: str) -> None:
+    """Envía una alerta al equipo a un webhook configurable (ej: Slack).
+
+    Fire-and-forget: si no hay webhook o falla, no interrumpe el flujo del agente.
+    El formato {"text": ...} es compatible con webhooks entrantes de Slack.
+    """
+    if not settings.alert_webhook_url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(settings.alert_webhook_url, json={"text": text})
+    except Exception as e:
+        log.warning("No se pudo enviar alerta al equipo: %s", e)
+
+
 async def add_label(conversation_id: int, label: str) -> None:
     """Agrega una etiqueta a la conversación SIN borrar las existentes.
 

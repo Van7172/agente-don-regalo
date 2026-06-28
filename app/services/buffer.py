@@ -11,7 +11,7 @@ from app.config import settings
 from app.prompts.system import SYSTEM_PROMPT
 from app.services.content import message_to_parts, collapse_parts
 from app.services.memory import get_contact_attributes, get_conversation_history
-from app.services.messenger import send_message, send_image, set_typing, human_delay, split_reply, add_label
+from app.services.messenger import send_message, send_image, set_typing, human_delay, split_reply, add_label, notify_team
 from app.services.agent import run_agent, HANDOFF_DONE
 
 log = logging.getLogger(__name__)
@@ -222,5 +222,10 @@ async def _flush_buffer(conversation_id: int) -> None:
             #    Mientras la etiqueta esté activa, el bot deja de responder
             #    (ver gate en app/api/webhook.py).
             await add_label(conversation_id, settings.human_support_label)
+            # 3) Avisar al equipo (webhook opcional) de que hubo un fallo.
+            await notify_team(
+                f"⚠️ El agente no pudo responder (conversación {conversation_id}); "
+                "escalada a soporte humano."
+            )
     finally:
         await set_typing(conversation_id, False)

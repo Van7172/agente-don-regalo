@@ -11,7 +11,7 @@ import httpx
 from app.config import settings
 from app.tools import TOOLS, MEMORY_TOOL, HUMAN_HANDOFF_TOOL, execute_tool
 from app.services.memory import save_contact_attributes
-from app.services.messenger import send_message, set_typing, add_label
+from app.services.messenger import send_message, set_typing, add_label, notify_team
 
 log = logging.getLogger(__name__)
 
@@ -123,9 +123,14 @@ async def run_agent(
                         # 1) mensaje de espera al cliente, 2) etiqueta de soporte.
                         # Tras esto NO se genera más respuesta (el gate del webhook
                         # bloquea al bot mientras la etiqueta esté activa).
-                        log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, args.get("motivo"))
+                        motivo = args.get("motivo") or "no especificado"
+                        log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, motivo)
                         await send_message(conversation_id, _HANDOFF_WAIT_MSG)
                         await add_label(conversation_id, settings.human_support_label)
+                        await notify_team(
+                            f"🙋 Atención humana solicitada (conversación {conversation_id}). "
+                            f"Motivo: {motivo}."
+                        )
                         return HANDOFF_DONE
 
                     if fn == "guardar_datos_cliente":

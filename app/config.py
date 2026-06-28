@@ -17,6 +17,9 @@ class Settings:
         # Etiqueta que marca una conversación escalada a un asesor humano.
         # Mientras esté presente, el bot NO responde (el equipo la quita al terminar).
         self.human_support_label: str  = os.getenv("HUMAN_SUPPORT_LABEL", "soporte_humano")
+        # Webhook opcional (ej: Slack) para avisar al equipo cuando una conversación
+        # se escala a humano o el agente falla. Vacío = sin alertas.
+        self.alert_webhook_url: str    = os.getenv("ALERT_WEBHOOK_URL", "")
 
         self.evolution_api_url: str    = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
         self.evolution_api_key: str    = os.getenv("EVOLUTION_API_KEY", "")
