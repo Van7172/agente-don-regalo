@@ -177,6 +177,9 @@ No basta con pedirle al LLM que no lo haga; se filtra en código para que sea im
 - **Límite de rondas de herramientas** : evita bucles infinitos de function calling.
 - **Errores de herramienta como datos** : una tool que falla devuelve un JSON de error que
   el modelo puede leer y manejar, no una excepción que tumbe el turno.
+- **Tests de la lógica pura** : la lógica sin red (filtro de PII, parseo de respuesta,
+  saneo de parámetros, construcción de filtros) debe tener tests unitarios. Atrapan
+  regresiones antes de que lleguen al cliente; la arquitectura modular las hace testeables.
 
 ---
 
@@ -191,10 +194,16 @@ Flujo:
 3. Mientras esa etiqueta esté activa, el agente **no interviene** (la etiqueta tiene prioridad
    sobre la de activación). El equipo la quita al terminar y el agente se reactiva solo.
 
-Disparadores: fallo del agente (fallback), y opcionalmente frustración del cliente o pedido
-explícito de hablar con una persona.
+Tres disparadores:
 
-🟧 Configurable: el nombre de la etiqueta y el texto del mensaje de espera.
+1. El cliente lo pide explícitamente (herramienta `escalar_a_humano`).
+2. El cliente muestra frustración sostenida (el prompt llama a la misma herramienta).
+3. El agente falla (red de seguridad: escala en vez de quedar mudo).
+
+Al escalar se puede avisar al equipo por un webhook (ej: Slack), útil cuando nadie
+monitorea el inbox en vivo.
+
+🟧 Configurable: el nombre de la etiqueta, el texto del mensaje de espera y el webhook de alertas.
 
 ---
 
@@ -246,6 +255,8 @@ explícito de hablar con una persona.
 - ❌ **Confiar solo en el prompt para privacidad/seguridad** : reforzar en código.
 - ❌ **Mensajes enlatados repetidos** : suenan robóticos; variar o enviar una sola vez.
 - ❌ **Estado crítico solo en memoria del proceso** : usar respaldo externo para escalar.
+- ❌ **Credenciales o llaves en código versionado** : sacarlas a archivos de secretos fuera
+  de git (gitignored) o a variables de entorno, con una plantilla `.example` versionada.
 
 ---
 
