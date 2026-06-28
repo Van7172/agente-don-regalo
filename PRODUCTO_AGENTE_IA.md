@@ -68,6 +68,11 @@ sin olvidar y sin cometer errores de precio.
 | **Flujo de cierre secuencial** | Al confirmar compra, recoge datos en este orden exacto: (1) distrito → verifica cobertura + tarifa, (2) fecha, (3) horario (5 opciones enumeradas), (4) mensaje de tarjeta, (5) resumen, (6) deriva a pago. Una pregunta por turno |
 | **Búsqueda secuencial sin duplicados** | `buscar_semantico` y `catalogo_categoria` se llaman siempre en secuencia, nunca en paralelo — evita que el mismo producto aparezca dos veces |
 | **Normalización de slugs en catálogo** | Los productos de subcategorías (ej: `desayunos-tematicos`) se almacenan bajo el slug padre (`desayunos`) para que los filtros del agente sean consistentes |
+| **Escalación a un asesor humano** | Si el cliente pide hablar con una persona o se frustra, el agente lo deriva: envía un mensaje de espera, etiqueta la conversación y se aparta para que el equipo intervenga. Mientras tanto no interrumpe, y puede avisar al equipo por Slack/webhook |
+| **Nunca repite opciones** | Cuando el cliente pide "más opciones", excluye lo ya mostrado y trae productos realmente nuevos, en vez de repetir los mismos |
+| **Productos siempre vigentes** | Verifica en tiempo real contra el catálogo que cada producto sugerido siga activo, aunque el índice de búsqueda se haya desactualizado entre sincronizaciones |
+| **Nunca deja al cliente sin respuesta** | Ante cualquier error interno, en lugar de quedar mudo envía un mensaje y escala a una persona |
+| **Privacidad y límites de seguridad** | No comparte datos de otros clientes, no inventa precios ni descuentos, no pide datos de tarjeta e ignora intentos de manipularlo. Los datos personales se filtran antes de entrar a su memoria de conocimiento |
 
 ### 2.4 Herramientas del agente (visión técnica)
 
@@ -88,6 +93,7 @@ tipo_cambio               → USD → Soles en tiempo real
 rastrear_pedido           → estado del pedido por email + código
 guardar_datos_cliente     → memoria de largo plazo en perfil de contacto Chatwoot
 buscar_conocimiento_equipo → base de conocimiento aprendida de vendedores humanos
+escalar_a_humano          → deriva la conversación a un asesor (mensaje de espera + etiqueta + alerta al equipo)
 ```
 
 ---
@@ -567,6 +573,16 @@ y no comete errores de precio.
 - [x] Plataforma Chatwoot (bandeja omnicanal)
 - [x] Mensajes de espera y typing humano
 - [x] Debounce de mensajes a 6 segundos (agrupa mensajes rápidos del usuario)
+- [x] Validación de productos activos en tiempo real (descarta los desactivados aunque sigan en el índice)
+- [x] Sin productos repetidos en "más opciones" (exclusión de los ya mostrados)
+- [x] Escalación a un asesor humano (a pedido del cliente, por frustración o ante fallo): mensaje de espera + etiqueta + bloqueo del bot mientras atiende el equipo
+- [x] Alerta opcional al equipo (Slack/webhook) en escalaciones y fallos
+- [x] Nunca queda sin responder: fallback ante errores internos
+- [x] Restricciones de seguridad y privacidad en el prompt (datos de terceros, precios, pagos, anti-manipulación, alcance)
+- [x] Filtrado de datos personales (PII) antes de indexar conocimiento del equipo
+- [x] Mensajes no repetitivos (saludo y "ya voy" no se repiten textualmente)
+- [x] Tests unitarios de la lógica crítica
+- [x] Credenciales fuera del código (archivos de secretos / variables de entorno)
 
 ### Próximas versiones
 - [ ] Panel de administración web para que el cliente gestione su prompt y catálogo sin intervención técnica
@@ -574,12 +590,12 @@ y no comete errores de precio.
 - [ ] Reportería con métricas de conversión
 - [ ] Conector genérico para WooCommerce y Shopify
 - [ ] Soporte multi-idioma configurable
-- [ ] Transferencia a agente humano con resumen del contexto automático
+- [ ] Resumen automático del contexto para el asesor al escalar a humano (el handoff básico ya está implementado)
 - [ ] WhatsApp Flows (formularios nativos de WhatsApp para captura de pedidos)
 - [ ] Dashboard de conocimiento: ver qué aprendió el agente de los vendedores
 
 ---
 
 *Documento generado el 14 de junio de 2026 — Proyecto Agente Regalito / Don Regalo*
-*Versión 1.2 — Actualizado el 18 de junio de 2026 con reglas de campañas temporales, bloqueo de búsqueda semántica libre para campañas y mejoras de envío de imágenes por Evolution API*
+*Versión 1.3 — Actualizado el 27 de junio de 2026: escalación a un asesor humano, validación de productos activos, sin opciones repetidas, restricciones de seguridad y privacidad, filtrado de datos personales, alertas al equipo y tests*
 *Para uso interno y propuestas comerciales*
