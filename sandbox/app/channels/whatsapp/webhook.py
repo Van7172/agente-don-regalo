@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -40,15 +41,41 @@ def _valid_signature(raw_body: bytes, signature_header: str | None) -> bool:
     return hmac.compare_digest(f"sha256={expected}", signature_header)
 
 
+def _summarize_payload(payload: dict) -> str:
+    bits: list[str] = []
+    for entry in payload.get("entry") or []:
+        for change in entry.get("changes") or []:
+            field = change.get("field")
+            value = change.get("value") or {}
+            n_msg = len(value.get("messages") or [])
+            n_st = len(value.get("statuses") or [])
+            bits.append(f"field={field} messages={n_msg} statuses={n_st}")
+    return "; ".join(bits) or "empty"
+
+
 @router.post("/webhook")
 async def receive_webhook(request: Request):
     raw = await request.body()
     sig = request.headers.get("X-Hub-Signature-256")
     if not _valid_signature(raw, sig):
+        log.warning("[WA] firma inválida (¿WHATSAPP_APP_SECRET?)")
         raise HTTPException(status_code=403, detail="Invalid signature")
 
-    payload = await request.json()
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        log.error("[WA] body no es JSON: %r", raw[:200])
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
+
+    summary = _summarize_payload(payload)
+    log.info("[WA-POST] %s bytes=%s", summary, len(raw))
+
     messages = parse_webhook_payload(payload)
+    if not messages:
+        # Meta manda muchos statuses; no es error, pero ayuda a diagnosticar
+        log.info("[WA] sin mensajes inbound (%s)", summary)
+        return {"status": "ok", "processed": 0, "note": summary}
+
     results = []
     for msg in messages:
         log.info(
