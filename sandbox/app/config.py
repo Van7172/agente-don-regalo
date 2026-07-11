@@ -6,7 +6,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+_SANDBOX_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _SANDBOX_ROOT.parent
+# Primero raíz (OpenAI/Qdrant legacy), luego sandbox/.env pisa lo local (CRM/Meta)
+load_dotenv(_REPO_ROOT / ".env")
+load_dotenv(_SANDBOX_ROOT / ".env", override=True)
 
 
 class Settings:
@@ -19,10 +23,21 @@ class Settings:
         self.whatsapp_graph_url: str = (
             f"https://graph.facebook.com/{self.whatsapp_api_version}"
         )
+        # 1 = no llama a Graph API; simula envíos (útil para E2E local)
+        self.whatsapp_dry_run: bool = os.getenv("WHATSAPP_DRY_RUN", "0") == "1"
 
         self.database_url: str = os.getenv(
             "DATABASE_URL", "sqlite+aiosqlite:///./sandbox.db"
         )
+        # Opción C: CRM externo (Next.js + MySQL). local = SQLite embebido sandbox.
+        # local = SQLite sandbox (tests/legacy); external = Next.js CRM + MySQL
+        self.crm_mode: str = os.getenv("CRM_MODE", "local").strip().lower()
+        self.crm_base_url: str = os.getenv("CRM_BASE_URL", "http://127.0.0.1:3100").rstrip("/")
+        self.crm_internal_token: str = os.getenv("CRM_INTERNAL_TOKEN", "dev-crm-token-change-me")
+        self.agent_internal_token: str = os.getenv("AGENT_INTERNAL_TOKEN", "dev-agent-token-change-me")
+        self.alert_whatsapp: str = os.getenv("ALERT_WHATSAPP", "").replace("+", "").strip()
+        self.watchdog_enabled: bool = os.getenv("WATCHDOG_ENABLED", "1") == "1"
+        self.watchdog_tick_seconds: float = float(os.getenv("WATCHDOG_TICK_SECONDS", "300"))
         self.default_tenant_slug: str = os.getenv("DEFAULT_TENANT_SLUG", "don-regalo")
         self.default_tenant_name: str = os.getenv("DEFAULT_TENANT_NAME", "Don Regalo")
 

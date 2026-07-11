@@ -60,9 +60,10 @@ async def run_agent(
     contact_id: int | None = None,
     conversation_id: int | None = None,
     session: AsyncSession | None = None,
+    use_external_crm: bool = False,
 ) -> str | None:
     all_tools = list(TOOLS)
-    if contact_id:
+    if contact_id or use_external_crm:
         all_tools.append(MEMORY_TOOL)
     if conversation_id is not None:
         all_tools.append(HUMAN_HANDOFF_TOOL)
@@ -125,7 +126,11 @@ async def run_agent(
                         motivo = args.get("motivo") or "no especificado"
                         log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, motivo)
                         await send_message(wa_id, _HANDOFF_WAIT_MSG)
-                        if session and conversation_id:
+                        if use_external_crm and conversation_id:
+                            from app.crm import http_client as crm_http
+
+                            await crm_http.set_mode(conversation_id, "HUMAN")
+                        elif session and conversation_id:
                             await repo.set_human_support(session, conversation_id, True)
                             await session.commit()
                         await notify_team(
@@ -134,7 +139,20 @@ async def run_agent(
                         return HANDOFF_DONE
 
                     if fn == "guardar_datos_cliente":
-                        if session and contact_id:
+                        if use_external_crm and wa_id:
+                            from app.crm import http_client as crm_http
+
+                            patch = {
+                                "name": args.get("nombre") or args.get("name"),
+                                "email": args.get("email"),
+                                "objetivo": args.get("objetivo") or args.get("preferencias"),
+                                "situacion": args.get("situacion") or args.get("ocasion"),
+                                "temperatura": args.get("temperatura"),
+                                "resumen": args.get("resumen") or args.get("notas"),
+                            }
+                            await crm_http.put_memory(wa_id, {k: v for k, v in patch.items() if v})
+                            result = json.dumps({"ok": True, "guardado": patch})
+                        elif session and contact_id:
                             result = await repo.save_contact_attributes(session, contact_id, args)
                             await session.commit()
                         else:

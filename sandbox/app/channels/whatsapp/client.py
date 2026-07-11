@@ -28,6 +28,10 @@ class WhatsAppClient:
         return f"{self.base}/{self.phone_id}/messages"
 
     async def send_text(self, to_wa_id: str, text: str) -> dict[str, Any]:
+        if settings.whatsapp_dry_run:
+            fake_id = f"wamid.dry.{int(__import__('time').time() * 1000)}"
+            log.info("[WA-DRY] text -> %s id=%s body=%r", to_wa_id, fake_id, text[:120])
+            return {"messages": [{"id": fake_id}]}
         body = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -43,6 +47,10 @@ class WhatsAppClient:
             return data
 
     async def send_image_url(self, to_wa_id: str, image_url: str, caption: str = "") -> dict[str, Any]:
+        if settings.whatsapp_dry_run:
+            fake_id = f"wamid.dry.img.{int(__import__('time').time() * 1000)}"
+            log.info("[WA-DRY] image -> %s id=%s url=%s", to_wa_id, fake_id, image_url[:80])
+            return {"messages": [{"id": fake_id}]}
         image: dict[str, Any] = {"link": image_url}
         if caption:
             image["caption"] = caption

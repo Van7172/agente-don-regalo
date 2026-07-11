@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_sandbox.db")
 os.environ.setdefault("WHATSAPP_VERIFY_TOKEN", "test-verify")
 os.environ.setdefault("DEFAULT_TENANT_SLUG", "test-tenant")
+os.environ.setdefault("CRM_MODE", "local")
+os.environ.setdefault("WATCHDOG_ENABLED", "0")
 
 
 @pytest.fixture
