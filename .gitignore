@@ -1,8 +1,12 @@
 # Entorno y secretos
 .env
+sandbox/.env
 .venv/
 venv/
 env/
+sandbox/.venv/
+sandbox/sandbox.db
+sandbox/*.db
 
 # Python
 __pycache__/

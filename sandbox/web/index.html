@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CRM Sandbox — Don Regalo</title>
+  <style>
+    :root { --bg:#0f1419; --panel:#1a2332; --line:#2a3548; --text:#e8eef7; --muted:#8b9bb4; --accent:#3d9cf0; --danger:#e85d5d; --ok:#3ecf8e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
+    header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+    header h1 { margin:0; font-size:16px; font-weight:600; }
+    header span { color:var(--muted); font-size:12px; }
+    .layout { flex:1; display:grid; grid-template-columns: 320px 1fr; min-height:0; }
+    .list, .chat { overflow:auto; }
+    .list { border-right:1px solid var(--line); background:var(--panel); }
+    .item { padding:12px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+    .item:hover, .item.active { background:#243044; }
+    .item .name { font-weight:600; font-size:14px; }
+    .item .meta { color:var(--muted); font-size:12px; margin-top:4px; }
+    .badges { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
+    .badge { font-size:10px; padding:2px 6px; border-radius:4px; background:#2d3a4f; color:var(--muted); }
+    .badge.on { background:#1e3d32; color:var(--ok); }
+    .badge.human { background:#3d2424; color:var(--danger); }
+    .chat { display:flex; flex-direction:column; min-height:0; }
+    .chat-head { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .chat-head button { background:#2a3548; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; font-size:12px; }
+    .chat-head button:hover { border-color:var(--accent); }
+    .msgs { flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+    .bubble { max-width:70%; padding:10px 12px; border-radius:12px; font-size:14px; white-space:pre-wrap; line-height:1.4; }
+    .in { align-self:flex-start; background:#243044; }
+    .out { align-self:flex-end; background:#1a3a5c; }
+    .composer { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); }
+    .composer input { flex:1; background:#121a24; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:10px 12px; }
+    .composer button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 16px; cursor:pointer; font-weight:600; }
+    .empty { color:var(--muted); padding:40px; text-align:center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CRM Sandbox — Agente Don Regalo</h1>
+    <span>WhatsApp Cloud API · sin Chatwoot/Evolution</span>
+  </header>
+  <div class="layout">
+    <aside class="list" id="list"><div class="empty">Cargando…</div></aside>
+    <section class="chat">
+      <div class="chat-head" id="head"><span class="empty">Selecciona una conversación</span></div>
+      <div class="msgs" id="msgs"></div>
+      <div class="composer">
+        <input id="input" placeholder="Escribir como asesor…" disabled />
+        <button id="send" disabled>Enviar</button>
+      </div>
+    </section>
+  </div>
+  <script>
+    let currentId = null;
+
+    async function api(path, opts) {
+      const r = await fetch(path, opts);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    async function loadList() {
+      const data = await api('/crm/conversations');
+      const list = document.getElementById('list');
+      if (!data.data.length) {
+        list.innerHTML = '<div class="empty">Sin conversaciones aún</div>';
+        return;
+      }
+      list.innerHTML = data.data.map(c => `
+        <div class="item ${c.id === currentId ? 'active' : ''}" data-id="${c.id}">
+          <div class="name">${c.contact?.name || c.contact?.wa_id || 'Sin nombre'}</div>
+          <div class="meta">${c.last_message || '—'}</div>
+          <div class="badges">
+            ${c.bot_active ? '<span class="badge on">bot</span>' : '<span class="badge">bot off</span>'}
+            ${c.human_support ? '<span class="badge human">humano</span>' : ''}
+          </div>
+        </div>
+      `).join('');
+      list.querySelectorAll('.item').forEach(el => {
+        el.onclick = () => openConv(Number(el.dataset.id));
+      });
+    }
+
+    async function openConv(id) {
+      currentId = id;
+      const data = await api(`/crm/conversations/${id}`);
+      const c = data.conversation;
+      document.getElementById('head').innerHTML = `
+        <strong>${c.contact?.name || c.contact?.wa_id}</strong>
+        <span style="color:var(--muted);font-size:12px">${c.contact?.wa_id || ''}</span>
+        <button onclick="toggle('bot-active', ${!c.bot_active})">${c.bot_active ? 'Apagar bot' : 'Activar bot'}</button>
+        <button onclick="toggle('human-support', ${!c.human_support})">${c.human_support ? 'Devolver al bot' : 'Tomar (humano)'}</button>
+        <button onclick="loadConv()">↻</button>
+      `;
+      document.getElementById('msgs').innerHTML = data.messages.map(m => `
+        <div class="bubble ${m.direction === 'inbound' ? 'in' : 'out'}">${escapeHtml(m.content || '')}</div>
+      `).join('') || '<div class="empty">Sin mensajes</div>';
+      document.getElementById('msgs').scrollTop = 99999;
+      document.getElementById('input').disabled = false;
+      document.getElementById('send').disabled = false;
+      loadList();
+    }
+
+    async function loadConv() { if (currentId) await openConv(currentId); }
+
+    async function toggle(kind, value) {
+      if (!currentId) return;
+      await api(`/crm/conversations/${currentId}/${kind}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ value })
+      });
+      await openConv(currentId);
+    }
+
+    async function send() {
+      const input = document.getElementById('input');
+      const text = input.value.trim();
+      if (!text || !currentId) return;
+      input.value = '';
+      await api(`/crm/conversations/${currentId}/send`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text })
+      });
+      await openConv(currentId);
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    document.getElementById('send').onclick = send;
+    document.getElementById('input').onkeydown = e => { if (e.key === 'Enter') send(); };
+    loadList();
+    setInterval(loadList, 8000);
+  </script>
+</body>
+</html>

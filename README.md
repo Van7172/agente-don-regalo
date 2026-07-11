@@ -5,6 +5,10 @@ procesa mensajes de texto, audio, imagenes y PDF con OpenAI, consulta el catalog
 de Don Regalo, usa busqueda semantica con Qdrant cuando corresponde y responde en la
 conversacion.
 
+> **Rework en curso:** el nuevo stack (WhatsApp Cloud API + CRM propio) se desarrolla
+> en [`sandbox/`](sandbox/). La raíz sigue siendo producción/legacy hasta la promoción.
+> Ver [`docs/REWORK_SANDBOX.md`](docs/REWORK_SANDBOX.md).
+
 ## Requisitos
 
 - Python 3.11+
