@@ -32,6 +32,8 @@ class WhatsAppClient:
             fake_id = f"wamid.dry.{int(__import__('time').time() * 1000)}"
             log.info("[WA-DRY] text -> %s id=%s body=%r", to_wa_id, fake_id, text[:120])
             return {"messages": [{"id": fake_id}]}
+        if not self.token or not self.phone_id:
+            raise RuntimeError("WHATSAPP_TOKEN o WHATSAPP_PHONE_NUMBER_ID vacíos")
         body = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -41,6 +43,13 @@ class WhatsAppClient:
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(self._messages_url(), headers=self._headers, json=body)
+            if r.status_code >= 400:
+                log.error(
+                    "[WA] send_text FAIL status=%s to=%s body=%s",
+                    r.status_code,
+                    to_wa_id,
+                    r.text[:800],
+                )
             r.raise_for_status()
             data = r.json()
             log.info("[WA] text -> %s id=%s", to_wa_id, data.get("messages", [{}])[0].get("id"))

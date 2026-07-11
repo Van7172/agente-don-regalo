@@ -55,6 +55,10 @@ async def health():
         "crm_mode": settings.crm_mode,
         "crm_base_url": settings.crm_base_url if settings.crm_mode == "external" else None,
         "watchdog": settings.watchdog_enabled,
+        "whatsapp_configured": bool(settings.whatsapp_token and settings.whatsapp_phone_number_id),
+        "whatsapp_dry_run": settings.whatsapp_dry_run,
+        "openai_configured": bool(settings.openai_api_key),
+        "openai_model": settings.openai_model,
     }
 
 

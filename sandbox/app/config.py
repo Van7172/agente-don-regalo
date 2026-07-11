@@ -19,7 +19,7 @@ class Settings:
         self.whatsapp_phone_number_id: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
         self.whatsapp_verify_token: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "change-me")
         self.whatsapp_app_secret: str = os.getenv("WHATSAPP_APP_SECRET", "")
-        self.whatsapp_api_version: str = os.getenv("WHATSAPP_API_VERSION", "v21.0")
+        self.whatsapp_api_version: str = os.getenv("WHATSAPP_API_VERSION", "v22.0")
         self.whatsapp_graph_url: str = (
             f"https://graph.facebook.com/{self.whatsapp_api_version}"
         )
