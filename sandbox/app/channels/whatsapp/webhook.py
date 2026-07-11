@@ -1,6 +1,7 @@
 """Webhook WhatsApp Cloud API (Meta)."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -8,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from app.channels.whatsapp.parser import parse_webhook_payload
+from app.channels.whatsapp.parser import InboundMessage, parse_webhook_payload
 from app.config import settings
 from app.services.buffer import enqueue_inbound
 
@@ -53,6 +54,19 @@ def _summarize_payload(payload: dict) -> str:
     return "; ".join(bits) or "empty"
 
 
+async def _process_inbound(messages: list[InboundMessage]) -> None:
+    """Procesa fuera del request HTTP para devolver 200 a Meta al instante."""
+    for msg in messages:
+        try:
+            log.info(
+                "[WA-IN] from=%s type=%s id=%s text=%r",
+                msg.wa_id, msg.message_type, msg.wa_message_id, (msg.text or "")[:80],
+            )
+            await enqueue_inbound(msg)
+        except Exception:
+            log.exception("[WA] error procesando inbound id=%s", msg.wa_message_id)
+
+
 @router.post("/webhook")
 async def receive_webhook(request: Request):
     raw = await request.body()
@@ -72,15 +86,9 @@ async def receive_webhook(request: Request):
 
     messages = parse_webhook_payload(payload)
     if not messages:
-        # Meta manda muchos statuses; no es error, pero ayuda a diagnosticar
         log.info("[WA] sin mensajes inbound (%s)", summary)
         return {"status": "ok", "processed": 0, "note": summary}
 
-    results = []
-    for msg in messages:
-        log.info(
-            "[WA-IN] from=%s type=%s id=%s text=%r",
-            msg.wa_id, msg.message_type, msg.wa_message_id, (msg.text or "")[:80],
-        )
-        results.append(await enqueue_inbound(msg))
-    return {"status": "ok", "processed": len(results), "results": results}
+    # Meta exige 200 rápido; OpenAI/envío van en background vía buffer
+    asyncio.create_task(_process_inbound(messages))
+    return {"status": "ok", "accepted": len(messages)}
