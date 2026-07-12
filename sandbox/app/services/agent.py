@@ -69,8 +69,30 @@ async def run_agent(
         all_tools.append(HUMAN_HANDOFF_TOOL)
 
     filler_sent = conversation_id in _filler_conversations if conversation_id else True
+    early_filler_task: asyncio.Task | None = None
+
+    async def _send_early_filler() -> None:
+        """Aviso rápido si el 1.er round de LLM tarda (tools / OpenAI)."""
+        nonlocal filler_sent
+        try:
+            await asyncio.sleep(0.7)
+            if filler_sent or conversation_id is None:
+                return
+            await send_message(wa_id, "Un momento, ya te ayudo 😊")
+            await set_typing(conversation_id, True)
+            filler_sent = True
+            _filler_conversations.add(conversation_id)
+            if len(_filler_conversations) > 5000:
+                _filler_conversations.clear()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.warning("[FILLER] early failed: %s", e)
 
     try:
+        if not filler_sent and conversation_id is not None:
+            early_filler_task = asyncio.create_task(_send_early_filler())
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             for _ in range(settings.max_tool_rounds):
                 r = await client.post(
@@ -84,12 +106,15 @@ async def run_agent(
                         "messages": messages,
                         "tools": all_tools,
                         "tool_choice": "auto",
+                        "parallel_tool_calls": True,
                     },
                 )
                 r.raise_for_status()
                 msg = r.json()["choices"][0]["message"]
                 tool_calls = msg.get("tool_calls")
                 if not tool_calls:
+                    if early_filler_task and not early_filler_task.done():
+                        early_filler_task.cancel()
                     return msg.get("content")
 
                 messages.append(msg)
@@ -97,6 +122,8 @@ async def run_agent(
                 if not filler_sent and conversation_id is not None:
                     filler = _filler_for_tools(tool_calls)
                     if filler:
+                        if early_filler_task and not early_filler_task.done():
+                            early_filler_task.cancel()
                         await send_message(wa_id, filler)
                         await set_typing(conversation_id, True)
                         filler_sent = True
@@ -187,3 +214,6 @@ async def run_agent(
     except Exception as e:
         log.error("Error en el bucle del agente: %s", e)
         return None
+    finally:
+        if early_filler_task and not early_filler_task.done():
+            early_filler_task.cancel()

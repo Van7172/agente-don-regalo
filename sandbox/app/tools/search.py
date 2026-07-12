@@ -234,10 +234,12 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
 
     # Validar estado activo contra la API ANTES de truncar, para rellenar el
     # cupo con productos vigentes y no devolver menos de la cuenta.
-    candidatos = await _filtrar_activos(client, candidatos)
+    # Solo validar activos en el top (menos latencia vs API donregalo)
+    top = candidatos[: max(settings.semantic_limit * 2, 12)]
+    top = await _filtrar_activos(client, top)
 
     productos = []
-    for p in candidatos[:settings.semantic_limit]:
+    for p in top[: settings.semantic_limit]:
         p.pop("_rank", None)
         productos.append(p)
 

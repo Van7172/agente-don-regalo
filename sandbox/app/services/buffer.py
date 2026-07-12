@@ -184,9 +184,12 @@ async def _build_messages(profile: dict, history: list, user_content) -> list:
 
 
 async def _send_reply_segments(wa_id: str, conversation_id: int, reply: str, persist) -> None:
-    for segment in split_reply(reply):
+    """Envía segmentos. Cards de producto casi sin pausa; texto con delay corto."""
+    segments = split_reply(reply)
+    for i, segment in enumerate(segments):
         if segment["type"] == "image":
-            await asyncio.sleep(human_delay(segment.get("caption", "")))
+            if i > 0:
+                await asyncio.sleep(0.08)
             wa_mid = await send_image(wa_id, segment["url"], segment.get("caption", ""))
             await persist(
                 content=segment.get("caption") or segment["url"],
@@ -194,7 +197,7 @@ async def _send_reply_segments(wa_id: str, conversation_id: int, reply: str, per
                 media_url=segment["url"],
             )
         else:
-            await asyncio.sleep(human_delay(segment["text"]))
+            await asyncio.sleep(min(human_delay(segment["text"]), 0.35))
             wa_mid = await send_message(wa_id, segment["text"])
             await persist(content=segment["text"], wa_message_id=wa_mid, media_url=None)
 
