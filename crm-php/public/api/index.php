@@ -295,15 +295,8 @@ try {
                 $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 curl_close($ch);
                 if ($code >= 200 && $code < 300) {
-                    Repository::markOutbox($outboxId, 'sent');
-                    Repository::addMessage([
-                        'conversationId' => $convId,
-                        'direction' => 'outbound',
-                        'senderType' => 'agent',
-                        'role' => 'human',
-                        'content' => (string) $body['content'],
-                    ]);
-                    Repository::setMode($convId, 'HUMAN');
+                    // El agente ya: envió WA, mark_outbox, append mensaje y modo HUMAN.
+                    // No volver a insertar el mensaje aquí (evitar duplicados en el inbox).
                 }
             }
         }
