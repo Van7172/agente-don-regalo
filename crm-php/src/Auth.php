@@ -103,14 +103,62 @@ final class Auth
         session_destroy();
     }
 
+    /**
+     * Lee el token del agente desde headers (Apache/CGI a veces renombra).
+     * @return string
+     */
+    private static function requestToken()
+    {
+        $candidates = array();
+        if (!empty($_SERVER['HTTP_X_CRM_TOKEN'])) {
+            $candidates[] = (string) $_SERVER['HTTP_X_CRM_TOKEN'];
+        }
+        if (!empty($_SERVER['REDIRECT_HTTP_X_CRM_TOKEN'])) {
+            $candidates[] = (string) $_SERVER['REDIRECT_HTTP_X_CRM_TOKEN'];
+        }
+        if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
+            $auth = (string) $_SERVER['HTTP_AUTHORIZATION'];
+            if (stripos($auth, 'Bearer ') === 0) {
+                $candidates[] = trim(substr($auth, 7));
+            }
+        }
+        if (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+            $auth = (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+            if (stripos($auth, 'Bearer ') === 0) {
+                $candidates[] = trim(substr($auth, 7));
+            }
+        }
+        if (function_exists('getallheaders')) {
+            $headers = getallheaders();
+            if (is_array($headers)) {
+                foreach ($headers as $k => $v) {
+                    $lk = strtolower((string) $k);
+                    if ($lk === 'x-crm-token') {
+                        $candidates[] = (string) $v;
+                    }
+                    if ($lk === 'authorization' && stripos((string) $v, 'Bearer ') === 0) {
+                        $candidates[] = trim(substr((string) $v, 7));
+                    }
+                }
+            }
+        }
+        foreach ($candidates as $c) {
+            $c = trim($c);
+            if ($c !== '') {
+                return $c;
+            }
+        }
+        return '';
+    }
+
     public static function assertInternalToken()
     {
-        $expected = (string) (isset(self::$config['crm_internal_token']) ? self::$config['crm_internal_token'] : '');
-        if ($expected === '') {
-            Http::jsonError('CRM_INTERNAL_TOKEN not configured', 500);
+        $expected = trim((string) (isset(self::$config['crm_internal_token']) ? self::$config['crm_internal_token'] : ''));
+        if ($expected === '' || $expected === 'cambia-este-token-seguro') {
+            Http::jsonError('CRM_INTERNAL_TOKEN not configured on CRM PHP', 500);
         }
-        $got = isset($_SERVER['HTTP_X_CRM_TOKEN']) ? $_SERVER['HTTP_X_CRM_TOKEN'] : '';
-        if (!hash_equals($expected, (string) $got)) {
+        $got = self::requestToken();
+        if ($got === '' || !hash_equals($expected, $got)) {
             Http::jsonError('Unauthorized', 401);
         }
     }
@@ -118,11 +166,11 @@ final class Auth
     /** @return bool */
     public static function hasValidInternalToken()
     {
-        $expected = (string) (isset(self::$config['crm_internal_token']) ? self::$config['crm_internal_token'] : '');
-        if ($expected === '') {
+        $expected = trim((string) (isset(self::$config['crm_internal_token']) ? self::$config['crm_internal_token'] : ''));
+        if ($expected === '' || $expected === 'cambia-este-token-seguro') {
             return false;
         }
-        $got = isset($_SERVER['HTTP_X_CRM_TOKEN']) ? $_SERVER['HTTP_X_CRM_TOKEN'] : '';
-        return hash_equals($expected, (string) $got);
+        $got = self::requestToken();
+        return $got !== '' && hash_equals($expected, $got);
     }
 }

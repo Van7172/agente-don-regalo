@@ -33,6 +33,16 @@ async def lifespan(_app: FastAPI):
         log.info("[BOOT] sandbox DB local lista")
     else:
         log.info("[BOOT] CRM externo: %s", settings.crm_base_url)
+        token = (settings.crm_internal_token or "").strip()
+        if not token or token in (
+            "dev-crm-token-change-me",
+            "cambia-este-token-seguro",
+            "el-mismo-que-en-config.php",
+        ):
+            log.error(
+                "[BOOT] CRM_INTERNAL_TOKEN inválido o de ejemplo — "
+                "debe coincidir EXACTO con crm_internal_token en config.php del CRM PHP"
+            )
     start_watchdog()
     yield
     stop_watchdog()

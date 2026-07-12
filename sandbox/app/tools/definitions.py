@@ -303,20 +303,24 @@ HUMAN_HANDOFF_TOOL = {
     "function": {
         "name": "escalar_a_humano",
         "description": (
-            "Escala la conversación a un asesor humano. Úsala cuando el cliente PIDA "
-            "explícitamente hablar con una persona ('quiero hablar con un humano', "
-            "'pásame con un asesor', 'quiero un agente real', 'atención humana'), o cuando "
-            "muestre frustración/enojo sostenido que no puedas resolver. "
-            "Tras llamarla NO escribas nada más: el sistema ya envía el mensaje de espera al "
-            "cliente y avisa al equipo, y dejarás de intervenir hasta que un asesor termine. "
-            "NO la uses para dudas normales que puedes resolver con las otras herramientas."
+            "Escala la conversación a un asesor humano y marca el chat para intervención. "
+            "Úsala cuando: (1) el cliente PIDA una persona; (2) muestre frustración/enojo "
+            "sostenido; (3) la tarea exceda tus capacidades — validar o confirmar pagos/"
+            "comprobantes, revisar otro WhatsApp/email, cancelar o modificar pedidos, "
+            "descuentos, o cualquier seguimiento que no puedas verificar en este chat. "
+            "Tras llamarla NO escribas nada más: el sistema envía el mensaje de espera, "
+            "activa soporte humano y deja de intervenir el bot. "
+            "NO la uses para dudas normales que resolviste con las otras herramientas."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "motivo": {
                     "type": "string",
-                    "description": "Motivo breve de la escalación (ej: 'cliente pidió hablar con una persona', 'cliente molesto por demora').",
+                    "description": (
+                        "Motivo breve (ej: 'cliente listo para pagar/comprobante', "
+                        "'pidió asesor humano', 'no puedo verificar pago en otro canal')."
+                    ),
                 },
             },
             "required": [],

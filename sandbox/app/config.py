@@ -33,7 +33,7 @@ class Settings:
         # local = SQLite sandbox (tests/legacy); external = Next.js CRM + MySQL
         self.crm_mode: str = os.getenv("CRM_MODE", "local").strip().lower()
         self.crm_base_url: str = os.getenv("CRM_BASE_URL", "http://127.0.0.1:3100").rstrip("/")
-        self.crm_internal_token: str = os.getenv("CRM_INTERNAL_TOKEN", "dev-crm-token-change-me")
+        self.crm_internal_token: str = os.getenv("CRM_INTERNAL_TOKEN", "dev-crm-token-change-me").strip()
         self.agent_internal_token: str = os.getenv("AGENT_INTERNAL_TOKEN", "dev-agent-token-change-me")
         self.alert_whatsapp: str = os.getenv("ALERT_WHATSAPP", "").replace("+", "").strip()
         self.watchdog_enabled: bool = os.getenv("WATCHDOG_ENABLED", "1") == "1"

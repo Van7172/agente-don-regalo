@@ -13,8 +13,12 @@ log = logging.getLogger(__name__)
 
 def _headers() -> dict[str, str]:
     h = {"Content-Type": "application/json"}
-    if settings.crm_internal_token:
-        h["X-CRM-Token"] = settings.crm_internal_token
+    token = (settings.crm_internal_token or "").strip()
+    if token:
+        h["X-CRM-Token"] = token
+        h["Authorization"] = f"Bearer {token}"
+    else:
+        log.warning("[CRM-HTTP] CRM_INTERNAL_TOKEN vacío — las llamadas al CRM fallarán con 401")
     return h
 
 
