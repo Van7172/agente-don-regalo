@@ -487,6 +487,75 @@ final class Repository
         );
     }
 
+    /**
+     * Serie "conversaciones por día" para el gráfico de reportes.
+     * Rellena con 0 los días sin actividad para que la línea no se corte.
+     *
+     * @return list<array{date: string, label: string, value: int}>
+     */
+    public static function reportsDaily(?string $from, ?string $to): array
+    {
+        $tenantId = self::ensureTenantId();
+        $from = $from ?: date('Y-m-d', strtotime('-30 days'));
+        $to = $to ?: date('Y-m-d');
+
+        $rows = Database::fetchAll(
+            'SELECT DATE(fecha_creacion) AS d, COUNT(*) AS n
+             FROM crm_conversations
+             WHERE id_tenant = :t AND fecha_creacion BETWEEN :f AND :to
+             GROUP BY DATE(fecha_creacion)
+             ORDER BY d ASC',
+            [
+                't' => $tenantId,
+                'f' => $from . ' 00:00:00',
+                'to' => $to . ' 23:59:59',
+            ]
+        );
+
+        $counts = [];
+        foreach ($rows as $row) {
+            $counts[(string) $row['d']] = (int) $row['n'];
+        }
+
+        $weekdays = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+        $span = (int) floor((strtotime($to) - strtotime($from)) / 86400) + 1;
+        // Hasta una semana el día de la semana se lee solo; más allá se repite y confunde.
+        $useWeekday = $span <= 7;
+
+        $series = [];
+        $cursor = strtotime($from);
+        $end = strtotime($to);
+        // Cota de seguridad: rangos enormes no deben reventar el gráfico.
+        for ($i = 0; $cursor <= $end && $i < 180; $i++) {
+            $key = date('Y-m-d', $cursor);
+            $series[] = [
+                'date' => $key,
+                'label' => $useWeekday ? $weekdays[(int) date('w', $cursor)] : date('j/n', $cursor),
+                'value' => $counts[$key] ?? 0,
+            ];
+            $cursor = strtotime('+1 day', $cursor);
+        }
+
+        return $series;
+    }
+
+    /**
+     * MySQL DATETIME → ISO-8601 con offset del servidor.
+     * Sin el offset, el navegador lee "2026-07-12 17:03:00" como hora local suya
+     * y las horas del inbox se desplazan si el servidor no está en la misma zona.
+     */
+    public static function iso(?string $datetime): ?string
+    {
+        if ($datetime === null || $datetime === '') {
+            return null;
+        }
+        try {
+            return (new DateTimeImmutable($datetime))->format(DateTimeInterface::ATOM);
+        } catch (Exception $e) {
+            return null;
+        }
+    }
+
     public static function mapConversationList(array $c): array
     {
         return [
@@ -495,7 +564,7 @@ final class Repository
             'mode' => $c['mode_conversation'],
             'bot_active' => (bool) $c['bot_active'],
             'human_support' => (bool) $c['human_support'],
-            'last_message_at' => $c['last_message_at'],
+            'last_message_at' => self::iso($c['last_message_at']),
             'contact' => [
                 'wa_id' => $c['wa_id'],
                 'name' => $c['nombre_contact'],

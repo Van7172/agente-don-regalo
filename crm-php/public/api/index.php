@@ -113,6 +113,7 @@ try {
                 Http::jsonError('Conversation not found', 404);
             }
             $messages = Repository::getMessages($id);
+            $memory = Repository::getMemory((string) $conv['wa_id']);
             Http::jsonOk([
                 'conversation' => [
                     'id' => (int) $conv['id_conversation'],
@@ -120,11 +121,21 @@ try {
                     'mode' => $conv['mode_conversation'],
                     'bot_active' => (bool) $conv['bot_active'],
                     'human_support' => (bool) $conv['human_support'],
+                    'last_message_at' => Repository::iso($conv['last_message_at']),
                     'contact' => [
                         'wa_id' => $conv['wa_id'],
                         'name' => $conv['nombre_contact'],
                     ],
                 ],
+                // Alimenta el panel "Resumen del lead" del inbox.
+                'lead' => $memory ? [
+                    'nombre' => $memory['nombre_memory'] ?? null,
+                    'email' => $memory['email_memory'] ?? null,
+                    'objetivo' => $memory['objetivo_memory'] ?? null,
+                    'situacion' => $memory['situacion_memory'] ?? null,
+                    'temperatura' => $memory['temperatura_memory'] ?? null,
+                    'resumen' => $memory['resumen_memory'] ?? null,
+                ] : null,
                 'messages' => array_map(static function (array $msg): array {
                     return [
                         'id' => (int) $msg['id_message'],
@@ -135,7 +146,7 @@ try {
                         'media_url' => $msg['media_url'],
                         'quoted_text' => $msg['quoted_text'],
                         'wa_message_id' => $msg['wa_message_id'],
-                        'created_at' => $msg['fecha_creacion'],
+                        'created_at' => Repository::iso($msg['fecha_creacion']),
                     ];
                 }, $messages),
             ]);

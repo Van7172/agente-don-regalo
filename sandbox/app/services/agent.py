@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import random
+import re
+import unicodedata
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +43,21 @@ _FILLER_BY_TOOL: dict[str, list[str]] = {
     "buscar_conocimiento_equipo": ["Déjame verificar eso para darte la mejor respuesta 😊"],
 }
 
+# Saludos cortos: no mandar filler temprano (evita "Un momento..." + saludo real).
+_GREETING_RE = re.compile(
+    r"^(?:"
+    r"h+o+l+a+s?|holis|"
+    r"buenas?|"
+    r"buen[oa]s?\s+d[ií]as?|"
+    r"buenas?\s+tardes?|"
+    r"buenas?\s+noches?|"
+    r"qu[eé]\s+tal|"
+    r"c[oó]mo\s+est[aá]s?|"
+    r"hey|hi|hello|saludos?"
+    r")"
+    r"(?:\s+(?:a\s+todos?|amigo|amiga|equipo|don\s*regalo))?$"
+)
+
 _filler_conversations: set[int] = set()
 
 
@@ -51,6 +68,46 @@ def _filler_for_tools(tool_calls: list) -> str | None:
         if opciones:
             return random.choice(opciones)
     return None
+
+
+def _latest_user_text(messages: list) -> str | None:
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in ("image_url", "image"):
+                    return None
+                if part.get("type") == "text":
+                    texts.append(part.get("text") or "")
+            joined = "\n".join(t for t in texts if t).strip()
+            return joined or None
+        return None
+    return None
+
+
+def _normalize_greeting_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).lower().strip()
+    text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
+    text = re.sub(r"[^\w\sáéíóúüñ]", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_simple_greeting(messages: list) -> bool:
+    """True si el último mensaje del usuario es solo un saludo breve."""
+    raw = _latest_user_text(messages)
+    if not raw or len(raw) > 80:
+        return False
+    norm = _normalize_greeting_text(raw)
+    if not norm or len(norm) > 60:
+        return False
+    return bool(_GREETING_RE.match(norm))
 
 
 async def run_agent(
@@ -70,6 +127,7 @@ async def run_agent(
 
     filler_sent = conversation_id in _filler_conversations if conversation_id else True
     early_filler_task: asyncio.Task | None = None
+    skip_early_filler = _is_simple_greeting(messages)
 
     async def _send_early_filler() -> None:
         """Aviso rápido si el 1.er round de LLM tarda (tools / OpenAI)."""
@@ -90,7 +148,8 @@ async def run_agent(
             log.warning("[FILLER] early failed: %s", e)
 
     try:
-        if not filler_sent and conversation_id is not None:
+        # Saludos simples: ir directo a la respuesta (sin "Un momento...").
+        if not filler_sent and conversation_id is not None and not skip_early_filler:
             early_filler_task = asyncio.create_task(_send_early_filler())
 
         async with httpx.AsyncClient(timeout=60.0) as client:
