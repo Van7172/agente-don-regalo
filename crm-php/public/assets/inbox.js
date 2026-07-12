@@ -120,12 +120,12 @@
       const help = conv.human_support ? " · necesita ayuda" : "";
       metaEl.textContent = `${conv.contact?.wa_id || ""} · modo ${conv.mode}${help}`;
       threadEl.innerHTML = messages
-        .map(
-          (m) => `<div class="bubble ${m.direction === "inbound" ? "inbound" : "outbound"}">
-            <div class="who">${escapeHtml(m.sender_type || m.role || "")}</div>
-            ${escapeHtml(m.content || "")}
-          </div>`
-        )
+        .map((m) => {
+          const side = m.direction === "inbound" ? "inbound" : "outbound";
+          const who = escapeHtml(m.sender_type || m.role || "");
+          const text = escapeHtml(m.content || "");
+          return `<div class="bubble ${side}"><div class="who">${who}</div><div class="txt">${text}</div></div>`;
+        })
         .join("");
       threadEl.scrollTop = threadEl.scrollHeight;
       showError("");
