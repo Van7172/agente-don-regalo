@@ -55,6 +55,52 @@ class WhatsAppClient:
             log.info("[WA] text -> %s id=%s", to_wa_id, data.get("messages", [{}])[0].get("id"))
             return data
 
+    async def upload_media(
+        self, data: bytes, mime_type: str = "image/jpeg", filename: str = "image.jpg"
+    ) -> str:
+        """Sube bytes a Graph y devuelve media_id."""
+        if settings.whatsapp_dry_run:
+            return f"dry.media.{int(__import__('time').time() * 1000)}"
+        if not self.token or not self.phone_id:
+            raise RuntimeError("WHATSAPP_TOKEN o WHATSAPP_PHONE_NUMBER_ID vacíos")
+        url = f"{self.base}/{self.phone_id}/media"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {self.token}"},
+                data={"messaging_product": "whatsapp", "type": mime_type},
+                files={"file": (filename, data, mime_type)},
+            )
+            if r.status_code >= 400:
+                log.error("[WA] upload_media FAIL status=%s body=%s", r.status_code, r.text[:500])
+            r.raise_for_status()
+            media_id = r.json().get("id")
+            if not media_id:
+                raise RuntimeError(f"upload_media sin id: {r.text[:300]}")
+            return str(media_id)
+
+    async def send_image_id(self, to_wa_id: str, media_id: str, caption: str = "") -> dict[str, Any]:
+        if settings.whatsapp_dry_run:
+            fake_id = f"wamid.dry.img.{int(__import__('time').time() * 1000)}"
+            log.info("[WA-DRY] image(id) -> %s id=%s media=%s", to_wa_id, fake_id, media_id)
+            return {"messages": [{"id": fake_id}]}
+        image: dict[str, Any] = {"id": media_id}
+        if caption:
+            image["caption"] = caption
+        body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "image",
+            "image": image,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(self._messages_url(), headers=self._headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+            log.info("[WA] image(id) -> %s media=%s", to_wa_id, media_id)
+            return data
+
     async def send_image_url(self, to_wa_id: str, image_url: str, caption: str = "") -> dict[str, Any]:
         if settings.whatsapp_dry_run:
             fake_id = f"wamid.dry.img.{int(__import__('time').time() * 1000)}"

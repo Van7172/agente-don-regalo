@@ -41,6 +41,19 @@ _CAMPAIGN_TERMS = (
     "fiestas patrias",
 )
 
+# Si el cliente nombró una categoría en la query y el LLM olvidó categoria_slug, la inyectamos.
+_CATEGORY_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("desayuno", "desayunos", "brunch", "media manana", "media mañana"), "desayunos"),
+    (("peluche", "peluches", "oso de peluche"), "peluches"),
+    (("planta", "plantas"), "plantas"),
+    (("cesta", "cestas", "canasta", "canastas"), "cestas"),
+    (("bebe", "bebé", "nacimiento", "baby"), "regalo-para-bebe"),
+    (
+        ("flor", "flores", "ramo", "ramos", "rosas", "girasol", "tulipan", "arreglo floral"),
+        "arreglos-florales",
+    ),
+)
+
 
 def _norm_text(value: object) -> str:
     text = str(value or "").lower()
@@ -58,6 +71,20 @@ def _is_free_campaign_search(args: dict) -> bool:
     return any(term in q for term in _CAMPAIGN_TERMS)
 
 
+def _infer_categoria_slug(args: dict) -> str | None:
+    """Infiere slug desde q cuando el modelo no envió categoria_slug."""
+    if args.get("categoria_slug"):
+        return None
+    q = _norm_text(args.get("q"))
+    if not q:
+        return None
+    # Prioridad: desayuno antes que flores (un "desayuno con rosas" sigue siendo desayuno)
+    for terms, slug in _CATEGORY_HINTS:
+        if any(term in q for term in terms):
+            return slug
+    return None
+
+
 async def execute_tool(name: str, args: dict) -> str:
     """Ejecuta una herramienta y devuelve el resultado como string JSON."""
     try:
@@ -65,7 +92,8 @@ async def execute_tool(name: str, args: dict) -> str:
             if name in _CATALOG_TOOLS:
                 result = await _CATALOG_TOOLS[name](client, args or {})
             elif name == "buscar_semantico":
-                if _is_free_campaign_search(args or {}):
+                args = dict(args or {})
+                if _is_free_campaign_search(args):
                     result = {
                         "error": (
                             "Búsqueda semántica libre bloqueada para campaña de temporada. "
@@ -77,7 +105,14 @@ async def execute_tool(name: str, args: dict) -> str:
                         "blocked": True,
                     }
                 else:
-                    result = await search.buscar_semantico(client, args or {})
+                    inferred = _infer_categoria_slug(args)
+                    if inferred:
+                        args["categoria_slug"] = inferred
+                        log.info(
+                            "[tool] buscar_semantico: inyectado categoria_slug=%s",
+                            inferred,
+                        )
+                    result = await search.buscar_semantico(client, args)
             elif name == "productos_similares":
                 result = await search.productos_similares(client, args or {})
             elif name == "buscar_conocimiento_equipo":
