@@ -14,7 +14,7 @@ Panel + APIs HTTP sobre MySQL `donregalo_bd` (Opción C).
 cd crm
 copy .env.example .env.local   # si aún no existe
 npm install
-# Schema (ya aplicado si corriste la migración):
+# Schema local:
 # mysql -u root -h 127.0.0.1 -P 3307 donregalo_bd < sql/001_crm_schema.sql
 npm run dev
 ```
@@ -22,7 +22,26 @@ npm run dev
 Panel: http://127.0.0.1:3100  
 Health: http://127.0.0.1:3100/api/health
 
-## APIs principales
+## Deploy EasyPanel (VPS) + MySQL del cliente
+
+Guía completa: [`docs/DEPLOY_EASYPANEL.md`](docs/DEPLOY_EASYPANEL.md)
+
+Resumen: servicio App con build path `/crm`, dominio `crm.donregalo.pe`, env MySQL remoto del hosting del cliente, y sandbox con `CRM_MODE=external`.
+
+## Schema MySQL
+
+| Archivo | Uso |
+|---|---|
+| `sql/001_crm_schema.sql` | Desarrollo local (XAMPP) |
+| `sql/002_crm_schema_produccion.sql` | **Producción** — mismo schema + verificación |
+
+En producción (phpMyAdmin o CLI), ejecuta `002_crm_schema_produccion.sql` sobre la BD Don Regalo.
+Crea solo tablas `crm_*`; el login sigue usando `usuarios` + `roles` existentes.
+
+```powershell
+# Ejemplo CLI (ajusta host/user/bd):
+mysql -u root -p -h 127.0.0.1 donregalo_bd < sql/002_crm_schema_produccion.sql
+```
 
 | Método | Ruta | Uso |
 |---|---|---|
