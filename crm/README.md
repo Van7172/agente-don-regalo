@@ -1,6 +1,12 @@
-# CRM Don Regalo (`crm/`)
+# CRM Don Regalo (`crm/`) — LEGADO
 
-Panel + APIs HTTP sobre MySQL `donregalo_bd` (Opción C).
+> **Producción:** usa [`crm-php/`](../crm-php/) en el subdominio del cliente
+> (`crm.donregalo.pe`). Este proyecto Next.js ya **no** es el panel de asesores.
+> No desplegar `app-crm` en EasyPanel para el flujo Don Regalo actual.
+
+---
+
+Panel + APIs HTTP sobre MySQL `donregalo_bd` (Opción C, referencia histórica).
 
 ## Requisitos
 
@@ -24,9 +30,9 @@ Health: http://127.0.0.1:3100/api/health
 
 ## Deploy EasyPanel (VPS) + MySQL del cliente
 
-Guía completa: [`docs/DEPLOY_EASYPANEL.md`](docs/DEPLOY_EASYPANEL.md)
+**Obsoleto para producción Don Regalo.** Preferir [`../crm-php/docs/DEPLOY.md`](../crm-php/docs/DEPLOY.md).
 
-Resumen: servicio App con build path `/crm`, dominio `crm.donregalo.pe`, env MySQL remoto del hosting del cliente, y sandbox con `CRM_MODE=external`.
+Guía histórica Next: [`docs/DEPLOY_EASYPANEL.md`](docs/DEPLOY_EASYPANEL.md)
 
 ## Schema MySQL
 

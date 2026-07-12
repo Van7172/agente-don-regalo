@@ -1,5 +1,11 @@
 # =============================================================================
-# CRM en EasyPanel (VPS) + MySQL del cliente (donregalo.pe)
+# CRM en EasyPanel (LEGADO — preferir crm-php/ en el hosting del cliente)
+# =============================================================================
+#
+# Producción actual: subdominio PHP del cliente → ver ../crm-php/docs/DEPLOY.md
+#
+# Este documento describe el intento anterior (Next.js en VPS + MySQL remoto).
+# No usar para Don Regalo salvo mantenimiento del prototipo Next.
 # =============================================================================
 
 ## Arquitectura

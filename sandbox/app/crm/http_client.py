@@ -1,4 +1,4 @@
-"""Cliente HTTP hacia el CRM Next.js (fuente de verdad Opción C)."""
+"""Cliente HTTP hacia el CRM (crm-php en subdominio del cliente, o legacy Next)."""
 from __future__ import annotations
 
 import logging
@@ -32,6 +32,14 @@ async def _request(
     url = f"{settings.crm_base_url.rstrip('/')}{path}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         res = await client.request(method, url, headers=_headers(), json=json, params=params)
+        if res.status_code >= 400:
+            log.error(
+                "[CRM-HTTP] %s %s -> %s body=%s",
+                method,
+                url,
+                res.status_code,
+                (res.text or "")[:500],
+            )
         res.raise_for_status()
         return res.json()
 

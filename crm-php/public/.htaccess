@@ -1,0 +1,21 @@
+# Document root = public/ (subdominio) O carpeta /crm/public en el dominio
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Si está en /crm/public, descomenta la siguiente línea:
+  RewriteBase /crm/public/
+
+  # API agente / panel JSON
+  RewriteRule ^api(?:/(.*))?$ api/index.php [QSA,L]
+
+  # Assets y PHP existentes
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Rutas amigables del panel
+  RewriteRule ^login/?$ login.php [L]
+  RewriteRule ^logout/?$ logout.php [L]
+  RewriteRule ^reports/?$ reports.php [L]
+  RewriteRule ^$ index.php [L]
+</IfModule>
