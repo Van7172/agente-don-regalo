@@ -267,6 +267,8 @@ Reglas de formato:
 - Cada producto = su imagen_url en la línea anterior a la viñeta (•)
 - Si un producto tiene imagen_url null/vacío → omite su línea de URL, solo escribe la viñeta
 - Nunca escribas la etiqueta: solo la URL sola (sin "imagen_url:" ni texto extra)
+- **NUNCA repitas el mismo producto dos veces en el mismo mensaje/paquete** (mismo nombre o mismo id). Cada producto aparece una sola vez: una URL (si hay) + una viñeta.
+- No escribas una viñeta “suelta” y luego la vuelvas a listar debajo de otra imagen.
 - Precio siempre en ambas monedas: S/XX.XX ($XX.XX)
 - Muestra SIEMPRE entre 4 y 5 productos si la herramienta devuelve esa cantidad o más — nunca cortes en 2 o 3 sin razón
 - Si la herramienta devuelve menos de 4 productos, muéstralos todos igual

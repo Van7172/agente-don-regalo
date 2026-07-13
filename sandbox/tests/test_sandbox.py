@@ -102,6 +102,55 @@ def test_split_reply_image_and_text():
     assert "text" in types
 
 
+def test_dedupe_products_same_package_no_repeat():
+    """Regresión: mismo producto en texto suelto y otra vez bajo otra imagen."""
+    from app.services.messenger import _product_key, dedupe_products_in_reply, split_reply
+
+    reply = (
+        "• 🎁 *Peluche Kitty Sunshine* — S/ 95.20 ($28.00)\n"
+        "  Peluche Kitty Sunshine, diseño tierno.\n"
+        "\n"
+        "https://cdn.example.com/oso.jpg\n"
+        "• 🎁 *Peluche Kitty Sunshine* — S/ 95.20 ($28.00)\n"
+        "  Peluche Kitty Sunshine, diseño tierno.\n"
+        "• 🎁 *Osito Encantador* — S/ 107.37 ($31.58)\n"
+        "  Osito cariñoso, pelaje antialérgico y frase bordada.\n"
+        "\n"
+        "¿Quieres más detalles de alguno? 😊"
+    )
+    cleaned = dedupe_products_in_reply(reply)
+    keys = [_product_key(line) for line in cleaned.split("\n") if _product_key(line)]
+    assert keys.count("peluche kitty sunshine") == 1
+    assert "osito encantador" in keys
+
+    segs = split_reply(reply)
+    blob = "\n".join(
+        (s.get("caption") or s.get("text") or "") for s in segs
+    )
+    seg_keys = [_product_key(line) for line in blob.split("\n") if _product_key(line)]
+    assert seg_keys.count("peluche kitty sunshine") == 1
+    assert "osito encantador" in seg_keys
+
+
+def test_dedupe_keeps_distinct_products():
+    from app.services.messenger import split_reply
+
+    reply = (
+        "https://cdn.example.com/a.jpg\n"
+        "• 🎁 *Peluche Oso Loquito de Amor* — S/64.60 ($19.00)\n"
+        "  En caja con tarjeta.\n"
+        "\n"
+        "https://cdn.example.com/b.jpg\n"
+        "• 🎁 *Peluche Osita Lotso Dormida* — S/81.60 ($24.00)\n"
+        "  Lotso dormido 35 cm.\n"
+    )
+    segs = split_reply(reply)
+    assert len([s for s in segs if s["type"] == "image"]) == 2
+    blob = "\n".join(s.get("caption", "") for s in segs if s["type"] == "image")
+    assert "loquito" in blob.casefold()
+    assert "lotso" in blob.casefold()
+
+
 @pytest.mark.asyncio
 async def test_init_db_and_tenant():
     from app.db import init_db, SessionLocal

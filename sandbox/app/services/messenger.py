@@ -14,6 +14,14 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 _IMG_LINE = re.compile(r"^\s*(https?://\S+\.(?:jpg|jpeg|png|webp))\s*$", re.IGNORECASE)
+# Viñeta de producto: "• 🎁 *Nombre* — S/…" o sin asteriscos/emoji.
+_PRODUCT_BULLET = re.compile(
+    r"^[\s•\*\-]+\s*"
+    r"(?:[\U0001F300-\U0001FAFF\u2600-\u27BF]+\s*)*"
+    r"\*?([^*\n—\-]{2,}?)\*?"
+    r"\s*[—\-]\s*S\s*/",
+    re.IGNORECASE,
+)
 _DIRECT_IMAGE_MIMES = {"image/jpeg", "image/png"}
 
 
@@ -22,7 +30,59 @@ def human_delay(text: str) -> float:
     return max(settings.typing_min_delay, min(secs, settings.typing_max_delay))
 
 
+def _product_key(line: str) -> str | None:
+    """Nombre normalizado de una viñeta de producto, o None si no lo es."""
+    m = _PRODUCT_BULLET.match(line.strip())
+    if not m:
+        return None
+    name = re.sub(r"\s+", " ", m.group(1)).strip().casefold()
+    return name or None
+
+
+def dedupe_products_in_reply(reply: str) -> str:
+    """Quita productos repetidos en un mismo paquete de respuesta.
+
+    El LLM a veces escribe la viñeta sin URL y luego la vuelve a listar bajo
+    otra imagen (el cliente ve el mismo producto dos veces). Conservamos la
+    primera aparición; las siguientes (y su línea de descripción) se descartan.
+    """
+    if not reply:
+        return reply
+
+    seen: set[str] = set()
+    out: list[str] = []
+    skipping_dup = False
+
+    for line in reply.split("\n"):
+        if _IMG_LINE.match(line):
+            skipping_dup = False
+            out.append(line)
+            continue
+
+        key = _product_key(line)
+        if key is not None:
+            if key in seen:
+                skipping_dup = True
+                continue
+            seen.add(key)
+            skipping_dup = False
+            out.append(line)
+            continue
+
+        if skipping_dup:
+            stripped = line.strip()
+            # Descripción del duplicado (no vacío, no pregunta de cierre, no URL).
+            if stripped and not stripped.startswith("¿") and not _IMG_LINE.match(line):
+                continue
+            skipping_dup = False
+
+        out.append(line)
+
+    return "\n".join(out)
+
+
 def split_reply(reply: str) -> list[dict]:
+    reply = dedupe_products_in_reply(reply)
     lines = reply.split("\n")
     segments: list[dict] = []
     pending_image: str | None = None

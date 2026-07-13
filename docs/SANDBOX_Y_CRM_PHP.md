@@ -208,6 +208,7 @@ crm-php/
 
 
 Schema tablas `crm_*`: `crm/sql/002_crm_schema_produccion.sql`.
+Medios (audio/PDF en outbox): `crm-php/sql/003_media_outbox.sql` (ensancha `type_outbox`).
 
 ### 4.3 Autenticación
 

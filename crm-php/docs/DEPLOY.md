@@ -63,6 +63,15 @@ Si aún no corriste el SQL de producción:
 
 `crm/sql/002_crm_schema_produccion.sql` en phpMyAdmin (BD del cliente).
 
+Si el asesor no puede adjuntar PDF/audio (`Data truncated for column 'type_outbox'`):
+
+```sql
+-- crm-php/sql/003_media_outbox.sql
+ALTER TABLE crm_outbox
+  MODIFY COLUMN type_outbox ENUM('text','image','audio','document')
+  NOT NULL DEFAULT 'text';
+```
+
 ## 4. Apache
 
 `public/.htaccess` requiere `mod_rewrite`. En Nginx, reescribe `/api/*` a `api/index.php`.
