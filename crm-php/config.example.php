@@ -27,4 +27,7 @@ return [
     'catalog_api_base' => 'https://donregalo.pe/clienteApiApp/api',
     'session_name' => 'dr_crm_php',
     'app_name' => 'Don Regalo CRM',
+    // Zona del negocio. PHP y MySQL se alinean a esta: si no, las horas del
+    // inbox no cuadran con las que el cliente ve en WhatsApp.
+    'timezone' => 'America/Lima',
 ];

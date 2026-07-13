@@ -24,6 +24,13 @@ final class Database
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ));
+
+        // MySQL y PHP deben coincidir. Sin esto, NOW() escribe la hora del servidor
+        // de BD y PHP la interpreta en SU zona: el inbox mostraba las horas
+        // desfasadas respecto a lo que el cliente ve en WhatsApp.
+        $offset = (new DateTimeImmutable('now'))->format('P'); // ej. "-05:00"
+        $stmt = self::$pdo->prepare('SET time_zone = :tz');
+        $stmt->execute(array('tz' => $offset));
     }
 
     /** @return PDO */

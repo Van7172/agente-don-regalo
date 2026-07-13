@@ -10,6 +10,9 @@ if (!is_file($configPath)) {
 /** @var array $config */
 $config = require $configPath;
 
+// Antes de tocar la BD: MySQL se alinea a esta zona al conectar.
+date_default_timezone_set($config['timezone'] ?? 'America/Lima');
+
 require_once __DIR__ . '/src/Database.php';
 require_once __DIR__ . '/src/Auth.php';
 require_once __DIR__ . '/src/Http.php';
