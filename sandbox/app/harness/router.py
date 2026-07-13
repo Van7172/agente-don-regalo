@@ -31,7 +31,7 @@ _POLICY_RE = re.compile(
 )
 _CATALOG_RE = re.compile(
     r"busco|quiero|tienen|peluche|desayuno|ramo|rosa|girasol|flor|regalo|"
-    r"cesta|planta|catalogo|cat[aá]logo|opcion|modelo|muestra|manda|"
+    r"cesta|planta|terrario|panda|osito|catalogo|cat[aá]logo|opcion|modelo|muestra|manda|"
     r"dia\s+del\s+padre|fiestas\s+patrias|corp",
     re.I,
 )
