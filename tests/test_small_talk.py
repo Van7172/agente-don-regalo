@@ -161,6 +161,12 @@ async def test_no_escala_ante_charla_trivial_y_responde_con_calidez(espias, monk
         "quiero el catalogo de fiestas patrias",
         "Es para unos recuerdos de exposición para el colegio",
         "y este que está en su pagina",
+        "Tienen está disponible?",
+        "Floral",
+        "Me gusta esta",
+        "09 AM a 11:00 AM",
+        "Se puede pagar con tarjeta ?",
+        "Ramo de 3 Girasoles Radiantes",
     ],
 )
 def test_venta_en_curso_descarta_handoff(text):

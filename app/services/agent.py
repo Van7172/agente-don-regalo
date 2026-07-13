@@ -203,7 +203,7 @@ def _is_small_talk(messages: list) -> bool:
 # Si el cliente pide esto, el handoff SÍ procede aunque también diga "corporativo".
 _HANDOFF_FORCE_RE = re.compile(
     r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
-    r"comprobante|ya\s+pagu|transfer[ií]|yape|plin|"
+    r"comprobante|ya\s+pagu|transfer[ií]|"
     r"descuento|cancelar|modificar\s+(el\s+)?pedido|"
     r"mala\s+atenci|no\s+me\s+ayud|quiero\s+hablar\s+con",
     re.IGNORECASE,
@@ -215,7 +215,11 @@ _SALES_CONTINUE_RE = re.compile(
     r"recuerdo|exposici|fiestas?\s+patrias|patrias|"
     r"cantidad|unidades|docena|presupuesto|cotizaci|"
     r"cat[aá]logo|en\s+su\s+p[aá]gina|en\s+la\s+p[aá]gina|"
-    r"desayuno|cesta|suculenta|arreglo|"
+    r"desayuno|cesta|suculenta|arreglo|girasol|rosa|ramo|floral|"
+    r"disponib|stock|horario|distrito|delivery|entrega|"
+    r"tarjeta|visa|mastercard|paypal|"
+    r"reserv[aoe]|me\s+gusta\s+est|elijo|escoger|"
+    r"\d+\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)|"
     r"\b\d+\s*(?:y|,|/|&)\s*\d+\b|\by\s*\d+\b",
     re.IGNORECASE,
 )
@@ -235,6 +239,13 @@ def _should_discard_handoff(messages: list) -> bool | str:
     raw = _latest_user_text(messages)
     if not raw:
         return False
+    # Solo media (sin texto útil): seguir vendiendo, no escalar por “vacío”.
+    if re.fullmatch(r"\[(?:image|video|audio|document|sticker)\]", raw.strip(), re.I):
+        return (
+            "El cliente envió solo un archivo/media. Identifica el producto "
+            "(nombre en la captura si hay visión) o pregunta a qué se refiere; "
+            "NO escales."
+        )
     if _HANDOFF_FORCE_RE.search(raw):
         return False
     if _SALES_CONTINUE_RE.search(raw):
