@@ -1,5 +1,7 @@
 # Deploy CRM PHP en el hosting del cliente
 
+Documentación de producto/arquitectura completa: [`../../docs/SANDBOX_Y_CRM_PHP.md`](../../docs/SANDBOX_Y_CRM_PHP.md).
+
 ## Arquitectura
 
 - **Panel + MySQL:** carpeta `public_html/crm` (o subdominio) en hosting del cliente.

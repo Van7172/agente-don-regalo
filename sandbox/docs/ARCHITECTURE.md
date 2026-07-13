@@ -2,6 +2,9 @@
 
 ## Visión
 
+Producción Don Regalo (CRM externo PHP): ver
+[`docs/SANDBOX_Y_CRM_PHP.md`](../../docs/SANDBOX_Y_CRM_PHP.md).
+
 ```text
 Cliente WhatsApp
        │
@@ -12,13 +15,14 @@ Cliente WhatsApp
   sandbox/app (FastAPI)
        │
        ├─► channels/whatsapp   (parse + send Graph API)
-       ├─► crm                 (Postgres/SQLite: contacts, conversations, messages)
-       ├─► agent/services      (buffer, LLM loop, tools)
+       ├─► crm                 (local SQLite O CRM_MODE=external → crm-php)
+       ├─► agent/services      (buffer, LLM loop, tools, fillers)
        ├─► Qdrant              (productos + conocimiento)
        └─► API donregalo.pe    (catálogo real)
        │
        ▼
-  Panel web (asesor humano / handoff)
+  Panel CRM PHP (asesor humano / handoff)  ← producción
+  (crm/ Next.js = legado)
 ```
 
 ## Capas
