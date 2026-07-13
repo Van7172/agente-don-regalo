@@ -153,20 +153,56 @@ async def test_no_escala_ante_charla_trivial_y_responde_con_calidez(espias, monk
     assert espias["enviados"] == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Son regalos Corporativos por Fiestas Patrias",
+        "2 y 3",
+        "quiero el catalogo de fiestas patrias",
+        "Es para unos recuerdos de exposición para el colegio",
+        "y este que está en su pagina",
+    ],
+)
+def test_venta_en_curso_descarta_handoff(text):
+    assert agent_mod._should_discard_handoff(_user(text))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "quiero hablar con un asesor",
+        "son corporativos pero pásame con una persona",
+        "ya pagué, aquí el comprobante",
+        "necesito un descuento corporativo",
+    ],
+)
+def test_venta_con_pedido_humano_o_pago_si_permite_handoff(text):
+    assert agent_mod._should_discard_handoff(_user(text)) is False
+
+
 @pytest.mark.asyncio
-async def test_si_pide_un_asesor_si_escala(espias, monkeypatch):
-    """La red de seguridad no debe romper la escalación de verdad."""
+async def test_no_escala_ante_corporativo_fiestas_patrias(espias, monkeypatch):
+    """Regresión: 'regalos corporativos' no debe aparcar el lead en HUMAN."""
+    respuestas = [
+        _tool_call("escalar_a_humano"),
+        _final(
+            "¡Perfecto! 😊 ¿Para cuántas personas aproximadamente serían "
+            "los regalos corporativos?"
+        ),
+    ]
+
     async def fake_chat(_client, _payload):
-        return _tool_call("escalar_a_humano")
+        return respuestas.pop(0)
 
     monkeypatch.setattr(agent_mod, "_chat_completion", fake_chat)
 
     reply = await agent_mod.run_agent(
-        _user("quiero hablar con un asesor humano"),
+        _user("Son regalos Corporativos por Fiestas Patrias"),
         wa_id="51999",
         conversation_id=7,
         use_external_crm=False,
     )
 
-    assert reply == agent_mod.HANDOFF_DONE
-    assert any("asesor" in t for t in espias["enviados"])
+    assert reply != agent_mod.HANDOFF_DONE
+    assert "cuántas" in reply.lower() or "personas" in reply.lower()
+    assert not any("asesor" in t.lower() for t in espias["enviados"])

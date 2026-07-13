@@ -200,6 +200,54 @@ def _is_small_talk(messages: list) -> bool:
     )
 
 
+# Si el cliente pide esto, el handoff SÍ procede aunque también diga "corporativo".
+_HANDOFF_FORCE_RE = re.compile(
+    r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
+    r"comprobante|ya\s+pagu|transfer[ií]|yape|plin|"
+    r"descuento|cancelar|modificar\s+(el\s+)?pedido|"
+    r"mala\s+atenci|no\s+me\s+ayud|quiero\s+hablar\s+con",
+    re.IGNORECASE,
+)
+
+# Contexto de venta en curso: el bot debe seguir preguntando, no escalar.
+_SALES_CONTINUE_RE = re.compile(
+    r"corporativ|empresa|b2b|mayorista|colegio|instituci|"
+    r"recuerdo|exposici|fiestas?\s+patrias|patrias|"
+    r"cantidad|unidades|docena|presupuesto|cotizaci|"
+    r"cat[aá]logo|en\s+su\s+p[aá]gina|en\s+la\s+p[aá]gina|"
+    r"desayuno|cesta|suculenta|arreglo|"
+    r"\b\d+\s*(?:y|,|/|&)\s*\d+\b|\by\s*\d+\b",
+    re.IGNORECASE,
+)
+
+
+def _should_discard_handoff(messages: list) -> bool | str:
+    """
+    True/motivo si hay que rechazar escalar_a_humano.
+    Charla trivial O venta en curso (corporativo, catálogo, opción 2 y 3…)
+    sin pedido explícito de humano/pago.
+    """
+    if _is_small_talk(messages):
+        return (
+            "El cliente no está pidiendo nada: es cortesía o charla suelta. "
+            "No se escala. Responde tú, corto y cálido, y deja la puerta abierta."
+        )
+    raw = _latest_user_text(messages)
+    if not raw:
+        return False
+    if _HANDOFF_FORCE_RE.search(raw):
+        return False
+    if _SALES_CONTINUE_RE.search(raw):
+        return (
+            "El cliente sigue en un flujo de venta (producto, corporativo, "
+            "catálogo, campaña o eligiendo opciones). NO escalas: pregunta "
+            "cantidad, presupuesto, distrito o fecha, o muestra productos con "
+            "las tools. Solo escala si pide asesor, pago/comprobante, descuento "
+            "o cancelación."
+        )
+    return False
+
+
 async def _say(wa_id: str, text: str, persist) -> str | None:
     """Envía por WhatsApp y deja constancia en el CRM.
 
@@ -313,26 +361,22 @@ async def run_agent(
                     if fn == "escalar_a_humano":
                         motivo = args.get("motivo") or "no especificado"
 
-                        # Red de seguridad: el modelo a veces lee "no hay tarea que
-                        # resolver" como "excede mis capacidades" y escala un "ok
-                        # gracias". Eso aparca al cliente esperando a un humano que
-                        # no hace falta. Si no pidió nada, no hay nada que escalar.
-                        if _is_small_talk(messages):
+                        # Red de seguridad: el modelo a veces escala ventas sanas
+                        # ("regalos corporativos", "2 y 3") o charla trivial.
+                        discard = _should_discard_handoff(messages)
+                        if discard:
                             log.info(
-                                "[HANDOFF] descartado (charla trivial) conversation=%s motivo=%s",
+                                "[HANDOFF] descartado conversation=%s motivo_modelo=%s motivo_guard=%s",
                                 conversation_id,
                                 motivo,
+                                discard[:80],
                             )
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": call["id"],
                                 "content": json.dumps({
                                     "ok": False,
-                                    "motivo": (
-                                        "El cliente no está pidiendo nada: es cortesía o "
-                                        "charla suelta. No se escala. Responde tú, corto y "
-                                        "cálido, y deja la puerta abierta."
-                                    ),
+                                    "motivo": discard,
                                 }, ensure_ascii=False),
                             })
                             continue
