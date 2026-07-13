@@ -492,6 +492,18 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   background: color-mix(in srgb, var(--color-surface) 35%, transparent);
 }
 
+/* — separador de día, estilo WhatsApp — */
+.day-sep {
+  display: flex; align-items: center; justify-content: center;
+  margin: 8px 0 2px;
+}
+.day-sep span {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 4px 12px; border-radius: 999px;
+  background: var(--color-bg); box-shadow: var(--shadow-sm);
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+
 .msg-row { display: flex; animation: bubbleIn 0.3s ease; }
 .msg-row.is-in { justify-content: flex-start; }
 .msg-row.is-out { justify-content: flex-end; }

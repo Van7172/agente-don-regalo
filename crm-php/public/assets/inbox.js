@@ -112,6 +112,23 @@
     return `Esperando ${Math.floor(mins / 60)} h`;
   }
 
+  /** Etiqueta del separador de día, como en WhatsApp: Hoy / Ayer / la fecha. */
+  function dayLabel(value) {
+    const d = parseTs(value);
+    if (!d) return null;
+
+    const dayStart = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+    const dias = Math.round((dayStart(new Date()) - dayStart(d)) / 86400000);
+
+    if (dias === 0) return "Hoy";
+    if (dias === 1) return "Ayer";
+
+    const opciones = { day: "numeric", month: "long" };
+    // Más de un año atrás: sin el año, la fecha engaña.
+    if (dias >= 365) opciones.year = "numeric";
+    return d.toLocaleDateString("es-PE", opciones);
+  }
+
   function humanSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -313,6 +330,25 @@
     return row;
   }
 
+  /** Burbujas + un separador cada vez que cambia el día. */
+  function threadNodes(messages) {
+    const nodes = [];
+    let lastDay = null;
+
+    for (const m of messages) {
+      const label = dayLabel(m.created_at);
+      if (label && label !== lastDay) {
+        lastDay = label;
+        const sep = document.createElement("div");
+        sep.className = "day-sep";
+        sep.innerHTML = `<span>${esc(label)}</span>`;
+        nodes.push(sep);
+      }
+      nodes.push(bubble(m));
+    }
+    return nodes;
+  }
+
   function renderLead(conv, lead) {
     const name = conv.contact?.name || conv.contact?.wa_id || "—";
     el.leadAvatar.className = `avatar lead-avatar ${avatarClass(conv.contact?.wa_id || conv.id)}`;
@@ -383,7 +419,7 @@
     const sig = JSON.stringify(messages.map((m) => m.id));
     if (sig !== threadSig) {
       threadSig = sig;
-      el.thread.replaceChildren(...messages.map(bubble));
+      el.thread.replaceChildren(...threadNodes(messages));
       el.thread.classList.remove("thread-anim");
       void el.thread.offsetWidth;
       el.thread.classList.add("thread-anim");
