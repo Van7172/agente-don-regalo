@@ -200,6 +200,21 @@ def _is_small_talk(messages: list) -> bool:
     )
 
 
+async def _say(wa_id: str, text: str, persist) -> str | None:
+    """Envía por WhatsApp y deja constancia en el CRM.
+
+    Lo que se envía sin persistir el asesor NO lo ve: el hilo del inbox queda
+    con huecos respecto a lo que el cliente tiene en su WhatsApp.
+    """
+    wa_mid = await send_message(wa_id, text)
+    if persist is not None:
+        try:
+            await persist(content=text, wa_message_id=wa_mid, media_url=None)
+        except Exception as err:
+            log.warning("[PERSIST] no se pudo guardar en el CRM: %s", err)
+    return wa_mid
+
+
 async def run_agent(
     messages: list,
     *,
@@ -208,6 +223,7 @@ async def run_agent(
     conversation_id: int | None = None,
     session: AsyncSession | None = None,
     use_external_crm: bool = False,
+    persist=None,
 ) -> str | None:
     all_tools = list(TOOLS)
     if contact_id or use_external_crm:
@@ -227,7 +243,7 @@ async def run_agent(
             await asyncio.sleep(0.7)
             if filler_sent or conversation_id is None:
                 return
-            await send_message(wa_id, "Un momento, ya te ayudo 😊")
+            await _say(wa_id, "Un momento, ya te ayudo 😊", persist)
             await set_typing(conversation_id, True)
             filler_sent = True
             _filler_conversations.add(conversation_id)
@@ -269,7 +285,7 @@ async def run_agent(
                     if filler:
                         if early_filler_task and not early_filler_task.done():
                             early_filler_task.cancel()
-                        await send_message(wa_id, filler)
+                        await _say(wa_id, filler, persist)
                         await set_typing(conversation_id, True)
                         filler_sent = True
                         _filler_conversations.add(conversation_id)
@@ -322,7 +338,7 @@ async def run_agent(
                             continue
 
                         log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, motivo)
-                        await send_message(wa_id, _HANDOFF_WAIT_MSG)
+                        await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
                         if use_external_crm and conversation_id:
                             from app.crm import http_client as crm_http
 

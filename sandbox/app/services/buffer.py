@@ -28,6 +28,11 @@ from app.services.watchdog import record_fallback_event
 
 log = logging.getLogger(__name__)
 
+_FALLBACK_WAIT_MSG = (
+    "Permíteme un momento por favor 🙏 En seguida un asesor de "
+    "nuestro equipo continúa contigo."
+)
+
 _buffers: dict[int, dict] = {}
 _buffers_lock = asyncio.Lock()
 
@@ -286,6 +291,7 @@ async def _flush_external(
             conversation_id=conversation_id,
             session=None,
             use_external_crm=True,
+            persist=persist,
         )
         if reply == HANDOFF_DONE:
             log.info("[OUT] conversation=%s handoff", conversation_id)
@@ -295,11 +301,9 @@ async def _flush_external(
             await _send_reply_segments(wa_id, conversation_id, reply, persist)
         else:
             log.warning("[OUT] conversation=%s sin respuesta; handoff", conversation_id)
-            await send_message(
-                wa_id,
-                "Permíteme un momento por favor 🙏 En seguida un asesor de "
-                "nuestro equipo continúa contigo.",
-            )
+            wa_mid = await send_message(wa_id, _FALLBACK_WAIT_MSG)
+            # El asesor tiene que ver este mensaje: es lo último que leyó el cliente.
+            await persist(content=_FALLBACK_WAIT_MSG, wa_message_id=wa_mid, media_url=None)
             await crm_http.set_mode(conversation_id, "HUMAN")
             record_fallback_event()
             await notify_team(
@@ -318,6 +322,20 @@ async def _flush_local(
         profile, history = await asyncio.gather(profile_task, history_task)
         messages = await _build_messages(profile, history, user_content)
 
+        # Commit en cada mensaje: si el agente escala y sale antes, los avisos que
+        # ya envió (filler, mensaje de espera) no deben perderse.
+        async def persist(*, content: str, wa_message_id=None, media_url=None):
+            await repo.add_message(
+                session,
+                conversation_id,
+                direction="outbound",
+                sender_type="bot",
+                content=content,
+                wa_message_id=wa_message_id,
+                media_url=media_url,
+            )
+            await session.commit()
+
         await set_typing(conversation_id, True)
         try:
             reply = await run_agent(
@@ -326,33 +344,18 @@ async def _flush_local(
                 contact_id=contact_id,
                 conversation_id=conversation_id,
                 session=session,
+                persist=persist,
             )
             if reply == HANDOFF_DONE:
                 log.info("[OUT] conversation=%s handoff", conversation_id)
                 return
             if reply:
                 log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
-
-                async def persist(*, content: str, wa_message_id=None, media_url=None):
-                    await repo.add_message(
-                        session,
-                        conversation_id,
-                        direction="outbound",
-                        sender_type="bot",
-                        content=content,
-                        wa_message_id=wa_message_id,
-                        media_url=media_url,
-                    )
-
                 await _send_reply_segments(wa_id, conversation_id, reply, persist)
-                await session.commit()
             else:
                 log.warning("[OUT] conversation=%s sin respuesta; handoff", conversation_id)
-                await send_message(
-                    wa_id,
-                    "Permíteme un momento por favor 🙏 En seguida un asesor de "
-                    "nuestro equipo continúa contigo.",
-                )
+                wa_mid = await send_message(wa_id, _FALLBACK_WAIT_MSG)
+                await persist(content=_FALLBACK_WAIT_MSG, wa_message_id=wa_mid, media_url=None)
                 await repo.set_human_support(session, conversation_id, True)
                 await session.commit()
                 await notify_team(
