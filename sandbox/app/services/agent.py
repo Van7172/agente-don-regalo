@@ -23,6 +23,57 @@ log = logging.getLogger(__name__)
 
 HANDOFF_DONE = "__handoff_done__"
 
+# Un 429 de OpenAI suele ser un pico de rate limit que se resuelve en segundos.
+# Sin reintento, el bucle devolvía None y el chat quedaba aparcado en HUMAN
+# para siempre por un fallo pasajero.
+_LLM_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+_LLM_MAX_ATTEMPTS = 4
+_LLM_BACKOFF_CAP = 8.0
+
+
+async def _chat_completion(client: httpx.AsyncClient, payload: dict) -> dict:
+    """POST a OpenAI reintentando errores pasajeros. Lanza si no hay forma."""
+    delay = 1.0
+
+    for attempt in range(1, _LLM_MAX_ATTEMPTS + 1):
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        if r.status_code == 200:
+            return r.json()
+
+        body = r.text[:300]
+
+        # Sin saldo no se arregla esperando: escala ya en vez de hacer aguardar al cliente.
+        if "insufficient_quota" in body:
+            log.error("[LLM] cuota de OpenAI agotada: %s", body)
+            r.raise_for_status()
+
+        if r.status_code not in _LLM_RETRY_STATUS or attempt == _LLM_MAX_ATTEMPTS:
+            log.error("[LLM] %s definitivo (intento %s): %s", r.status_code, attempt, body)
+            r.raise_for_status()
+
+        retry_after = r.headers.get("retry-after")
+        try:
+            wait = float(retry_after) if retry_after else delay
+        except ValueError:
+            wait = delay
+        wait = min(wait, _LLM_BACKOFF_CAP)
+
+        log.warning(
+            "[LLM] %s (intento %s/%s); reintento en %.1fs: %s",
+            r.status_code, attempt, _LLM_MAX_ATTEMPTS, wait, body,
+        )
+        await asyncio.sleep(wait)
+        delay = min(delay * 2, _LLM_BACKOFF_CAP)
+
+    raise RuntimeError("unreachable")  # pragma: no cover
+
 _HANDOFF_WAIT_MSG = (
     "¡Claro! Te conecto con un asesor de nuestro equipo 🙏 "
     "Dame un momento, en seguida continúan contigo."
@@ -110,6 +161,45 @@ def _is_simple_greeting(messages: list) -> bool:
     return bool(_GREETING_RE.match(norm))
 
 
+# Vocabulario de cortesía: "ok gracias", "todo en orden hoy", "jaja", "👍"...
+# Un mensaje formado SOLO por estas palabras no pide nada, así que no hay nada
+# que escalar. Lista blanca corta a propósito: preferimos dejar pasar charla
+# trivial a suprimir una escalación de verdad.
+_SMALL_TALK_WORDS = frozenset(
+    """
+    gracias muchas mil ok oka okay okey vale listo perfecto genial excelente
+    buenisimo entiendo entendido claro dale bueno buena ya ah aja si no nada
+    todo bien en orden correcto estamos igualmente a ti usted de acuerdo por
+    ahora hoy amigo amiga saludos chevere tranquilo tranquila
+    """.split()
+)
+
+
+def _is_small_talk(messages: list) -> bool:
+    """True si el último mensaje del usuario es cortesía o charla sin pedido."""
+    raw = _latest_user_text(messages)
+    if not raw or len(raw) > 80 or "?" in raw:
+        return False
+
+    if _is_simple_greeting(messages):
+        return True
+
+    norm = _normalize_greeting_text(raw)
+    if not norm:
+        # Se quedó vacío al normalizar: era solo emojis ("👍", "😊").
+        return True
+
+    tokens = norm.split()
+    if not tokens or len(tokens) > 6:
+        return False
+
+    # "jaja", "jejeje", "jjj"... son risas, no un pedido.
+    return all(
+        t in _SMALL_TALK_WORDS or re.fullmatch(r"(?:ja|je|ji|ha)+|j+", t)
+        for t in tokens
+    )
+
+
 async def run_agent(
     messages: list,
     *,
@@ -127,7 +217,8 @@ async def run_agent(
 
     filler_sent = conversation_id in _filler_conversations if conversation_id else True
     early_filler_task: asyncio.Task | None = None
-    skip_early_filler = _is_simple_greeting(messages)
+    # Ni saludos ni cortesía merecen un "Un momento, ya te ayudo": no hay nada que buscar.
+    skip_early_filler = _is_small_talk(messages)
 
     async def _send_early_filler() -> None:
         """Aviso rápido si el 1.er round de LLM tarda (tools / OpenAI)."""
@@ -154,13 +245,9 @@ async def run_agent(
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             for _ in range(settings.max_tool_rounds):
-                r = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {settings.openai_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
+                data = await _chat_completion(
+                    client,
+                    {
                         "model": settings.openai_model,
                         "messages": messages,
                         "tools": all_tools,
@@ -168,8 +255,7 @@ async def run_agent(
                         "parallel_tool_calls": True,
                     },
                 )
-                r.raise_for_status()
-                msg = r.json()["choices"][0]["message"]
+                msg = data["choices"][0]["message"]
                 tool_calls = msg.get("tool_calls")
                 if not tool_calls:
                     if early_filler_task and not early_filler_task.done():
@@ -210,6 +296,31 @@ async def run_agent(
 
                     if fn == "escalar_a_humano":
                         motivo = args.get("motivo") or "no especificado"
+
+                        # Red de seguridad: el modelo a veces lee "no hay tarea que
+                        # resolver" como "excede mis capacidades" y escala un "ok
+                        # gracias". Eso aparca al cliente esperando a un humano que
+                        # no hace falta. Si no pidió nada, no hay nada que escalar.
+                        if _is_small_talk(messages):
+                            log.info(
+                                "[HANDOFF] descartado (charla trivial) conversation=%s motivo=%s",
+                                conversation_id,
+                                motivo,
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call["id"],
+                                "content": json.dumps({
+                                    "ok": False,
+                                    "motivo": (
+                                        "El cliente no está pidiendo nada: es cortesía o "
+                                        "charla suelta. No se escala. Responde tú, corto y "
+                                        "cálido, y deja la puerta abierta."
+                                    ),
+                                }, ensure_ascii=False),
+                            })
+                            continue
+
                         log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, motivo)
                         await send_message(wa_id, _HANDOFF_WAIT_MSG)
                         if use_external_crm and conversation_id:

@@ -310,7 +310,11 @@ HUMAN_HANDOFF_TOOL = {
             "descuentos, o cualquier seguimiento que no puedas verificar en este chat. "
             "Tras llamarla NO escribas nada más: el sistema envía el mensaje de espera, "
             "activa soporte humano y deja de intervenir el bot. "
-            "NO la uses para dudas normales que resolviste con las otras herramientas."
+            "NO la uses para dudas normales que resolviste con las otras herramientas. "
+            "NUNCA la uses cuando el cliente no está pidiendo nada: saludos, cortesía, "
+            "agradecimientos, charla suelta o comentarios ('todo en orden hoy', 'ok gracias', "
+            "'👍'). Que no haya tarea NO significa que exceda tus capacidades: responde tú "
+            "con calidez. Escalar sin un pedido real deja al cliente esperando en vano."
         ),
         "parameters": {
             "type": "object",
