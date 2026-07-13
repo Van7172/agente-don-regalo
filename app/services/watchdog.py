@@ -202,9 +202,37 @@ async def daily_audit() -> None:
         log.warning("[watchdog] daily audit falló: %s", err)
 
 
+async def check_human_abandoned() -> None:
+    """Alerta si hay chats HUMAN con cliente esperando (el releaser debería reactivar)."""
+    if not crm_http.crm_enabled() or await _en_cooldown("human_idle"):
+        return
+    # Reutiliza unanswered del CRM; si no hay datos, no molestar.
+    try:
+        pendientes = await crm_http.get_unanswered(15 * 60, 6 * 3600)
+    except Exception:
+        return
+    # Filtrar solo los que el CRM marque en modo humano si el campo existe.
+    humans = [
+        c for c in (pendientes or [])
+        if str(c.get("mode") or c.get("mode_conversation") or "").upper() == "HUMAN"
+        or c.get("human_support")
+    ]
+    if not humans:
+        return
+    quien = "\n".join(f"- {c.get('name') or c.get('phone')}" for c in humans[:5])
+    ok = await _send_alert(
+        f"👤 Hay {len(humans)} chat(s) en modo humano sin respuesta reciente:\n"
+        f"{quien}\n\n"
+        "Si el asesor ya terminó, pulsa «Devolver a Regalito» o espera el auto-retorno."
+    )
+    if ok:
+        await _marcar("human_idle")
+
+
 async def _tick() -> None:
     try:
         await check_mute()
+        await check_human_abandoned()
         await check_balance()
         await check_fallback_spike()
         await daily_audit()

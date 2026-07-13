@@ -41,6 +41,9 @@
     btnBack: document.getElementById("btn-back"),
     btnHuman: document.getElementById("btn-human"),
     btnAi: document.getElementById("btn-ai"),
+    btnAiBanner: document.getElementById("btn-ai-banner"),
+    keepHuman: document.getElementById("keep-human"),
+    humanReturnBanner: document.getElementById("human-return-banner"),
     btnTake: document.getElementById("btn-take"),
     btnLead: document.getElementById("btn-lead"),
     btnLeadClose: document.getElementById("btn-lead-close"),
@@ -622,15 +625,27 @@
     }
   }
 
-  async function setMode(mode) {
+  async function setMode(mode, extra = {}) {
     if (selectedId == null) return;
     try {
       await api(`/conversations/${selectedId}/mode`, {
         method: "PATCH",
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify({ mode, ...extra }),
       });
       listSig = "";
       await Promise.all([loadList(), loadThread()]);
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  async function setKeepHuman(on) {
+    if (selectedId == null) return;
+    try {
+      await api(`/conversations/${selectedId}/mode`, {
+        method: "PATCH",
+        body: JSON.stringify({ keep_human: !!on }),
+      });
     } catch (err) {
       showError(err.message || String(err));
     }
@@ -691,7 +706,15 @@
 
   el.btnHuman.addEventListener("click", () => setMode("HUMAN"));
   el.btnTake.addEventListener("click", () => setMode("HUMAN"));
-  el.btnAi.addEventListener("click", () => setMode("AI"));
+  el.btnAi.addEventListener("click", () => setMode("AI", { human_support: false, keep_human: false }));
+  if (el.btnAiBanner) {
+    el.btnAiBanner.addEventListener("click", () =>
+      setMode("AI", { human_support: false, keep_human: false })
+    );
+  }
+  if (el.keepHuman) {
+    el.keepHuman.addEventListener("change", () => setKeepHuman(el.keepHuman.checked));
+  }
   el.btnLead.addEventListener("click", () => toggleLeadPanel());
   el.btnLeadClose.addEventListener("click", () => toggleLeadPanel(true));
   el.btnBack.addEventListener("click", () => {

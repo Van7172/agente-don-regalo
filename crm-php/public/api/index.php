@@ -219,6 +219,9 @@ try {
         if (array_key_exists('human_support', $body)) {
             Repository::setHumanSupport($id, (bool) $body['human_support']);
         }
+        if (array_key_exists('keep_human', $body)) {
+            Repository::setSetting('keep_human_' . $id, !empty($body['keep_human']) ? '1' : '0');
+        }
         $conv = Repository::getConversation($id);
         if (!$conv) {
             Http::jsonError('Conversation not found', 404);
@@ -344,6 +347,8 @@ try {
             'type' => $type,
             'mediaPath' => $mediaPath !== '' ? $mediaPath : null,
         ]);
+        // Marca actividad del asesor para el auto-releaser HUMAN→AI del agente.
+        Repository::setSetting('last_human_outbound_' . $convId, (string) time());
 
         $agentUrl = rtrim((string) ($config['agent_base_url'] ?? ''), '/');
         $agentToken = (string) ($config['agent_internal_token'] ?? '');

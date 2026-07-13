@@ -1,5 +1,5 @@
 """
-Configuración del sandbox (WhatsApp Cloud API + CRM). Sin Chatwoot/Evolution.
+Configuración del agente (WhatsApp Cloud API + CRM). Sin Chatwoot/Evolution.
 """
 import os
 from pathlib import Path
@@ -59,6 +59,11 @@ class Settings:
         self.memory_window_hours: float = float(os.getenv("MEMORY_WINDOW_HOURS", "12"))
         self.memory_max_messages: int = int(os.getenv("MEMORY_MAX_MESSAGES", "15"))
         self.max_tool_rounds: int = int(os.getenv("MAX_TOOL_ROUNDS", "4"))
+        # Harness: auto-retorno HUMAN→AI (segundos de inactividad del asesor).
+        self.harness_releaser_sec: float = float(os.getenv("HARNESS_RELEASER_SEC", "1200"))
+        self.harness_payment_releaser_sec: float = float(
+            os.getenv("HARNESS_PAYMENT_RELEASER_SEC", "7200")
+        )
 
         self.qdrant_url: str = os.getenv("QDRANT_URL", "").rstrip("/")
         self.qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "")

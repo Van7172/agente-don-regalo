@@ -283,12 +283,18 @@ async def run_agent(
     session: AsyncSession | None = None,
     use_external_crm: bool = False,
     persist=None,
+    tools_override: list | None = None,
+    include_handoff: bool = True,
+    include_memory: bool = True,
 ) -> str | None:
-    all_tools = list(TOOLS)
-    if contact_id or use_external_crm:
-        all_tools.append(MEMORY_TOOL)
-    if conversation_id is not None:
-        all_tools.append(HUMAN_HANDOFF_TOOL)
+    if tools_override is not None:
+        all_tools = list(tools_override)
+    else:
+        all_tools = list(TOOLS)
+        if include_memory and (contact_id or use_external_crm):
+            all_tools.append(MEMORY_TOOL)
+        if include_handoff and conversation_id is not None:
+            all_tools.append(HUMAN_HANDOFF_TOOL)
 
     filler_sent = conversation_id in _filler_conversations if conversation_id else True
     early_filler_task: asyncio.Task | None = None
@@ -320,16 +326,17 @@ async def run_agent(
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             for _ in range(settings.max_tool_rounds):
-                data = await _chat_completion(
-                    client,
-                    {
-                        "model": settings.openai_model,
-                        "messages": messages,
-                        "tools": all_tools,
-                        "tool_choice": "auto",
-                        "parallel_tool_calls": True,
-                    },
-                )
+                payload: dict = {
+                    "model": settings.openai_model,
+                    "messages": messages,
+                }
+                if all_tools:
+                    payload["tools"] = all_tools
+                    payload["tool_choice"] = "auto"
+                    payload["parallel_tool_calls"] = True
+                else:
+                    payload["tool_choice"] = "none"
+                data = await _chat_completion(client, payload)
                 msg = data["choices"][0]["message"]
                 tool_calls = msg.get("tool_calls")
                 if not tool_calls:
@@ -404,6 +411,21 @@ async def run_agent(
                         await notify_team(
                             f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
                         )
+                        # Persist handoff reason for payment releaser exemption.
+                        if conversation_id is not None:
+                            try:
+                                from app.harness.state import load_state, save_state
+
+                                st = await load_state(conversation_id, wa_id=wa_id or "")
+                                st.handoff_reason = motivo or st.handoff_reason
+                                if any(
+                                    t in (motivo or "").casefold()
+                                    for t in ("pago", "comprobante", "yape", "transfer")
+                                ):
+                                    st.checkout_step = "payment"
+                                await save_state(conversation_id, st, wa_id=wa_id or "")
+                            except Exception as err:
+                                log.warning("[harness] no se guardó handoff_reason: %s", err)
                         return HANDOFF_DONE
 
                     if fn == "guardar_datos_cliente":

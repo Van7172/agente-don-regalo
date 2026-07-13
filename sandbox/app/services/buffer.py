@@ -14,7 +14,10 @@ from app.crm import repository as repo
 from app.crm.models import Message
 from app.db import SessionLocal
 from app.prompts.system import SYSTEM_PROMPT
-from app.services.agent import HANDOFF_DONE, run_agent
+from app.services.agent import HANDOFF_DONE
+from app.harness.master import run_master
+from app.harness.releaser import REENGAGE_MSG, try_release_conversation
+from app.harness.state import load_state, save_state
 from app.services.content import collapse_parts, inbound_to_parts
 from app.services.messenger import (
     human_delay,
@@ -93,9 +96,46 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
     wa_id = msg.wa_id
 
     if conv.get("mode") == "HUMAN" or conv.get("human_support") or not conv.get("bot_active", True):
-        reason = "human_mode" if conv.get("mode") == "HUMAN" or conv.get("human_support") else "bot_off"
-        log.info("[GATE] conversation=%s ignored: %s", conversation_id, reason)
-        return {"status": "ignored", "reason": reason}
+        # Intentar auto-retorno HUMAN→AI (asesor olvidó Modo AI).
+        try:
+            detail = await crm_http.get_conversation(conversation_id)
+            released, _st = await try_release_conversation(
+                conversation_id,
+                wa_id=wa_id,
+                conv={
+                    "mode": conv.get("mode"),
+                    "human_support": conv.get("human_support"),
+                },
+                messages=detail.get("messages") or [],
+            )
+            if released:
+                log.info("[GATE] conversation=%s released HUMAN→AI", conversation_id)
+                # Enviar reenganche breve y seguir al buffer.
+                try:
+                    wa_mid = await send_message(wa_id, REENGAGE_MSG)
+                    await crm_http.append_outbound(
+                        conversation_id, REENGAGE_MSG, wa_message_id=wa_mid
+                    )
+                except Exception as err:
+                    log.warning("[GATE] reengage msg falló: %s", err)
+                # No return: continuar a buffer
+            else:
+                reason = (
+                    "human_mode"
+                    if conv.get("mode") == "HUMAN" or conv.get("human_support")
+                    else "bot_off"
+                )
+                log.info("[GATE] conversation=%s ignored: %s", conversation_id, reason)
+                return {"status": "ignored", "reason": reason}
+        except Exception as err:
+            log.warning("[GATE] releaser error: %s", err)
+            reason = (
+                "human_mode"
+                if conv.get("mode") == "HUMAN" or conv.get("human_support")
+                else "bot_off"
+            )
+            log.info("[GATE] conversation=%s ignored: %s", conversation_id, reason)
+            return {"status": "ignored", "reason": reason}
 
     paused = await crm_http.get_setting("paused")
     if paused == "1":
@@ -284,7 +324,7 @@ async def _flush_external(
 
     await set_typing(conversation_id, True)
     try:
-        reply = await run_agent(
+        reply = await run_master(
             messages,
             wa_id=wa_id,
             contact_id=contact_id or None,
@@ -341,12 +381,13 @@ async def _flush_local(
 
         await set_typing(conversation_id, True)
         try:
-            reply = await run_agent(
+            reply = await run_master(
                 messages,
                 wa_id=wa_id,
                 contact_id=contact_id,
                 conversation_id=conversation_id,
                 session=session,
+                use_external_crm=False,
                 persist=persist,
             )
             if reply == HANDOFF_DONE:

@@ -604,6 +604,19 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 .ai-banner span { font-size: 13px; color: var(--color-accent-800); }
 .ai-banner .btn { flex: none; font-size: 12.5px; }
 
+.human-return-banner {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 10px 16px; border-bottom: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-accent-100) 70%, #fff);
+  font-size: 12.5px; color: var(--color-ink-700);
+}
+.human-return-banner .btn { flex: none; font-size: 12px; margin-left: auto; }
+.keep-human-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; cursor: pointer; user-select: none;
+}
+.keep-human-label input { accent-color: var(--color-accent-600); }
+
 .composer {
   flex: none; display: flex; align-items: flex-end; gap: 10px;
   padding: 14px 20px; border-top: 1px solid var(--color-divider);

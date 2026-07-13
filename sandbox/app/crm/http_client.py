@@ -133,11 +133,14 @@ async def get_conversation(conversation_id: int) -> dict[str, Any]:
     return await _request("GET", f"/api/conversations/{conversation_id}")
 
 
-async def set_mode(conversation_id: int, mode: str) -> dict[str, Any]:
+async def set_mode(conversation_id: int, mode: str, *, human_support: bool | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {"mode": mode}
+    if human_support is not None:
+        body["human_support"] = human_support
     return await _request(
         "PATCH",
         f"/api/conversations/{conversation_id}/mode",
-        json={"mode": mode},
+        json=body,
     )
 
 
