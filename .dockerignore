@@ -1,6 +1,23 @@
 .env
+.env.*
+!.env.example
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 .git/
+.pytest_cache/
+.agents/
+
+# No van en la imagen del agente
+crm-php/
+crm/
+sandbox/
+docs/
+legacy_backup_*/
+*.md
+!requirements.txt
+test_sandbox.db
+*.db
+crm-php.zip

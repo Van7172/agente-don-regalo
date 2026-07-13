@@ -36,7 +36,9 @@ function url_to(string $path = ''): string
 function initials(?string $name, string $fallback = '?'): string
 {
     $parts = preg_split('/\s+/u', trim((string) $name)) ?: [];
-    $parts = array_values(array_filter($parts, static fn($p) => $p !== ''));
+    $parts = array_values(array_filter($parts, static function ($p) {
+        return $p !== '';
+    }));
     if (!$parts) {
         return $fallback;
     }

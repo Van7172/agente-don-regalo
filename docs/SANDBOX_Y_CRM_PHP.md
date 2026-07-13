@@ -1,8 +1,11 @@
 # Sandbox (agente IA) + CRM PHP — estado de producción
 
-Documento de referencia de lo aplicado en el rework: agente en VPS (EasyPanel) + panel/API CRM en PHP en el hosting del cliente.
+Documento de referencia de lo aplicado en el rework: agente (ahora en la **raíz** del
+repo, promovido desde `sandbox/`) + panel/API CRM en PHP en el hosting del cliente.
 
-Última actualización relevante: commit `bbdb4ff` (julio 2026).
+Última actualización relevante: promoción a raíz (julio 2026) + commit UI/filler `bbdb4ff`.
+
+Tag rollback legacy Chatwoot/Evolution: `legacy-chatwoot-evolution`.
 
 ---
 
@@ -15,7 +18,7 @@ Cliente WhatsApp
  Meta Cloud API  ◄──── envío texto / imágenes (producto)
        │
        ▼ webhook (200 inmediato + proceso en background)
-  sandbox/  (FastAPI en EasyPanel: app-agente-sandbox)
+  app/  (raíz del repo → EasyPanel)
        │
        ├─ buffer de mensajes
        ├─ OpenAI + tools (catálogo, Qdrant, handoff, memoria)
@@ -31,9 +34,10 @@ Cliente WhatsApp
 
 | Pieza                    | Dónde vive                                 | Rol                                        |
 | ------------------------ | ------------------------------------------ | ------------------------------------------ |
-| **Agente IA**            | `sandbox/` en EasyPanel                    | WhatsApp Cloud API, LLM, tools, Qdrant     |
+| **Agente IA**            | `app/` en la raíz (EasyPanel)              | WhatsApp Cloud API, LLM, tools, Qdrant     |
 | **CRM panel + API**      | `crm-php/` en hosting PHP del cliente      | Inbox, login, reportes, persistencia MySQL |
 | **Catálogo**             | `DONREGALO_API_BASE` → `clienteApiApp/api` | Productos reales Don Regalo                |
+| **`sandbox/`**           | Espejo histórico                           | Ya no es el deploy de producción           |
 | **CRM Next.js** (`crm/`) | Legado                                     | No es el panel de producción               |
 
 
@@ -62,7 +66,9 @@ URLs típicas actuales:
 
 
 
-## 3. Agente sandbox (`sandbox/`)
+## 3. Agente (`app/` en la raíz)
+
+> Promovido desde `sandbox/`. Las rutas de código siguientes son las de producción.
 
 
 
@@ -98,10 +104,10 @@ WATCHDOG_ENABLED=0
 
 Código clave:
 
-- `sandbox/app/config.py` — lectura de env
-- `sandbox/app/crm/http_client.py` — cliente hacia CRM PHP
-- `sandbox/app/services/buffer.py` — `_flush_external` / enqueue externo
-- `sandbox/app/crm/api.py` — API local o proxy según modo
+- `app/config.py` — lectura de env
+- `app/crm/http_client.py` — cliente hacia CRM PHP
+- `app/services/buffer.py` — `_flush_external` / enqueue externo
+- `app/crm/api.py` — API local o proxy según modo
 
 
 
@@ -118,7 +124,7 @@ Código clave:
 
 ### 3.4 Fillers de latencia
 
-En `sandbox/app/services/agent.py`:
+En `app/services/agent.py`:
 
 
 | Tipo                  | Cuándo                                                      | Ejemplo                      |
@@ -153,13 +159,13 @@ Cambios de prompt y tool (`system.py`, `definitions.py`):
 
 ### 3.7 Deploy agente
 
-Tras cambios en `sandbox/`: **redeploy** del servicio en EasyPanel. El CRM PHP no hace falta tocarlo salvo que también haya cambios PHP.
+Tras cambios en `app/` (raíz): **redeploy** del servicio en EasyPanel. El CRM PHP no hace falta tocarlo salvo que también haya cambios PHP.
 
 Guías cortas:
 
-- `[sandbox/docs/CRM_PHP.md](../sandbox/docs/CRM_PHP.md)`
-- `[sandbox/docs/ARCHITECTURE.md](../sandbox/docs/ARCHITECTURE.md)`
-- `[sandbox/docs/E2E_META.md](../sandbox/docs/E2E_Meta.md)` (si existe checklist E2E)
+- [`docs/MIGRATION_CHECKLIST.md`](MIGRATION_CHECKLIST.md)
+- [`docs/ARCHITECTURE_REWORK.md`](ARCHITECTURE_REWORK.md)
+- [`sandbox/docs/E2E_META.md`](../sandbox/docs/E2E_META.md)
 
 ---
 
@@ -367,10 +373,10 @@ Tokens deben ser **idénticos** en ambos lados (nunca el texto literal del place
 
 | Tema                   | Archivo                                             |
 | ---------------------- | --------------------------------------------------- |
-| Early filler / saludos | `sandbox/app/services/agent.py`                     |
-| Prompt + pagos         | `sandbox/app/prompts/system.py`                     |
-| Flush CRM externo      | `sandbox/app/services/buffer.py`                    |
-| Cliente HTTP CRM       | `sandbox/app/crm/http_client.py`                    |
+| Early filler / saludos | `app/services/agent.py` |
+| Prompt + pagos | `app/prompts/system.py` |
+| Flush CRM externo | `app/services/buffer.py` |
+| Cliente HTTP CRM | `app/crm/http_client.py` |
 | API CRM                | `crm-php/public/api/index.php`                      |
 | Auth token / login     | `crm-php/src/Auth.php`                              |
 | Queries                | `crm-php/src/Repository.php`                        |

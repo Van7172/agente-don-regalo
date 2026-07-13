@@ -1,76 +1,34 @@
 # Práctica sandbox → promoción → producción
 
-Este documento define cómo desarrollamos el rework (WhatsApp Cloud API + CRM propio)
-**sin romper** el stack de producción actual (Chatwoot + Evolution).
+## Estado actual
 
-## Por qué existe `sandbox/`
+**Promoción realizada (julio 2026):** el código del agente vive en la **raíz**
+(`app/`, `web/`, `Dockerfile`, `requirements.txt`). Tag de seguridad del legacy
+Chatwoot/Evolution: `legacy-chatwoot-evolution`.
 
-| Zona | Rol |
+La carpeta `sandbox/` se conserva como referencia histórica / espejo; la fuente
+de verdad del agente desplegable es la raíz.
+
+Documentación operativa: [`SANDBOX_Y_CRM_PHP.md`](SANDBOX_Y_CRM_PHP.md)  
+Checklist de corte: [`MIGRATION_CHECKLIST.md`](MIGRATION_CHECKLIST.md)
+
+## Por qué existió `sandbox/`
+
+| Zona | Rol histórico |
 |---|---|
-| Raíz del repo (`app/`, `Dockerfile`, …) | **Producción / legacy**. Sigue desplegable en EasyPanel. |
-| `sandbox/` | **Rework**. Código nuevo independiente hasta que se apruebe la mudanza. |
+| Raíz (`app/` Chatwoot/Evolution) | Producción legacy hasta el corte |
+| `sandbox/` | Rework Meta Cloud API + CRM hasta promoción |
 
-Reglas:
+## Tras la promoción
 
-1. Todo el rework vive en `sandbox/` hasta revisión explícita.
-2. No mezclar imports entre `sandbox/` y `app/` legacy (dos árboles independientes).
-3. Hotfixes urgentes de producción van en la raíz; features del rework van en `sandbox/`.
-4. Secretos: `.env` (prod/legacy) y `sandbox/.env` (pruebas). Ambos están en `.gitignore`.
-5. El **código** de `sandbox/` **sí se versiona** en Git para no perder el trabajo.
+1. EasyPanel construye desde la **raíz** del repo (mismo `Dockerfile` promovido).
+2. Env: Meta + `CRM_MODE=external` + tokens alineados con `crm-php`.
+3. Webhook Meta → `https://tu-dominio-agente/whatsapp/webhook`.
+4. Panel asesores → `crm-php` en el hosting del cliente (no el `web/` mínimo).
+5. Monitorear 24–48 h; rollback = checkout del tag `legacy-chatwoot-evolution`.
 
-## Estructura esperada
+## Desarrollo futuro
 
-```text
-agente-don-regalo/
-├── app/                      ← legacy (NO tocar salvo hotfix)
-├── docs/
-│   └── REWORK_SANDBOX.md     ← este archivo
-└── sandbox/                  ← zona de desarrollo del rework
-    ├── README.md
-    ├── app/
-    ├── web/
-    ├── docs/
-    ├── tests/
-    └── scripts/
-```
-
-## Flujo diario de desarrollo
-
-1. Trabajar solo bajo `sandbox/`.
-2. Correr el sandbox en un puerto distinto al de producción (ej. `8100`).
-3. Probar con webhook de Meta apuntando a un túnel (ngrok / Cloudflare Tunnel) → `sandbox`.
-4. Commits normales a `main` (o rama de feature) incluyendo `sandbox/`.
-
-```bash
-cd sandbox
-copy .env.example .env   # configurar credenciales de prueba
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8100
-```
-
-## Criterios para promover a producción
-
-Antes de mudarse a la raíz:
-
-- [ ] Checklist de [`sandbox/docs/MIGRATION_CHECKLIST.md`](../sandbox/docs/MIGRATION_CHECKLIST.md) en verde
-- [ ] Tests en `sandbox/tests/` pasando
-- [ ] Webhook Meta de staging verificado (texto, imagen, cita, handoff)
-- [ ] Revisión explícita del responsable del proyecto
-
-## Promoción (mudanza a raíz)
-
-Procedimiento resumido (detalle en `sandbox/docs/MIGRATION_CHECKLIST.md`):
-
-1. Tag de seguridad del legacy: `git tag legacy-chatwoot-evolution`
-2. Ejecutar `sandbox/scripts/promote.ps1` (o seguir el checklist manual)
-3. Actualizar variables en EasyPanel (quitar Evolution/Chatwoot; añadir Meta + `DATABASE_URL`)
-4. Apuntar el webhook de Meta al dominio de producción
-5. `git push` + redeploy
-6. Monitorear 24–48 h
-7. Archivar o eliminar restos legacy / `sandbox/` residual
-
-## Qué NO hacer
-
-- No desplegar `sandbox/` a producción “a medias” sin checklist.
-- No compartir el mismo `.env` entre legacy y sandbox.
-- No borrar Chatwoot/Evolution del entorno de prod hasta confirmar el corte.
+- Features del agente: editar `app/` en la raíz (ya no hace falta `sandbox/` salvo que quieras un entorno paralelo).
+- Panel asesores: editar `crm-php/`.
+- No reintroducir Chatwoot/Evolution salvo rollback explícito.

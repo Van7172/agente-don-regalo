@@ -63,8 +63,25 @@ try {
     // GET /conversations
     if ($path === '/conversations' && $method === 'GET') {
         $rows = Repository::listConversations(80);
+        $tenantId = Repository::ensureTenantId();
+        $totalTenant = count($rows);
+        // Si la lista viene vacía, distinguir "no hay chats" vs "tenant equivocado".
+        $totalAll = 0;
+        try {
+            $totalAll = (int) (Database::fetchOne(
+                'SELECT COUNT(*) AS n FROM crm_conversations'
+            )['n'] ?? 0);
+        } catch (Throwable $e) {
+            $totalAll = $totalTenant;
+        }
         Http::jsonOk([
             'data' => array_map([Repository::class, 'mapConversationList'], $rows),
+            'meta' => [
+                'tenant_id' => $tenantId,
+                'tenant_slug' => Auth::config()['tenant_slug'] ?? 'don-regalo',
+                'count' => $totalTenant,
+                'count_all_tenants' => $totalAll,
+            ],
         ]);
     }
 

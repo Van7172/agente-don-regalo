@@ -28,9 +28,16 @@ final class Database
         // MySQL y PHP deben coincidir. Sin esto, NOW() escribe la hora del servidor
         // de BD y PHP la interpreta en SU zona: el inbox mostraba las horas
         // desfasadas respecto a lo que el cliente ve en WhatsApp.
-        $offset = (new DateTimeImmutable('now'))->format('P'); // ej. "-05:00"
-        $stmt = self::$pdo->prepare('SET time_zone = :tz');
-        $stmt->execute(array('tz' => $offset));
+        // Usamos exec (no prepared): algunos MySQL rechazan SET en prepared statements
+        // y eso tumbaría todo el CRM al conectar.
+        try {
+            $offset = (new DateTimeImmutable('now'))->format('P'); // ej. "-05:00"
+            if (preg_match('/^[+-]\d{2}:\d{2}$/', $offset)) {
+                self::$pdo->exec("SET time_zone = '{$offset}'");
+            }
+        } catch (Throwable $e) {
+            // Hosting sin tablas de zona: seguimos; solo pueden desfasarse las horas.
+        }
     }
 
     /** @return PDO */

@@ -11,6 +11,20 @@ final class Auth
     {
         self::$config = $config;
         if (session_status() !== PHP_SESSION_ACTIVE) {
+            $base = rtrim((string) (isset($config['base_path']) ? $config['base_path'] : ''), '/');
+            $cookiePath = $base === '' ? '/' : $base;
+            // Misma ruta para login e /api/*; si no, el fetch del inbox va sin sesión → vacío/401.
+            if (PHP_VERSION_ID >= 70300) {
+                session_set_cookie_params(array(
+                    'lifetime' => 0,
+                    'path' => $cookiePath,
+                    'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+                    'httponly' => true,
+                    'samesite' => 'Lax',
+                ));
+            } else {
+                session_set_cookie_params(0, $cookiePath);
+            }
             session_name(isset($config['session_name']) ? $config['session_name'] : 'dr_crm_php');
             session_start();
         }

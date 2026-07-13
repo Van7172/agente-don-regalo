@@ -2,7 +2,24 @@
   const root = document.getElementById("inbox-app");
   if (!root) return;
 
-  const base = (root.dataset.base || "").replace(/\/$/, "");
+  /**
+   * Base pública del CRM. Si config.base_path está vacío pero la app vive en
+   * /crm/public/, el fetch iría a /api/... (404 HTML) y el inbox quedaría vacío
+   * sin error claro. Inferimos la carpeta desde la URL actual.
+   */
+  function detectBase() {
+    const path = window.location.pathname || "";
+    const folder = path.match(/^(.*\/crm\/public)(?:\/|$)/i);
+    if (folder) return folder[1].replace(/\/$/, "");
+    const configured = (root.dataset.base || "").replace(/\/$/, "");
+    if (configured) return configured;
+    if (/\/[^/]+\.php$/i.test(path)) {
+      return path.replace(/\/[^/]+\.php$/i, "") || "";
+    }
+    return path.replace(/\/$/, "") || "";
+  }
+
+  const base = detectBase();
   const apiBase = `${base}/api`;
   const pollList = Number(root.dataset.pollList || 4000);
   const pollThread = Number(root.dataset.pollThread || 4000);
@@ -563,14 +580,32 @@
   async function loadList() {
     try {
       const json = await api("/conversations");
-      const next = json.data || [];
+      if (!json || !Array.isArray(json.data)) {
+        throw new Error(
+          `Respuesta inválida del API (${apiBase}/conversations). Revisa base_path en config.php.`
+        );
+      }
+      const next = json.data;
       const sig = JSON.stringify(next);
       if (sig !== listSig) {
         listSig = sig;
         conversations = next;
         renderList();
       }
-      showError("");
+      const meta = json.meta || {};
+      if (
+        next.length === 0 &&
+        Number(meta.count_all_tenants || 0) > 0 &&
+        Number(meta.count_all_tenants) > Number(meta.count || 0)
+      ) {
+        showError(
+          `Hay ${meta.count_all_tenants} chat(s) en la BD pero 0 para el tenant ` +
+            `"${meta.tenant_slug || "?"}" (id ${meta.tenant_id || "?"}). ` +
+            `Revisa tenant_slug en config.php.`
+        );
+      } else {
+        showError("");
+      }
     } catch (err) {
       showError(err.message || String(err));
     }

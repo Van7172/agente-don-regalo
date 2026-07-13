@@ -1,16 +1,9 @@
 """
-Aprendizaje del equipo de ventas (Nivel B).
+Aprendizaje del equipo de ventas (Nivel B) — sandbox CRM.
 
-Cuando un vendedor humano atiende una conversación en Chatwoot, este módulo
-captura los pares "pregunta del cliente → respuesta del vendedor", los convierte
-en conocimiento reutilizable con el LLM y los indexa en Qdrant
-(`respuestas_equipo`). El agente los consulta con `buscar_conocimiento_equipo`.
-
-Flujo:
-  1. Se dispara cuando una conversación con intervención humana se resuelve.
-  2. Lee el transcript de Chatwoot y clasifica cada mensaje: cliente / vendedor / bot.
-  3. El LLM extrae items {pregunta, respuesta, categoria} reutilizables.
-  4. Embebe la pregunta y hace upsert en Qdrant (id estable = dedup por pregunta).
+Captura pares pregunta/respuesta cuando un asesor humano atiende en el CRM,
+los indexa en Qdrant (`respuestas_equipo`) y el agente los consulta con
+`buscar_conocimiento_equipo`.
 """
 import re
 import json
@@ -20,45 +13,51 @@ import logging
 from datetime import date
 
 import httpx
+from sqlalchemy import select
 
 from app.config import settings
+from app.crm.models import Message
+from app.db import SessionLocal
 from app.tools.search import get_qdrant, embed
 
 log = logging.getLogger(__name__)
 
 
-# ─── Clasificación de mensajes (cliente / vendedor / bot) ─────────────────────
+# ─── Clasificación de mensajes CRM ────────────────────────────────────────────
 
 def _classify(m: dict) -> str | None:
-    """Clasifica un mensaje crudo de Chatwoot. None si debe ignorarse."""
-    if m.get("private"):
-        return None
+    """Clasifica un mensaje del CRM. None si debe ignorarse."""
     if (m.get("content") or "").strip() == "":
         return None
-    mtype = m.get("message_type")
-    if mtype in (0, "incoming"):
+    direction = m.get("direction")
+    sender = m.get("sender_type")
+    if direction == "inbound":
         return "cliente"
-    if mtype in (1, "outgoing"):
-        sender_type = (m.get("sender") or {}).get("type", "")
-        cattrs = m.get("content_attributes") or {}
-        if cattrs.get("bot") or sender_type in ("agent_bot", "AgentBot"):
+    if direction == "outbound":
+        if sender == "bot":
             return "bot"
-        return "vendedor"
+        if sender == "agent":
+            return "vendedor"
     return None
 
 
 async def _fetch_messages(conversation_id: int) -> list[dict]:
-    """Trae los mensajes crudos de una conversación, ordenados cronológicamente."""
-    url = (
-        f"{settings.chatwoot_url}/api/v1/accounts/{settings.chatwoot_account_id}"
-        f"/conversations/{conversation_id}/messages"
-    )
-    async with httpx.AsyncClient(timeout=20.0, verify=False) as client:
-        r = await client.get(url, headers={"api_access_token": settings.chatwoot_api_token})
-        r.raise_for_status()
-        payload = r.json().get("payload", [])
-    payload.sort(key=lambda m: m.get("created_at") or 0)
-    return payload
+    """Trae mensajes del CRM, ordenados cronológicamente."""
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.id.asc())
+        )
+        rows = list(result.scalars().all())
+    return [
+        {
+            "content": r.content,
+            "direction": r.direction,
+            "sender_type": r.sender_type,
+        }
+        for r in rows
+    ]
 
 
 def _build_transcript(messages: list[dict]) -> tuple[str, bool]:

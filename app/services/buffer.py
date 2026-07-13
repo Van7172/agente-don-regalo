@@ -1,66 +1,179 @@
-"""
-Buffer de mensajes con debounce: agrupa los mensajes rápidos del cliente
-y los procesa juntos tras BUFFER_SECONDS de silencio.
-"""
+"""Buffer debounce + orquestación del flush (CRM local o externo Opción C)."""
+from __future__ import annotations
+
 import asyncio
 import logging
 
-import httpx
+from sqlalchemy import select
 
+from app.channels.whatsapp.client import whatsapp_client
+from app.channels.whatsapp.parser import InboundMessage
 from app.config import settings
+from app.crm import http_client as crm_http
+from app.crm import repository as repo
+from app.crm.models import Message
+from app.db import SessionLocal
 from app.prompts.system import SYSTEM_PROMPT
-from app.services.content import message_to_parts, collapse_parts
-from app.services.memory import get_contact_attributes, get_conversation_history
-from app.services.messenger import send_message, send_image, set_typing, human_delay, split_reply, add_label, notify_team
-from app.services.agent import run_agent, HANDOFF_DONE
+from app.services.agent import HANDOFF_DONE, run_agent
+from app.services.content import collapse_parts, inbound_to_parts
+from app.services.messenger import (
+    human_delay,
+    notify_team,
+    send_image,
+    send_message,
+    set_typing,
+    split_reply,
+)
+from app.services.watchdog import record_fallback_event
 
 log = logging.getLogger(__name__)
 
-# Estado en memoria: {conversation_id: {parts, contact_id, wa_number, task, ...}}
+_FALLBACK_WAIT_MSG = (
+    "Permíteme un momento por favor 🙏 En seguida un asesor de "
+    "nuestro equipo continúa contigo."
+)
+
 _buffers: dict[int, dict] = {}
 _buffers_lock = asyncio.Lock()
 
-# Cita de mensajes capturada desde Evolution API antes de que llegue el webhook de Chatwoot.
-# Clave: source_id ("WAID:..."), valor: texto del mensaje citado.
-_evo_quoted: dict[str, str] = {}
+
+def _use_external_crm() -> bool:
+    return crm_http.crm_enabled()
 
 
-def store_evo_quoted(source_id: str, quoted_text: str) -> None:
-    """Guarda el texto citado recibido desde /evolution-webhook."""
-    _evo_quoted[source_id] = quoted_text
-    if len(_evo_quoted) > 500:
-        oldest = list(_evo_quoted.keys())[:100]
-        for k in oldest:
-            _evo_quoted.pop(k, None)
+async def enqueue_inbound(msg: InboundMessage) -> dict:
+    """Persiste inbound, aplica gates, encola en buffer."""
+    if _use_external_crm():
+        return await _enqueue_external(msg)
+    return await _enqueue_local(msg)
 
 
-async def enqueue(
-    conversation_id: int,
-    contact_id: int | None,
-    wa_number: str,
-    source_id: str,
-    in_reply_to_id: int | None,
-    content: str,
-    attachments: list,
-) -> None:
-    """Convierte el mensaje entrante en partes y lo agrega al buffer."""
-    parts = await message_to_parts(content, attachments)
+async def _archive_media(msg: InboundMessage) -> tuple[str | None, tuple[bytes, str] | None]:
+    """Baja el adjunto de Meta y lo archiva en el CRM.
+
+    Los medios de WhatsApp caducan y solo se descargan con el token de Meta, así
+    que sin archivarlos el asesor nunca podría ver la foto ni oír la nota de voz.
+    Devuelve (clave en el CRM, bytes) para que el LLM reutilice la descarga.
+    """
+    if not msg.media_id:
+        return None, None
+
+    try:
+        data, mime = await whatsapp_client.download_media(msg.media_id)
+    except Exception as err:
+        log.warning("[MEDIA] no se pudo descargar %s: %s", msg.media_id, err)
+        return None, None
+
+    key = None
+    try:
+        ext = (mime or "").split("/")[-1].split(";")[0] or "bin"
+        key = await crm_http.upload_media(data, f"{msg.message_type}.{ext}", mime)
+        log.info("[MEDIA] %s archivado en el CRM: %s", msg.message_type, key)
+    except Exception as err:
+        # Que no se pueda archivar no debe impedir que el bot responda.
+        log.warning("[MEDIA] no se pudo archivar en el CRM: %s", err)
+
+    return key, (data, mime)
+
+
+async def _enqueue_external(msg: InboundMessage) -> dict:
+    media_key, prefetched = await _archive_media(msg)
+
+    data = await crm_http.upsert_inbound(
+        msg.wa_id,
+        name=msg.contact_name or "",
+        content=msg.text or msg.caption or f"[{msg.message_type}]",
+        wa_message_id=msg.wa_message_id,
+        media_url=media_key,
+        quoted_text=None,
+    )
+    conv = data.get("conversation") or {}
+    conversation_id = int(data["conversation_id"])
+    contact_id = int(data.get("contact_id") or 0)
+    wa_id = msg.wa_id
+
+    if conv.get("mode") == "HUMAN" or conv.get("human_support") or not conv.get("bot_active", True):
+        reason = "human_mode" if conv.get("mode") == "HUMAN" or conv.get("human_support") else "bot_off"
+        log.info("[GATE] conversation=%s ignored: %s", conversation_id, reason)
+        return {"status": "ignored", "reason": reason}
+
+    paused = await crm_http.get_setting("paused")
+    if paused == "1":
+        log.info("[GATE] conversation=%s ignored: paused", conversation_id)
+        return {"status": "ignored", "reason": "paused"}
+
+    parts = await inbound_to_parts(msg, prefetched)
+    async with _buffers_lock:
+        buf = _buffers.get(conversation_id)
+        if buf and buf.get("task"):
+            buf["task"].cancel()
+        if not buf:
+            buf = {"parts": [], "contact_id": contact_id, "wa_id": wa_id}
+            _buffers[conversation_id] = buf
+        buf["parts"].extend(parts)
+        buf["contact_id"] = contact_id
+        buf["wa_id"] = wa_id
+        buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
+
+    return {"status": "buffered", "conversation_id": conversation_id}
+
+
+async def _enqueue_local(msg: InboundMessage) -> dict:
+    async with SessionLocal() as session:
+        tenant = await repo.ensure_default_tenant(session)
+        contact = await repo.get_or_create_contact(
+            session, tenant.id, msg.wa_id, msg.contact_name
+        )
+        conv = await repo.get_or_create_conversation(session, tenant.id, contact.id)
+
+        quoted_text = None
+        if msg.quoted_wa_id:
+            q = await session.execute(
+                select(Message).where(Message.wa_message_id == msg.quoted_wa_id)
+            )
+            quoted_msg = q.scalar_one_or_none()
+            if quoted_msg:
+                quoted_text = (quoted_msg.content or "")[:400]
+
+        await repo.add_message(
+            session,
+            conv.id,
+            direction="inbound",
+            sender_type="contact",
+            content=msg.text or msg.caption or f"[{msg.message_type}]",
+            wa_message_id=msg.wa_message_id,
+            quoted_text=quoted_text,
+            raw=msg.raw,
+        )
+        await session.commit()
+
+        ok, reason = repo.bot_should_reply(conv)
+        if not ok:
+            log.info("[GATE] conversation=%s ignored: %s", conv.id, reason)
+            return {"status": "ignored", "reason": reason}
+
+        conversation_id = conv.id
+        contact_id = contact.id
+        wa_id = contact.wa_id
+
+    parts = await inbound_to_parts(msg)
+    if quoted_text:
+        prefix = f"[El cliente está respondiendo al mensaje: «{quoted_text}»]\n"
+        parts = [{"type": "text", "text": prefix}] + parts
 
     async with _buffers_lock:
         buf = _buffers.get(conversation_id)
         if buf and buf.get("task"):
             buf["task"].cancel()
         if not buf:
-            buf = {"parts": [], "contact_id": contact_id, "wa_number": wa_number}
+            buf = {"parts": [], "contact_id": contact_id, "wa_id": wa_id}
             _buffers[conversation_id] = buf
         buf["parts"].extend(parts)
-        buf["contact_id"]  = contact_id
-        buf["wa_number"]   = wa_number
-        if source_id:
-            buf["source_id"] = source_id
-        if in_reply_to_id:
-            buf["in_reply_to_id"] = in_reply_to_id
+        buf["contact_id"] = contact_id
+        buf["wa_id"] = wa_id
         buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
+
+    return {"status": "buffered", "conversation_id": conversation_id}
 
 
 async def _flush_after_delay(conversation_id: int) -> None:
@@ -71,161 +184,182 @@ async def _flush_after_delay(conversation_id: int) -> None:
     await _flush_buffer(conversation_id)
 
 
-async def _get_quoted_message(conversation_id: int, message_id: int) -> str:
-    """Busca en Chatwoot el texto de un mensaje citado por ID."""
-    url = (
-        f"{settings.chatwoot_url}/api/v1/accounts/{settings.chatwoot_account_id}"
-        f"/conversations/{conversation_id}/messages"
-    )
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
-            r = await client.get(url, headers={"api_access_token": settings.chatwoot_api_token})
-            r.raise_for_status()
-            for m in r.json().get("payload", []):
-                if m.get("id") == message_id:
-                    return (m.get("content") or "").strip()
-    except Exception as e:
-        log.warning("No se pudo leer mensaje citado id=%s: %s", message_id, e)
-    return ""
-
-
-async def _get_evolution_quoted(source_id: str) -> str:
-    """Consulta Evolution API para obtener el texto del mensaje citado."""
-    if not settings.evolution_api_url or not settings.evolution_api_key or not settings.evolution_instance:
-        return ""
-    if not source_id.startswith("WAID:"):
-        return ""
-
-    msg_id = source_id[5:]
-    url    = f"{settings.evolution_api_url}/chat/findMessages/{settings.evolution_instance}"
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            r = await client.post(
-                url,
-                headers={"apikey": settings.evolution_api_key, "Content-Type": "application/json"},
-                json={"where": {"key": {"id": msg_id}}},
-            )
-            r.raise_for_status()
-            msgs = r.json()
-            if not isinstance(msgs, list) or not msgs:
-                return ""
-            msg_obj = msgs[0]
-            message = msg_obj.get("message", {})
-            ctx = (
-                message.get("extendedTextMessage", {}).get("contextInfo")
-                or message.get("imageMessage", {}).get("contextInfo")
-                or message.get("videoMessage", {}).get("contextInfo")
-                or message.get("audioMessage", {}).get("contextInfo")
-                or msg_obj.get("contextInfo")
-                or {}
-            )
-            quoted_msg  = ctx.get("quotedMessage", {})
-            quoted_text = (
-                quoted_msg.get("conversation")
-                or quoted_msg.get("extendedTextMessage", {}).get("text")
-                or quoted_msg.get("imageMessage", {}).get("caption")
-                or quoted_msg.get("videoMessage", {}).get("caption")
-                or quoted_msg.get("documentMessage", {}).get("caption")
-                or ""
-            ).strip()
-            log.info("[EVO-PULL] source_id=%s quoted_text=%r", source_id, quoted_text[:120])
-            return quoted_text
-    except Exception as e:
-        log.warning("Error consultando Evolution quoted para %s: %s", source_id, e)
-    return ""
-
-
 async def _flush_buffer(conversation_id: int) -> None:
-    """Procesa todos los mensajes acumulados de una conversación como uno solo."""
     async with _buffers_lock:
         buf = _buffers.pop(conversation_id, None)
     if not buf or not buf.get("parts"):
         return
 
-    contact_id     = buf["contact_id"]
-    wa_number      = buf.get("wa_number", "")
-    source_id      = buf.get("source_id", "")
-    in_reply_to_id = buf.get("in_reply_to_id")
-    user_content   = collapse_parts(buf["parts"])
+    contact_id = buf["contact_id"]
+    wa_id = buf["wa_id"]
+    user_content = collapse_parts(buf["parts"])
     if not user_content:
         return
 
-    # Resolución del mensaje citado (3 fuentes: push EVO, pull EVO, Chatwoot fallback)
-    quoted = ""
-    if source_id:
-        quoted = _evo_quoted.pop(source_id, "")
-    if not quoted and source_id:
-        quoted = await _get_evolution_quoted(source_id)
-    if not quoted and in_reply_to_id:
-        quoted = await _get_quoted_message(conversation_id, in_reply_to_id)
-    if quoted:
-        quoted_short = quoted[:400] + "…" if len(quoted) > 400 else quoted
-        prefix = f"[El cliente está respondiendo al mensaje: «{quoted_short}»]\n"
-        log.info("[QUOTED] conversation=%s prefix=%r", conversation_id, prefix[:120])
-        if isinstance(user_content, str):
-            user_content = prefix + user_content
-        else:
-            user_content = [{"type": "text", "text": prefix}] + user_content
+    if _use_external_crm():
+        await _flush_external(conversation_id, contact_id, wa_id, user_content)
+    else:
+        await _flush_local(conversation_id, contact_id, wa_id, user_content)
 
+
+async def _build_messages(profile: dict, history: list, user_content) -> list:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Memoria de largo plazo
-    profile = await get_contact_attributes(contact_id) if contact_id else {}
     if profile:
-        log.info("[MEM] contact=%s profile=%s", contact_id, profile)
         datos = "\n".join(f"- {k}: {v}" for k, v in profile.items() if v)
         messages.append({
             "role": "system",
             "content": (
                 "DATOS CONOCIDOS DEL CLIENTE (de conversaciones previas):\n"
                 f"{datos}\n"
-                "Úsalos para personalizar la atención y NO vuelvas a preguntar lo que ya sabes. "
-                "Si aprendes datos nuevos o corregidos, guárdalos con `guardar_datos_cliente`."
+                "Úsalos para personalizar la atención y NO vuelvas a preguntar lo que ya sabes."
             ),
         })
-
-    # Memoria de corto plazo
-    history = await get_conversation_history(conversation_id)
     if history:
-        log.info("[CTX] conversation=%s history=%d mensajes", conversation_id, len(history))
         messages.extend(history)
-
     messages.append({"role": "user", "content": user_content})
+    return messages
+
+
+async def _send_reply_segments(wa_id: str, conversation_id: int, reply: str, persist) -> None:
+    """Envía segmentos. Cards de producto casi sin pausa; texto con delay corto."""
+    segments = split_reply(reply)
+    for i, segment in enumerate(segments):
+        if segment["type"] == "image":
+            if i > 0:
+                await asyncio.sleep(0.08)
+            wa_mid = await send_image(wa_id, segment["url"], segment.get("caption", ""))
+            await persist(
+                content=segment.get("caption") or segment["url"],
+                wa_message_id=wa_mid,
+                media_url=segment["url"],
+            )
+        else:
+            await asyncio.sleep(min(human_delay(segment["text"]), 0.35))
+            wa_mid = await send_message(wa_id, segment["text"])
+            await persist(content=segment["text"], wa_message_id=wa_mid, media_url=None)
+
+
+async def _flush_external(
+    conversation_id: int, contact_id: int, wa_id: str, user_content
+) -> None:
+    detail = await crm_http.get_conversation(conversation_id)
+    memory = await crm_http.get_memory(wa_id) or {}
+    profile = {
+        k: memory.get(k)
+        for k in (
+            "nombre_memory",
+            "email_memory",
+            "objetivo_memory",
+            "situacion_memory",
+            "temperatura_memory",
+            "resumen_memory",
+        )
+        if memory.get(k)
+    }
+    # Alias legibles para el prompt
+    if memory.get("nombre_memory"):
+        profile["nombre"] = memory["nombre_memory"]
+    if memory.get("email_memory"):
+        profile["email"] = memory["email_memory"]
+
+    history = []
+    for m in detail.get("messages") or []:
+        role = m.get("role") or ("user" if m.get("direction") == "inbound" else "assistant")
+        if role in ("user", "assistant", "human"):
+            mapped = "assistant" if role == "human" else role
+            history.append({"role": mapped, "content": m.get("content") or ""})
+    # El último inbound ya está en CRM; evitamos duplicarlo si coincide con user_content
+    if history and history[-1].get("role") == "user":
+        history = history[:-1]
+
+    messages = await _build_messages(profile, history, user_content)
+
+    async def persist(*, content: str, wa_message_id=None, media_url=None):
+        await crm_http.append_outbound(
+            conversation_id,
+            content,
+            wa_message_id=wa_message_id,
+            media_url=media_url,
+        )
 
     await set_typing(conversation_id, True)
     try:
-        reply = await run_agent(messages, contact_id, conversation_id)
+        reply = await run_agent(
+            messages,
+            wa_id=wa_id,
+            contact_id=contact_id or None,
+            conversation_id=conversation_id,
+            session=None,
+            use_external_crm=True,
+            persist=persist,
+        )
         if reply == HANDOFF_DONE:
-            # El agente ya escaló a un humano (mensaje de espera + etiqueta
-            # enviados dentro de run_agent). No mandar nada más.
-            log.info("[OUT] conversation=%s escalada a soporte humano por solicitud", conversation_id)
-        elif reply:
-            log.info("[OUT] conversation=%s reply=%r", conversation_id, reply)
-            for segment in split_reply(reply):
-                if segment["type"] == "image":
-                    await asyncio.sleep(human_delay(segment.get("caption", "")))
-                    await send_image(conversation_id, wa_number, segment["url"], segment["caption"])
-                else:
-                    await asyncio.sleep(human_delay(segment["text"]))
-                    await send_message(conversation_id, segment["text"])
+            log.info("[OUT] conversation=%s handoff", conversation_id)
+            return
+        if reply:
+            log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
+            await _send_reply_segments(wa_id, conversation_id, reply, persist)
         else:
-            # El agente no produjo respuesta (error, límite de rondas o salida
-            # vacía). Escalar a un asesor humano en lugar de quedar mudo.
-            log.warning("[OUT] conversation=%s sin respuesta del agente; escalando a soporte humano", conversation_id)
-            # 1) PRIMERO el mensaje de espera para el cliente.
-            await send_message(
-                conversation_id,
-                "Permíteme un momento por favor 🙏 En seguida un asesor de "
-                "nuestro equipo continúa contigo.",
-            )
-            # 2) Luego etiquetar la conversación para que el equipo intervenga.
-            #    Mientras la etiqueta esté activa, el bot deja de responder
-            #    (ver gate en app/api/webhook.py).
-            await add_label(conversation_id, settings.human_support_label)
-            # 3) Avisar al equipo (webhook opcional) de que hubo un fallo.
+            log.warning("[OUT] conversation=%s sin respuesta; handoff", conversation_id)
+            wa_mid = await send_message(wa_id, _FALLBACK_WAIT_MSG)
+            # El asesor tiene que ver este mensaje: es lo último que leyó el cliente.
+            await persist(content=_FALLBACK_WAIT_MSG, wa_message_id=wa_mid, media_url=None)
+            await crm_http.set_mode(conversation_id, "HUMAN")
+            record_fallback_event()
             await notify_team(
-                f"⚠️ El agente no pudo responder (conversación {conversation_id}); "
-                "escalada a soporte humano."
+                f"Agente sin respuesta (conversacion {conversation_id}); escalada a humano."
             )
     finally:
         await set_typing(conversation_id, False)
+
+
+async def _flush_local(
+    conversation_id: int, contact_id: int, wa_id: str, user_content
+) -> None:
+    async with SessionLocal() as session:
+        profile_task = repo.get_contact_attributes(session, contact_id)
+        history_task = repo.get_conversation_history(session, conversation_id)
+        profile, history = await asyncio.gather(profile_task, history_task)
+        messages = await _build_messages(profile, history, user_content)
+
+        # Commit en cada mensaje: si el agente escala y sale antes, los avisos que
+        # ya envió (filler, mensaje de espera) no deben perderse.
+        async def persist(*, content: str, wa_message_id=None, media_url=None):
+            await repo.add_message(
+                session,
+                conversation_id,
+                direction="outbound",
+                sender_type="bot",
+                content=content,
+                wa_message_id=wa_message_id,
+                media_url=media_url,
+            )
+            await session.commit()
+
+        await set_typing(conversation_id, True)
+        try:
+            reply = await run_agent(
+                messages,
+                wa_id=wa_id,
+                contact_id=contact_id,
+                conversation_id=conversation_id,
+                session=session,
+                persist=persist,
+            )
+            if reply == HANDOFF_DONE:
+                log.info("[OUT] conversation=%s handoff", conversation_id)
+                return
+            if reply:
+                log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
+                await _send_reply_segments(wa_id, conversation_id, reply, persist)
+            else:
+                log.warning("[OUT] conversation=%s sin respuesta; handoff", conversation_id)
+                wa_mid = await send_message(wa_id, _FALLBACK_WAIT_MSG)
+                await persist(content=_FALLBACK_WAIT_MSG, wa_message_id=wa_mid, media_url=None)
+                await repo.set_human_support(session, conversation_id, True)
+                await session.commit()
+                await notify_team(
+                    f"Agente sin respuesta (conversacion {conversation_id}); escalada a humano."
+                )
+        finally:
+            await set_typing(conversation_id, False)

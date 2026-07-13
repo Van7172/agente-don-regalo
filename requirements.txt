@@ -5,3 +5,8 @@ python-dotenv
 pypdf
 qdrant-client
 Pillow
+sqlalchemy[asyncio]>=2.0
+aiosqlite
+asyncpg
+pytest
+pytest-asyncio

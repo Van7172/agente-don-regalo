@@ -8,6 +8,9 @@ sandbox/.venv/
 sandbox/sandbox.db
 sandbox/*.db
 
+# Backups locales de promoción (no versionar)
+legacy_backup_*/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -22,3 +25,7 @@ build/
 
 # Dumps SQL (no versionar volcados de BD)
 *.sql
+
+# Artefactos locales de tests
+test_sandbox.db
+*.db

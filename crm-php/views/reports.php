@@ -27,7 +27,10 @@ $padTop = 16;
 $padBottom = 26;
 
 $points = [];
-$values = array_map(static fn(array $d): int => $d['value'], $daily);
+$values = [];
+foreach ($daily as $d) {
+    $values[] = (int) $d['value'];
+}
 $maxValue = $values ? max($values) : 0;
 $plotMax = $maxValue > 0 ? $maxValue : 1;
 
@@ -44,7 +47,11 @@ if (count($daily) > 1) {
     }
 }
 
-$linePoints = implode(' ', array_map(static fn(array $p): string => "{$p['x']},{$p['y']}", $points));
+$lineCoords = [];
+foreach ($points as $p) {
+    $lineCoords[] = $p['x'] . ',' . $p['y'];
+}
+$linePoints = implode(' ', $lineCoords);
 $baseY = $chartH - $padBottom;
 $areaPoints = $points
     ? $padL . ',' . $baseY . ' ' . $linePoints . ' ' . ($chartW - $padR) . ',' . $baseY
