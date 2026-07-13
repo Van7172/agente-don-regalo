@@ -395,8 +395,25 @@ async def run_agent(
                             "content": result,
                         })
 
-            log.warning("Se alcanzó MAX_TOOL_ROUNDS sin respuesta final")
-            return None
+            # Último intento: pedir respuesta final SIN tools (evita None → fallback).
+            log.warning("Se alcanzó MAX_TOOL_ROUNDS; pidiendo respuesta final sin tools")
+            data = await _chat_completion(
+                client,
+                {
+                    "model": settings.openai_model,
+                    "messages": messages + [{
+                        "role": "system",
+                        "content": (
+                            "Debes responder YA al cliente con un mensaje útil y corto. "
+                            "No llames más herramientas. Si faltan datos, pregunta uno solo."
+                        ),
+                    }],
+                    "tool_choice": "none",
+                },
+            )
+            if early_filler_task and not early_filler_task.done():
+                early_filler_task.cancel()
+            return data["choices"][0]["message"].get("content")
     except Exception as e:
         log.error("Error en el bucle del agente: %s", e)
         return None

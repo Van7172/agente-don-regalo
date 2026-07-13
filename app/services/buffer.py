@@ -28,9 +28,9 @@ from app.services.watchdog import record_fallback_event
 
 log = logging.getLogger(__name__)
 
-_FALLBACK_WAIT_MSG = (
-    "Permíteme un momento por favor 🙏 En seguida un asesor de "
-    "nuestro equipo continúa contigo."
+_FALLBACK_SOFT_MSG = (
+    "Disculpa, se me cruzó un cable 😅 Cuéntame otra vez qué buscas "
+    "y te ayudo al toque."
 )
 
 _buffers: dict[int, dict] = {}
@@ -300,14 +300,17 @@ async def _flush_external(
             log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
             await _send_reply_segments(wa_id, conversation_id, reply, persist)
         else:
-            log.warning("[OUT] conversation=%s sin respuesta; handoff", conversation_id)
-            wa_mid = await send_message(wa_id, _FALLBACK_WAIT_MSG)
-            # El asesor tiene que ver este mensaje: es lo último que leyó el cliente.
-            await persist(content=_FALLBACK_WAIT_MSG, wa_message_id=wa_mid, media_url=None)
-            await crm_http.set_mode(conversation_id, "HUMAN")
+            # Antes escalábamos a HUMAN ante cualquier None (timeout, max rounds,
+            # glitch). Eso mataba leads sanos tipo "suculentas para el colegio".
+            # Recovery suave: el bot sigue a cargo; solo el handoff explícito
+            # o la cuota agotada deben pasar a humano.
+            log.warning("[OUT] conversation=%s sin respuesta; recovery suave", conversation_id)
+            wa_mid = await send_message(wa_id, _FALLBACK_SOFT_MSG)
+            await persist(content=_FALLBACK_SOFT_MSG, wa_message_id=wa_mid, media_url=None)
             record_fallback_event()
             await notify_team(
-                f"Agente sin respuesta (conversacion {conversation_id}); escalada a humano."
+                f"Agente sin respuesta (conversacion {conversation_id}); "
+                f"recovery suave, bot sigue activo."
             )
     finally:
         await set_typing(conversation_id, False)
@@ -353,13 +356,12 @@ async def _flush_local(
                 log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
                 await _send_reply_segments(wa_id, conversation_id, reply, persist)
             else:
-                log.warning("[OUT] conversation=%s sin respuesta; handoff", conversation_id)
-                wa_mid = await send_message(wa_id, _FALLBACK_WAIT_MSG)
-                await persist(content=_FALLBACK_WAIT_MSG, wa_message_id=wa_mid, media_url=None)
-                await repo.set_human_support(session, conversation_id, True)
-                await session.commit()
+                log.warning("[OUT] conversation=%s sin respuesta; recovery suave", conversation_id)
+                wa_mid = await send_message(wa_id, _FALLBACK_SOFT_MSG)
+                await persist(content=_FALLBACK_SOFT_MSG, wa_message_id=wa_mid, media_url=None)
                 await notify_team(
-                    f"Agente sin respuesta (conversacion {conversation_id}); escalada a humano."
+                    f"Agente sin respuesta (conversacion {conversation_id}); "
+                    f"recovery suave, bot sigue activo."
                 )
         finally:
             await set_typing(conversation_id, False)
