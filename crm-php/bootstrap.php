@@ -13,6 +13,7 @@ $config = require $configPath;
 require_once __DIR__ . '/src/Database.php';
 require_once __DIR__ . '/src/Auth.php';
 require_once __DIR__ . '/src/Http.php';
+require_once __DIR__ . '/src/Media.php';
 require_once __DIR__ . '/src/Repository.php';
 
 Database::init($config['db']);

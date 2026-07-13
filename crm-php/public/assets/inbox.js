@@ -29,8 +29,22 @@
     btnLeadClose: document.getElementById("btn-lead-close"),
     thread: document.getElementById("thread"),
     aiBanner: document.getElementById("ai-banner"),
+    composerWrap: document.getElementById("composer-wrap"),
     composer: document.getElementById("composer"),
     draft: document.getElementById("draft"),
+    btnSend: document.getElementById("btn-send"),
+    fileInput: document.getElementById("file-input"),
+    btnAttach: document.getElementById("btn-attach"),
+    btnRecord: document.getElementById("btn-record"),
+    attachPreview: document.getElementById("attach-preview"),
+    attachIcon: document.getElementById("attach-icon"),
+    attachName: document.getElementById("attach-name"),
+    attachSize: document.getElementById("attach-size"),
+    attachClear: document.getElementById("attach-clear"),
+    recBar: document.getElementById("recording-bar"),
+    recTime: document.getElementById("rec-time"),
+    recStop: document.getElementById("rec-stop"),
+    recCancel: document.getElementById("rec-cancel"),
     leadPanel: document.getElementById("lead-panel"),
     leadAvatar: document.getElementById("lead-avatar"),
     leadName: document.getElementById("lead-name"),
@@ -39,11 +53,15 @@
     error: document.getElementById("error-box"),
   };
 
+  const MAX_BYTES = 16 * 1024 * 1024;
+
   let conversations = [];
   let selectedId = null;
   let query = "";
   let listSig = "";
   let threadSig = "";
+  let pendingFile = null; // File o Blob elegido/grabado, aún sin enviar
+  let sending = false;
 
   // ── utilidades ──────────────────────────────────────────────
 
@@ -60,7 +78,6 @@
     return parts.slice(0, 2).map((w) => w[0]).join("").toUpperCase();
   }
 
-  /** Índice de paleta estable por contacto. */
   function avatarClass(seed) {
     const key = String(seed ?? "");
     let sum = 0;
@@ -68,7 +85,6 @@
     return `avatar-p${Math.abs(sum) % 3}`;
   }
 
-  /** MySQL DATETIME ("2026-07-12 10:15:00") o ISO. Devuelve Date o null. */
   function parseTs(value) {
     if (!value) return null;
     const iso = String(value).includes("T") ? String(value) : String(value).replace(" ", "T");
@@ -93,8 +109,13 @@
     if (mins === null) return "";
     if (mins < 1) return "Recién";
     if (mins < 60) return `Esperando ${mins} min`;
-    const hours = Math.floor(mins / 60);
-    return `Esperando ${hours} h`;
+    return `Esperando ${Math.floor(mins / 60)} h`;
+  }
+
+  function humanSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / 1048576).toFixed(1)} MB`;
   }
 
   /**
@@ -136,6 +157,24 @@
       throw new Error("Sesión expirada");
     }
     if (!res.ok) throw new Error(json.error || "Error de API");
+    return json;
+  }
+
+  /** Sube un archivo y devuelve su clave de almacenamiento. */
+  async function uploadMedia(fileOrBlob, filename) {
+    const form = new FormData();
+    form.append("file", fileOrBlob, filename);
+    const res = await fetch(`${apiBase}/media`, {
+      method: "POST",
+      body: form, // sin Content-Type: el navegador pone el boundary
+      credentials: "same-origin",
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      window.location.href = `${base}/login.php`;
+      throw new Error("Sesión expirada");
+    }
+    if (!res.ok) throw new Error(json.error || "No se pudo subir el archivo");
     return json;
   }
 
@@ -215,6 +254,41 @@
 
   // ── render: hilo ────────────────────────────────────────────
 
+  /** El medio es una clave de storage (se sirve por media.php) o una URL absoluta. */
+  function mediaSrc(m) {
+    if (!m.media_url) return null;
+    if (m.media_external) return m.media_url;
+    return `${base}/media.php?f=${encodeURIComponent(m.media_url)}`;
+  }
+
+  /** "[audio]" / "[image]" son marcadores del agente, no texto real del cliente. */
+  const isPlaceholder = (text) => /^\[[^\]]*\]$/.test(String(text || "").trim());
+
+  const DOC_ICON =
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>' +
+    '<polyline points="14 2 14 8 20 8"></polyline></svg>';
+
+  function mediaMarkup(m) {
+    const src = mediaSrc(m);
+    if (!src) return "";
+    const kind = m.media_kind || "document";
+
+    if (kind === "image") {
+      return `<a class="media-link" href="${esc(src)}" target="_blank" rel="noopener">
+        <img class="media-img" src="${esc(src)}" alt="Imagen enviada" loading="lazy" />
+      </a>`;
+    }
+    if (kind === "audio") {
+      return `<audio class="media-audio" controls preload="none" src="${esc(src)}"></audio>`;
+    }
+
+    const label = !isPlaceholder(m.content) && m.content ? m.content : "Documento";
+    return `<a class="media-doc" href="${esc(src)}" target="_blank" rel="noopener" download>
+      ${DOC_ICON}<span>${esc(label)}</span>
+    </a>`;
+  }
+
   function bubble(m) {
     const inbound = m.direction === "inbound";
     const sender = inbound ? "contact" : m.sender_type === "agent" ? "agent" : "bot";
@@ -224,16 +298,16 @@
     const row = document.createElement("div");
     row.className = `msg-row ${inbound ? "is-in" : "is-out"}`;
 
-    const media =
-      typeof m.media_url === "string" && /^https?:\/\//i.test(m.media_url)
-        ? `<img class="media" src="${esc(m.media_url)}" alt="" loading="lazy" />`
-        : "";
+    const media = mediaMarkup(m);
+    // En un documento el texto ES el nombre del archivo: ya va dentro del propio enlace.
+    const showText =
+      m.content && !isPlaceholder(m.content) && !(media && m.media_kind === "document");
 
     row.innerHTML = `
-      <div class="bubble from-${sender}">
+      <div class="bubble from-${sender}${media ? " has-media" : ""}">
         <div class="who">${esc(label)}</div>
-        <div class="txt">${esc(m.content || "")}</div>
         ${media}
+        ${showText ? `<div class="txt">${esc(m.content)}</div>` : ""}
         <div class="at">${esc(timeLabel(m.created_at))}</div>
       </div>`;
     return row;
@@ -303,7 +377,7 @@
     const isHuman = conv.mode === "HUMAN";
     el.btnHuman.hidden = isHuman;
     el.btnAi.hidden = !isHuman;
-    el.composer.hidden = !isHuman;
+    el.composerWrap.hidden = !isHuman;
     el.aiBanner.hidden = isHuman;
 
     const sig = JSON.stringify(messages.map((m) => m.id));
@@ -319,12 +393,133 @@
     renderLead(conv, lead);
   }
 
+  // ── adjuntos ────────────────────────────────────────────────
+
+  const ATTACH_ICONS = {
+    image:
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>',
+    audio:
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path></svg>',
+    document: DOC_ICON,
+  };
+
+  function kindOfFile(file) {
+    const type = file.type || "";
+    if (type.startsWith("image/")) return "image";
+    if (type.startsWith("audio/")) return "audio";
+    return "document";
+  }
+
+  function setPendingFile(file, name) {
+    if (file.size > MAX_BYTES) {
+      showError(`El archivo pesa ${humanSize(file.size)}; el máximo es 16 MB.`);
+      return;
+    }
+    pendingFile = { blob: file, name: name || file.name || "archivo", kind: kindOfFile(file) };
+    el.attachIcon.innerHTML = ATTACH_ICONS[pendingFile.kind];
+    el.attachName.textContent = pendingFile.name;
+    el.attachSize.textContent = humanSize(file.size);
+    el.attachPreview.hidden = false;
+    showError("");
+    el.draft.focus();
+  }
+
+  function clearPendingFile() {
+    pendingFile = null;
+    el.attachPreview.hidden = true;
+    el.fileInput.value = "";
+  }
+
+  // ── grabación de nota de voz ────────────────────────────────
+
+  // WhatsApp solo acepta ogg/opus, mp3, aac o mp4. Chrome graba en webm/opus,
+  // que WhatsApp rechaza: el agente lo convierte con ffmpeg antes de enviarlo.
+  const REC_FORMATS = ["audio/ogg;codecs=opus", "audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+  const EXT_BY_FORMAT = { ogg: "ogg", mp4: "m4a", webm: "webm" };
+
+  let recorder = null;
+  let recChunks = [];
+  let recTimer = null;
+  let recStart = 0;
+  let recCancelled = false;
+
+  function pickRecordingFormat() {
+    if (typeof MediaRecorder === "undefined") return null;
+    return REC_FORMATS.find((f) => MediaRecorder.isTypeSupported(f)) || null;
+  }
+
+  function extForMime(mime) {
+    const base = String(mime).split(";")[0];
+    const sub = base.split("/")[1] || "webm";
+    return EXT_BY_FORMAT[sub] || "webm";
+  }
+
+  function tickRecTime() {
+    const secs = Math.floor((Date.now() - recStart) / 1000);
+    const m = Math.floor(secs / 60);
+    const s = String(secs % 60).padStart(2, "0");
+    el.recTime.textContent = `${m}:${s}`;
+  }
+
+  async function startRecording() {
+    const format = pickRecordingFormat();
+    if (!format) {
+      showError("Tu navegador no permite grabar audio. Adjunta un archivo en su lugar.");
+      return;
+    }
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      showError("No se pudo usar el micrófono. Revisa los permisos del navegador.");
+      return;
+    }
+
+    recChunks = [];
+    recCancelled = false;
+    recorder = new MediaRecorder(stream, { mimeType: format });
+
+    recorder.addEventListener("dataavailable", (e) => {
+      if (e.data && e.data.size) recChunks.push(e.data);
+    });
+
+    recorder.addEventListener("stop", () => {
+      stream.getTracks().forEach((t) => t.stop());
+      clearInterval(recTimer);
+      el.recBar.hidden = true;
+      el.composer.hidden = false;
+
+      if (recCancelled || !recChunks.length) return;
+
+      const blob = new Blob(recChunks, { type: format });
+      const ext = extForMime(format);
+      setPendingFile(blob, `nota-de-voz.${ext}`);
+    });
+
+    recorder.start();
+    recStart = Date.now();
+    tickRecTime();
+    recTimer = setInterval(tickRecTime, 500);
+    el.recBar.hidden = false;
+    el.composer.hidden = true;
+    showError("");
+  }
+
+  function stopRecording(cancel) {
+    if (!recorder || recorder.state === "inactive") return;
+    recCancelled = !!cancel;
+    recorder.stop();
+    recorder = null;
+  }
+
   // ── acciones ────────────────────────────────────────────────
 
   function select(id) {
     selectedId = id;
     threadSig = "";
     root.dataset.mobileChat = "true";
+    clearPendingFile();
     renderList();
     loadThread();
   }
@@ -370,22 +565,44 @@
     }
   }
 
+  function setSending(on) {
+    sending = on;
+    el.btnSend.disabled = on;
+    el.btnAttach.disabled = on;
+    el.btnRecord.disabled = on;
+  }
+
   async function send(event) {
     event.preventDefault();
-    if (selectedId == null) return;
+    if (selectedId == null || sending) return;
+
     const content = (el.draft.value || "").trim();
-    if (!content) return;
-    el.draft.value = "";
+    const attachment = pendingFile;
+    if (!content && !attachment) return;
+
+    setSending(true);
     try {
-      await api("/outbox", {
-        method: "POST",
-        body: JSON.stringify({ conversation_id: selectedId, content }),
-      });
+      const payload = { conversation_id: selectedId, content };
+
+      if (attachment) {
+        const up = await uploadMedia(attachment.blob, attachment.name);
+        payload.media_path = up.key;
+        payload.filename = attachment.name;
+      }
+
+      await api("/outbox", { method: "POST", body: JSON.stringify(payload) });
+
+      el.draft.value = "";
+      el.draft.style.height = "auto";
+      clearPendingFile();
       listSig = "";
       await Promise.all([loadThread(), loadList()]);
+      showError("");
     } catch (err) {
-      el.draft.value = content;
+      // No se limpia el borrador: el asesor no debe perder lo que escribió.
       showError(err.message || String(err));
+    } finally {
+      setSending(false);
     }
   }
 
@@ -395,7 +612,7 @@
     try {
       localStorage.setItem("dr.leadPanelCollapsed", collapsed ? "1" : "0");
     } catch {
-      /* almacenamiento no disponible: el panel simplemente no recuerda su estado */
+      /* almacenamiento no disponible: el panel no recuerda su estado */
     }
   }
 
@@ -409,7 +626,19 @@
   el.btnBack.addEventListener("click", () => {
     root.dataset.mobileChat = "false";
   });
+
   el.composer.addEventListener("submit", send);
+
+  el.btnAttach.addEventListener("click", () => el.fileInput.click());
+  el.fileInput.addEventListener("change", () => {
+    const file = el.fileInput.files?.[0];
+    if (file) setPendingFile(file);
+  });
+  el.attachClear.addEventListener("click", clearPendingFile);
+
+  el.btnRecord.addEventListener("click", startRecording);
+  el.recStop.addEventListener("click", () => stopRecording(false));
+  el.recCancel.addEventListener("click", () => stopRecording(true));
 
   el.draft.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {

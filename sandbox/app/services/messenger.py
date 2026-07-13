@@ -1,6 +1,7 @@
 """Envío de mensajes vía WhatsApp Cloud API (+ helpers de UI)."""
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import re
@@ -123,6 +124,60 @@ async def send_image(wa_id: str, image_url: str, caption: str = "") -> str | Non
             if caption:
                 return await send_message(wa_id, caption)
             return None
+
+
+# WhatsApp solo acepta estos contenedores de audio. El navegador del asesor graba
+# en webm/opus (Chrome), que NO está en la lista: hay que convertirlo antes.
+_WA_AUDIO_MIMES = {"audio/aac", "audio/amr", "audio/mpeg", "audio/mp4", "audio/ogg"}
+
+
+async def _to_whatsapp_audio(data: bytes, mime: str) -> tuple[bytes, str, str]:
+    """Convierte a ogg/opus con ffmpeg si el formato no le sirve a WhatsApp."""
+    base = (mime or "").split(";")[0].strip().lower()
+    if base in _WA_AUDIO_MIMES:
+        return data, base, "audio.ogg" if base == "audio/ogg" else "audio"
+
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", "pipe:0",
+        "-vn", "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1",
+        "-f", "ogg", "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate(input=data)
+    if proc.returncode != 0 or not out:
+        raise RuntimeError(
+            f"No se pudo convertir el audio ({base}): {err.decode('utf-8', 'ignore')[:200]}"
+        )
+
+    log.info("[WA] audio %s -> audio/ogg (%s -> %s bytes)", base, len(data), len(out))
+    return out, "audio/ogg", "nota-de-voz.ogg"
+
+
+async def send_media(
+    wa_id: str,
+    kind: str,
+    data: bytes,
+    mime: str,
+    filename: str = "",
+    caption: str = "",
+) -> str | None:
+    """Sube bytes a Meta y los envía como imagen, audio o documento."""
+    if kind == "audio":
+        data, mime, auto_name = await _to_whatsapp_audio(data, mime)
+        media_id = await whatsapp_client.upload_media(data, mime, filename or auto_name)
+        result = await whatsapp_client.send_audio_id(wa_id, media_id)
+    elif kind == "image":
+        media_id = await whatsapp_client.upload_media(data, mime, filename or "image.jpg")
+        result = await whatsapp_client.send_image_id(wa_id, media_id, caption)
+    else:
+        name = filename or "documento"
+        media_id = await whatsapp_client.upload_media(data, mime, name)
+        result = await whatsapp_client.send_document_id(wa_id, media_id, name, caption)
+
+    return (result.get("messages") or [{}])[0].get("id")
 
 
 async def notify_team(text: str) -> None:

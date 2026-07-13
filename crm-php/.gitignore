@@ -1,1 +1,5 @@
 config.php
+
+# Medios de conversaciones: datos de clientes, no van al repo.
+# El .htaccess que blinda la carpeta sí se versiona.
+storage/media/

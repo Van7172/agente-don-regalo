@@ -43,6 +43,10 @@ try {
     if ($method === 'POST' && $path === '/outbox') {
         $needsToken = false;
     }
+    // Subida de medios: el asesor desde el panel (sesión) o el agente (token).
+    if ($method === 'POST' && $path === '/media') {
+        $needsToken = false;
+    }
     if ($method === 'PATCH' && preg_match('#^/conversations/\d+/mode$#', $path)) {
         $needsToken = false;
     }
@@ -137,6 +141,15 @@ try {
                     'resumen' => $memory['resumen_memory'] ?? null,
                 ] : null,
                 'messages' => array_map(static function (array $msg): array {
+                    // media_url puede ser una clave de storage (medio de la conversación)
+                    // o una URL absoluta (imagen de catálogo que envía el bot).
+                    $media = (string) ($msg['media_url'] ?? '');
+                    $isExternal = $media !== '' && preg_match('#^https?://#i', $media);
+                    $kind = null;
+                    if ($media !== '') {
+                        $kind = $isExternal ? 'image' : Media::kindFor($media);
+                    }
+
                     return [
                         'id' => (int) $msg['id_message'],
                         'direction' => $msg['direction_message'],
@@ -144,6 +157,8 @@ try {
                         'role' => $msg['role_message'],
                         'content' => $msg['content_message'],
                         'media_url' => $msg['media_url'],
+                        'media_kind' => $kind,
+                        'media_external' => (bool) $isExternal,
                         'quoted_text' => $msg['quoted_text'],
                         'wa_message_id' => $msg['wa_message_id'],
                         'created_at' => Repository::iso($msg['fecha_creacion']),
@@ -258,6 +273,25 @@ try {
         Http::jsonOk(['ok' => true]);
     }
 
+    // POST /media — sube un archivo y devuelve su clave de almacenamiento.
+    if ($path === '/media' && $method === 'POST') {
+        if (empty($_FILES['file'])) {
+            Http::jsonError('file required');
+        }
+        try {
+            $key = Media::storeUploaded($_FILES['file']);
+        } catch (RuntimeException $e) {
+            Http::jsonError($e->getMessage(), 422);
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'key' => $key,
+            'kind' => Media::kindFor($key),
+            'mime' => Media::mimeFor($key),
+            'name' => (string) ($_FILES['file']['name'] ?? ''),
+        ]);
+    }
+
     // Outbox
     if ($path === '/outbox' && $method === 'GET') {
         Auth::assertInternalToken();
@@ -265,9 +299,22 @@ try {
     }
     if ($path === '/outbox' && $method === 'POST') {
         $body = Http::readJson();
-        if (empty($body['conversation_id']) || empty($body['content'])) {
-            Http::jsonError('conversation_id and content required');
+        if (empty($body['conversation_id'])) {
+            Http::jsonError('conversation_id required');
         }
+
+        $mediaPath = (string) ($body['media_path'] ?? '');
+        $content = (string) ($body['content'] ?? '');
+        // Un adjunto puede ir sin texto (una foto sola), pero un mensaje de texto no puede ir vacío.
+        if ($mediaPath === '' && trim($content) === '') {
+            Http::jsonError('content or media_path required');
+        }
+        if ($mediaPath !== '' && Media::pathFor($mediaPath) === null) {
+            Http::jsonError('media_path not found', 404);
+        }
+
+        $type = $mediaPath !== '' ? Media::kindFor($mediaPath) : 'text';
+
         $convId = (int) $body['conversation_id'];
         $conv = Repository::getConversation($convId);
         if (!$conv) {
@@ -276,40 +323,53 @@ try {
         $outboxId = Repository::enqueueOutbox([
             'conversationId' => $convId,
             'waId' => $conv['wa_id'],
-            'content' => (string) $body['content'],
-            'type' => $body['type'] ?? 'text',
-            'mediaPath' => $body['media_path'] ?? null,
+            'content' => $content,
+            'type' => $type,
+            'mediaPath' => $mediaPath !== '' ? $mediaPath : null,
         ]);
 
         $agentUrl = rtrim((string) ($config['agent_base_url'] ?? ''), '/');
         $agentToken = (string) ($config['agent_internal_token'] ?? '');
-        if ($agentUrl !== '') {
-            $payload = json_encode([
-                'outbox_id' => $outboxId,
-                'wa_id' => $conv['wa_id'],
-                'content' => $body['content'],
-                'conversation_id' => $convId,
-            ], JSON_UNESCAPED_UNICODE);
-            $ch = curl_init($agentUrl . '/internal/outbox/send');
-            if ($ch !== false) {
-                curl_setopt_array($ch, [
-                    CURLOPT_POST => true,
-                    CURLOPT_HTTPHEADER => array_filter([
-                        'Content-Type: application/json',
-                        $agentToken !== '' ? 'X-Agent-Token: ' . $agentToken : null,
-                    ]),
-                    CURLOPT_POSTFIELDS => $payload,
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_TIMEOUT => 15,
-                ]);
-                $resBody = curl_exec($ch);
-                $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
-                if ($code >= 200 && $code < 300) {
-                    // El agente ya: envió WA, mark_outbox, append mensaje y modo HUMAN.
-                    // No volver a insertar el mensaje aquí (evitar duplicados en el inbox).
-                }
-            }
+        if ($agentUrl === '') {
+            Http::jsonOk(['ok' => true, 'outbox_id' => $outboxId, 'queued' => true]);
+        }
+
+        $payload = json_encode([
+            'outbox_id' => $outboxId,
+            'wa_id' => $conv['wa_id'],
+            'content' => $content,
+            'conversation_id' => $convId,
+            'type' => $type,
+            'media_path' => $mediaPath !== '' ? $mediaPath : null,
+            'filename' => (string) ($body['filename'] ?? ''),
+        ], JSON_UNESCAPED_UNICODE);
+
+        $ch = curl_init($agentUrl . '/internal/outbox/send');
+        if ($ch === false) {
+            Repository::markOutbox($outboxId, 'failed', 'curl_init failed');
+            Http::jsonError('No se pudo contactar al agente', 502);
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => array_filter([
+                'Content-Type: application/json',
+                $agentToken !== '' ? 'X-Agent-Token: ' . $agentToken : null,
+            ]),
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_RETURNTRANSFER => true,
+            // Los medios tardan más: el agente descarga, convierte y sube a Meta.
+            CURLOPT_TIMEOUT => $type === 'text' ? 20 : 60,
+        ]);
+        $resBody = (string) curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        // El agente ya: envió a WA, marcó el outbox, guardó el mensaje y puso modo HUMAN.
+        // No insertar el mensaje aquí (evita duplicados en el inbox).
+        if ($code < 200 || $code >= 300) {
+            Repository::markOutbox($outboxId, 'failed', substr($resBody, 0, 500) ?: "HTTP {$code}");
+            // Antes fallaba en silencio y el asesor creía que se había enviado.
+            Http::jsonError('El agente no pudo enviar el mensaje', 502);
         }
 
         Http::jsonOk(['ok' => true, 'outbox_id' => $outboxId]);

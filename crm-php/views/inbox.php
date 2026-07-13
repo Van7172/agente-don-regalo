@@ -99,15 +99,59 @@
         </div>
 
         <!-- Modo HUMAN: el asesor responde -->
-        <form class="composer" id="composer" hidden>
-          <textarea class="input" id="draft" rows="1" placeholder="Escribe como asesor…"></textarea>
-          <button type="submit" class="btn btn-primary btn-round" aria-label="Enviar">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
-        </form>
+        <div class="composer-wrap" id="composer-wrap" hidden>
+
+          <!-- Adjunto elegido, aún sin enviar -->
+          <div class="attach-preview" id="attach-preview" hidden>
+            <div class="attach-icon" id="attach-icon"></div>
+            <div class="attach-meta">
+              <div class="attach-name" id="attach-name"></div>
+              <div class="attach-size" id="attach-size"></div>
+            </div>
+            <button type="button" class="icon-btn" id="attach-clear" aria-label="Quitar adjunto">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Grabando nota de voz -->
+          <div class="recording-bar" id="recording-bar" hidden>
+            <span class="rec-dot"></span>
+            <span class="rec-label">Grabando… <strong id="rec-time">0:00</strong></span>
+            <button type="button" class="btn btn-secondary" id="rec-cancel">Cancelar</button>
+            <button type="button" class="btn btn-primary" id="rec-stop">Listo</button>
+          </div>
+
+          <form class="composer" id="composer">
+            <input type="file" id="file-input" hidden
+                   accept="image/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip" />
+
+            <button type="button" class="icon-btn icon-btn-outline" id="btn-attach" title="Adjuntar archivo" aria-label="Adjuntar archivo">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+              </svg>
+            </button>
+
+            <button type="button" class="icon-btn icon-btn-outline" id="btn-record" title="Grabar nota de voz" aria-label="Grabar nota de voz">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+              </svg>
+            </button>
+
+            <textarea class="input" id="draft" rows="1" placeholder="Escribe como asesor…"></textarea>
+
+            <button type="submit" class="btn btn-primary btn-round" id="btn-send" aria-label="Enviar">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </form>
+        </div>
       </div>
     </div>
 

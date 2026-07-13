@@ -26,6 +26,38 @@ def crm_enabled() -> bool:
     return settings.crm_mode == "external" and bool(settings.crm_base_url)
 
 
+def _auth_headers() -> dict[str, str]:
+    """Como _headers pero sin Content-Type: para multipart y descargas."""
+    return {k: v for k, v in _headers().items() if k != "Content-Type"}
+
+
+async def upload_media(data: bytes, filename: str, mime: str) -> str:
+    """Guarda bytes en el CRM y devuelve la clave de almacenamiento."""
+    url = f"{settings.crm_base_url.rstrip('/')}/api/media"
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        res = await client.post(
+            url,
+            headers=_auth_headers(),
+            files={"file": (filename, data, mime)},
+        )
+        if res.status_code >= 400:
+            log.error("[CRM-HTTP] upload_media -> %s body=%s", res.status_code, (res.text or "")[:300])
+        res.raise_for_status()
+        return str(res.json()["key"])
+
+
+async def fetch_media(key: str) -> tuple[bytes, str]:
+    """Descarga un medio guardado en el CRM. Devuelve (bytes, mime)."""
+    url = f"{settings.crm_base_url.rstrip('/')}/media.php"
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        res = await client.get(url, headers=_auth_headers(), params={"f": key})
+        if res.status_code >= 400:
+            log.error("[CRM-HTTP] fetch_media -> %s body=%s", res.status_code, (res.text or "")[:300])
+        res.raise_for_status()
+        mime = res.headers.get("content-type", "application/octet-stream").split(";")[0]
+        return res.content, mime
+
+
 async def _request(
     method: str,
     path: str,

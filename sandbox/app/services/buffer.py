@@ -6,6 +6,7 @@ import logging
 
 from sqlalchemy import select
 
+from app.channels.whatsapp.client import whatsapp_client
 from app.channels.whatsapp.parser import InboundMessage
 from app.config import settings
 from app.crm import http_client as crm_http
@@ -42,12 +43,43 @@ async def enqueue_inbound(msg: InboundMessage) -> dict:
     return await _enqueue_local(msg)
 
 
+async def _archive_media(msg: InboundMessage) -> tuple[str | None, tuple[bytes, str] | None]:
+    """Baja el adjunto de Meta y lo archiva en el CRM.
+
+    Los medios de WhatsApp caducan y solo se descargan con el token de Meta, así
+    que sin archivarlos el asesor nunca podría ver la foto ni oír la nota de voz.
+    Devuelve (clave en el CRM, bytes) para que el LLM reutilice la descarga.
+    """
+    if not msg.media_id:
+        return None, None
+
+    try:
+        data, mime = await whatsapp_client.download_media(msg.media_id)
+    except Exception as err:
+        log.warning("[MEDIA] no se pudo descargar %s: %s", msg.media_id, err)
+        return None, None
+
+    key = None
+    try:
+        ext = (mime or "").split("/")[-1].split(";")[0] or "bin"
+        key = await crm_http.upload_media(data, f"{msg.message_type}.{ext}", mime)
+        log.info("[MEDIA] %s archivado en el CRM: %s", msg.message_type, key)
+    except Exception as err:
+        # Que no se pueda archivar no debe impedir que el bot responda.
+        log.warning("[MEDIA] no se pudo archivar en el CRM: %s", err)
+
+    return key, (data, mime)
+
+
 async def _enqueue_external(msg: InboundMessage) -> dict:
+    media_key, prefetched = await _archive_media(msg)
+
     data = await crm_http.upsert_inbound(
         msg.wa_id,
         name=msg.contact_name or "",
         content=msg.text or msg.caption or f"[{msg.message_type}]",
         wa_message_id=msg.wa_message_id,
+        media_url=media_key,
         quoted_text=None,
     )
     conv = data.get("conversation") or {}
@@ -65,7 +97,7 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
         log.info("[GATE] conversation=%s ignored: paused", conversation_id)
         return {"status": "ignored", "reason": "paused"}
 
-    parts = await inbound_to_parts(msg)
+    parts = await inbound_to_parts(msg, prefetched)
     async with _buffers_lock:
         buf = _buffers.get(conversation_id)
         if buf and buf.get("task"):

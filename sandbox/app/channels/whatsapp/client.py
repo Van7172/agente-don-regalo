@@ -101,6 +101,54 @@ class WhatsAppClient:
             log.info("[WA] image(id) -> %s media=%s", to_wa_id, media_id)
             return data
 
+    async def send_audio_id(self, to_wa_id: str, media_id: str) -> dict[str, Any]:
+        """Nota de voz. WhatsApp no admite caption en audio."""
+        if settings.whatsapp_dry_run:
+            fake_id = f"wamid.dry.audio.{int(__import__('time').time() * 1000)}"
+            log.info("[WA-DRY] audio -> %s id=%s media=%s", to_wa_id, fake_id, media_id)
+            return {"messages": [{"id": fake_id}]}
+        body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "audio",
+            "audio": {"id": media_id},
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(self._messages_url(), headers=self._headers, json=body)
+            if r.status_code >= 400:
+                log.error("[WA] send_audio FAIL status=%s body=%s", r.status_code, r.text[:500])
+            r.raise_for_status()
+            log.info("[WA] audio -> %s media=%s", to_wa_id, media_id)
+            return r.json()
+
+    async def send_document_id(
+        self, to_wa_id: str, media_id: str, filename: str = "", caption: str = ""
+    ) -> dict[str, Any]:
+        if settings.whatsapp_dry_run:
+            fake_id = f"wamid.dry.doc.{int(__import__('time').time() * 1000)}"
+            log.info("[WA-DRY] document -> %s id=%s media=%s", to_wa_id, fake_id, media_id)
+            return {"messages": [{"id": fake_id}]}
+        document: dict[str, Any] = {"id": media_id}
+        if filename:
+            document["filename"] = filename
+        if caption:
+            document["caption"] = caption
+        body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "document",
+            "document": document,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(self._messages_url(), headers=self._headers, json=body)
+            if r.status_code >= 400:
+                log.error("[WA] send_document FAIL status=%s body=%s", r.status_code, r.text[:500])
+            r.raise_for_status()
+            log.info("[WA] document -> %s media=%s", to_wa_id, media_id)
+            return r.json()
+
     async def send_image_url(self, to_wa_id: str, image_url: str, caption: str = "") -> dict[str, Any]:
         if settings.whatsapp_dry_run:
             fake_id = f"wamid.dry.img.{int(__import__('time').time() * 1000)}"

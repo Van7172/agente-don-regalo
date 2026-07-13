@@ -49,20 +49,33 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
         return ""
 
 
-async def inbound_to_parts(msg: InboundMessage) -> list[dict]:
-    """Convierte un InboundMessage Cloud API en partes OpenAI."""
+async def inbound_to_parts(
+    msg: InboundMessage,
+    prefetched: tuple[bytes, str] | None = None,
+) -> list[dict]:
+    """Convierte un InboundMessage Cloud API en partes OpenAI.
+
+    `prefetched` son los bytes ya bajados de Meta (el buffer los descarga para
+    archivarlos en el CRM). Reutilizarlos evita pedirle a Meta el mismo archivo
+    dos veces por cada mensaje con adjunto.
+    """
     if msg.message_type == "text" or (msg.text and not msg.media_id):
         return [{"type": "text", "text": msg.text}] if msg.text else []
 
+    async def _media() -> tuple[bytes, str]:
+        if prefetched is not None:
+            return prefetched
+        return await whatsapp_client.download_media(msg.media_id)
+
     if msg.message_type == "audio" and msg.media_id:
-        data, mime = await whatsapp_client.download_media(msg.media_id)
+        data, mime = await _media()
         transcription = await transcribe_audio(data, f"audio.{(mime or '').split('/')[-1] or 'ogg'}")
         if transcription:
             return [{"type": "text", "text": f"[Nota de voz transcrita]: {transcription}"}]
         return [{"type": "text", "text": "[Nota de voz no transcribible]"}]
 
     if msg.message_type == "image" and msg.media_id:
-        data, mime = await whatsapp_client.download_media(msg.media_id)
+        data, mime = await _media()
         b64 = base64.b64encode(data).decode()
         mime = mime or "image/jpeg"
         text = msg.caption or "El usuario envió una imagen. Descríbela y responde apropiadamente."
@@ -72,7 +85,7 @@ async def inbound_to_parts(msg: InboundMessage) -> list[dict]:
         ]
 
     if msg.message_type == "document" and msg.media_id:
-        data, mime = await whatsapp_client.download_media(msg.media_id)
+        data, mime = await _media()
         if (mime or "").endswith("pdf") or (msg.caption or "").lower().endswith(".pdf"):
             pdf_text = extract_pdf_text(data)
             if pdf_text:
