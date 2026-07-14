@@ -102,6 +102,40 @@ def test_split_reply_image_and_text():
     assert "text" in types
 
 
+def test_split_reply_url_pegada_a_vineta():
+    """Regresión desayunos: el LLM pega URL + nombre en la misma línea."""
+    from app.services.messenger import split_reply
+
+    reply = (
+        "Perfecto — aquí tienes opciones:\n"
+        "https://donregalo.pe/imgs/a.jpg • 🎁 *Gustito* — S/75 ($22)\n"
+        "1. https://donregalo.pe/imgs/b.webp\n"
+        "• 🎁 *Otro Desayuno* — S/80 ($24)\n"
+        "https://donregalo.pe/imgs/c.jpg?v=1 *Tercero* — S/90 ($26)\n"
+        "\n¿Quieres más detalles de alguno?"
+    )
+    segs = split_reply(reply)
+    images = [s for s in segs if s["type"] == "image"]
+    assert len(images) == 3
+    assert images[0]["url"].endswith("a.jpg")
+    assert "Gustito" in (images[0].get("caption") or "")
+    assert images[1]["url"].endswith("b.webp")
+    assert "c.jpg" in images[2]["url"]
+    # No debe quedar un bloque de texto con URLs crudas
+    for s in segs:
+        if s["type"] == "text":
+            assert "https://" not in s["text"] or "donregalo" not in s["text"]
+
+
+def test_split_reply_numbered_only_url():   
+    from app.services.messenger import split_reply
+
+    reply = "https://cdn.example.com/x.png\n• 🎁 *Solo* — S/10 ($3)"
+    segs = split_reply(reply)
+    assert segs[0]["type"] == "image"
+    assert segs[0]["url"].endswith("x.png")
+
+
 def test_dedupe_products_same_package_no_repeat():
     """Regresión: mismo producto en texto suelto y otra vez bajo otra imagen."""
     from app.services.messenger import _product_key, dedupe_products_in_reply, split_reply

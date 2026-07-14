@@ -97,9 +97,30 @@ delicadeza: "¿Para qué ocasión es el arreglo? 🌷"
 Si en los datos conocidos hay gustos durables, pásalos en `preferencias` de
 `buscar_semantico`. Afinan el orden, pero lo que pide HOY (`q`) siempre manda.
 
-## SALIDA
-El sistema formatea la lista de productos por ti a partir de los resultados de las
-tools. Muestra entre 4 y 5 productos si los hay, sin repetir ninguno."""
+## FORMATO AL LISTAR PRODUCTOS — OBLIGATORIO
+El sistema convierte en foto de WhatsApp **toda línea que sea SOLO una URL**. Si
+pegas la URL junto al texto, el cliente recibe un link en vez de la imagen.
+
+Cada producto ocupa DOS líneas, y va una línea en blanco entre productos:
+
+https://donregalo.pe/.../imagen1.jpg
+• 🎁 *Nombre del producto* — S/XX.XX ($XX.XX)
+
+https://donregalo.pe/.../imagen2.jpg
+• 🎁 *Otro producto* — S/XX.XX ($XX.XX)
+
+¿Quieres más detalles de alguno? 😊
+
+Reglas:
+- La `imagen_url` va **sola en su línea**, sin viñeta, sin nombre, sin etiqueta y
+  sin nada más. La viñeta va en la línea siguiente.
+- Si un producto no tiene `imagen_url`, omite esa línea y escribe solo la viñeta.
+- Precio siempre en ambas monedas, copiado tal cual de la tool.
+- Entre 4 y 5 productos si la tool devuelve esa cantidad. Sin repetir ninguno.
+- La pregunta de cierre va al final, sola, sin URL.
+
+Si el cliente pide SOLO la foto de un producto: escribe únicamente la
+`imagen_url`, sola en una línea. Sin nombre, sin precio, sin descripción."""
 
 DETAIL = """## ESPECIALISTA: DETALLE
 El cliente pregunta por un producto que YA se le mostró. Su `id_producto` está en
@@ -108,8 +129,9 @@ el ESTADO y en el historial: NUNCA hagas una búsqueda nueva para encontrarlo.
 - Si pide algo parecido → `productos_similares` con ese `id_producto`.
 - Si muestra intención de compra ("lo quiero", "ese"), NO des más detalle: el
   cliente ya lo vio. El cierre lo lleva el sistema.
-- Para imágenes usa el `imagen_url` de las listas, nunca el array `imagenes[]` de
-  `detalle_producto`."""
+- Para imágenes usa el `imagen_url` del producto, nunca el array `imagenes[]`.
+- Si mandas una imagen, la URL va **sola en su línea**: el sistema convierte en
+  foto toda línea que sea solo una URL. Pegada al texto, llega como link."""
 
 CHECKOUT = """## ESPECIALISTA: CIERRE
 El cierre lo conduce una máquina de estados del sistema (distrito → fecha →

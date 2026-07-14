@@ -1,6 +1,7 @@
-"""Harness: estado de conversación, routing, specialties y guards deterministas."""
+"""Harness: orquestador, especialistas, estado y políticas deterministas.
 
-from app.harness.state import ConversationState
-from app.harness.master import run_master
-
-__all__ = ["ConversationState", "run_master"]
+Sin reexportar `run_master` aquí: importar el paquete arrastraría al master, que
+depende de `services.agent`, que a su vez importa `harness.contracts` — un ciclo.
+Los call sites importan del submódulo concreto (`from app.harness.master import
+run_master`).
+"""

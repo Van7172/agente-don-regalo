@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from app.harness.checkout import wants_checkout
+from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import looks_like_coverage
 from app.harness.state import ConversationState
 
@@ -35,6 +35,11 @@ _CATALOG_RE = re.compile(
     r"dia\s+del\s+padre|fiestas\s+patrias|corp",
     re.I,
 )
+_BUY_VERB_RE = re.compile(
+    r"quiero|me\s+lo\s+llevo|lo\s+pido|me\s+quedo\s+con|elijo|escojo|reserv|comprar|"
+    r"me\s+gusta\s+est|me\s+interesa",
+    re.I,
+)
 _SMALL_RE = re.compile(
     r"^(ok|okay|gracias|gale|dale|jaja|jeje|perfecto|listo|👍|😊|🙏)[\s!.]*$",
     re.I,
@@ -59,6 +64,15 @@ def classify_intent(text: str, state: ConversationState | None = None) -> Intent
         return "checkout"
 
     if wants_checkout(raw) or raw.casefold() in ("ese", "esa", "este", "esta"):
+        return "checkout"
+
+    # "quiero el panditas" nombra un producto que YA se mostró: es una compra, no
+    # una búsqueda nueva. Exigimos referencia explícita (nombre u ordinal): con un
+    # solo producto a la vista, "quiero flores" sigue siendo una búsqueda.
+    if (
+        _BUY_VERB_RE.search(raw)
+        and resolve_chosen_product(state, raw, allow_implicit=False) is not None
+    ):
         return "checkout"
 
     if looks_like_coverage(raw) and not _CATALOG_RE.search(raw[:40]):

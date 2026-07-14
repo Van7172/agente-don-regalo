@@ -1,0 +1,9 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "tipo_cambio": 3.4,
+    "moneda_base": "USD",
+    "moneda_local": "PEN"
+  }
+}

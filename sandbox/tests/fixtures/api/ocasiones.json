@@ -1,0 +1,41 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id_ocasion": 7,
+      "nombre_ocasion": "Otros",
+      "descripcion_ocasion": ""
+    },
+    {
+      "id_ocasion": 1,
+      "nombre_ocasion": "Cumpleaños",
+      "descripcion_ocasion": "Regalos para cumpleaños"
+    },
+    {
+      "id_ocasion": 2,
+      "nombre_ocasion": "Aniversario",
+      "descripcion_ocasion": "Regalos para aniversario"
+    },
+    {
+      "id_ocasion": 3,
+      "nombre_ocasion": "Felicitación",
+      "descripcion_ocasion": "Regalos para Felicitación"
+    },
+    {
+      "id_ocasion": 4,
+      "nombre_ocasion": "Nacimiento",
+      "descripcion_ocasion": "Regalos para Nacimiento"
+    },
+    {
+      "id_ocasion": 5,
+      "nombre_ocasion": "Agradecimiento",
+      "descripcion_ocasion": ""
+    },
+    {
+      "id_ocasion": 6,
+      "nombre_ocasion": "Negocios",
+      "descripcion_ocasion": ""
+    }
+  ]
+}

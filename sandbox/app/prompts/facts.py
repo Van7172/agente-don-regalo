@@ -51,13 +51,23 @@ DELIVERY = f"""## HORARIOS Y DELIVERY
 {SCHEDULE_OPTIONS}"""
 
 PAYMENT = """## MÉTODOS DE PAGO (confírmalos con `metodos_pago`)
+El pago es SIEMPRE por adelantado, por uno de estos medios:
 - Tarjeta de crédito/débito vía PayPal o Payu (Visa, Mastercard, Amex, Discover).
 - Depósito/transferencia: BCP, Scotiabank, Interbank, BBVA.
 - Yape / Plin al 943 113 807.
 - Transferencia internacional: Western Union, Xoom, Money Gram.
 - Pagos desde provincia: comisión adicional de S/7.50.
-- Los comprobantes van a los canales oficiales del equipo, NO a este chat.
-  Tú no puedes verlos ni confirmarlos → `escalar_a_humano`."""
+
+⚠️ **NO existe el pago contra entrega.** Don Regalo no cobra en efectivo al
+recibir, ni contra entrega, ni al repartidor. Nunca lo ofrezcas ni lo insinúes,
+ni siquiera como pregunta ("¿prefieres pagar en línea o contra entrega?").
+Si el cliente lo pide, dilo con claridad y ofrécele los medios de arriba.
+
+⚠️ Tampoco existen **PSE, Nequi, Daviplata** ni otros medios colombianos: estamos
+en Perú. Solo menciona los que aparecen en esta lista o en `metodos_pago`.
+
+Los comprobantes van a los canales oficiales del equipo, NO a este chat: tú no
+puedes verlos ni confirmarlos → `escalar_a_humano`."""
 
 RETURNS = """## DEVOLUCIONES Y CANCELACIONES
 - Cambios dentro de las primeras 5 horas tras la entrega (con justificación).

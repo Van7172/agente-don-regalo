@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "id_producto": 290,
+    "nombre": "Peluche Oso Loquito de Amor",
+    "descripcion": "\n<p>Osito de peluche antialérgico de 60cm parado.</p>\n<p>Tarjeta dedicatoria </p>\n<p>* Reserve y confirme su pedido enviando la conformidad de pago al whatssap o correo ventas@donregalo.pe.</p>\n",
+    "descripcion_corta": "Regala este Peluche Osito Marrón de pelaje antialérgico a esa persona especial.<br>\nViene en una caja junto a una tarjeta dedicatoria impresa.<br>",
+    "precio": 19,
+    "precio_oferta": null,
+    "precio_final": 19,
+    "tiene_oferta": false,
+    "stock": 1,
+    "url": "peluche-oso-loquito-de-amor",
+    "destacado": true,
+    "tags": [],
+    "categoria": {
+      "id": 5,
+      "nombre": "Peluches",
+      "url": "peluches"
+    },
+    "imagenes": [
+      {
+        "thumbnail": "https://donregalo.pe/app/publicroot/imgs/files/thumbnail/thumb_1653009970osocalado10111111.jpg",
+        "medium": "https://donregalo.pe/app/publicroot/imgs/files/medium/middle_1653009970osocalado10111111.jpg",
+        "big": "https://donregalo.pe/app/publicroot/imgs/files/big/big_1653009970osocalado10111111.jpg",
+        "original": "https://donregalo.pe/app/publicroot/imgs/files/1653009970osocalado10111111.jpg"
+      },
+      {
+        "thumbnail": "https://donregalo.pe/app/publicroot/imgs/files/thumbnail/thumb_1653009947osocalado611111.jpg",
+        "medium": "https://donregalo.pe/app/publicroot/imgs/files/medium/middle_1653009947osocalado611111.jpg",
+        "big": "https://donregalo.pe/app/publicroot/imgs/files/big/big_1653009947osocalado611111.jpg",
+        "original": "https://donregalo.pe/app/publicroot/imgs/files/1653009947osocalado611111.jpg"
+      }
+    ],
+    "ocasiones": [
+      {
+        "id_ocasion": 1,
+        "nombre_ocasion": "Cumpleaños"
+      },
+      {
+        "id_ocasion": 2,
+        "nombre_ocasion": "Aniversario"
+      }
+    ],
+    "relacionados": []
+  }
+}

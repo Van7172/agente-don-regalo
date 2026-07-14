@@ -35,6 +35,29 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _district_name(d: dict[str, Any]) -> str:
+    # `nombre` es la forma canónica; `nombre_distrito` es la cruda de la API, por
+    # si algún call site se salta el adaptador.
+    return _norm(
+        str(
+            d.get("nombre")
+            or d.get("nombre_distrito")
+            or d.get("distrito")
+            or d.get("name")
+            or ""
+        )
+    )
+
+
 def match_district(query: str, districts: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fuzzy match contra lista de distritos_cobertura."""
     q = _norm(query)
@@ -45,12 +68,12 @@ def match_district(query: str, districts: list[dict[str, Any]]) -> dict[str, Any
     if alias:
         q_alias = _norm(alias)
         for d in districts:
-            name = _norm(str(d.get("nombre") or d.get("distrito") or d.get("name") or ""))
+            name = _district_name(d)
             if name and (name == q_alias or q_alias in name or name in q_alias):
                 return d
 
     for d in districts:
-        name = _norm(str(d.get("nombre") or d.get("distrito") or d.get("name") or ""))
+        name = _district_name(d)
         if not name:
             continue
         if name == q or q in name or name in q:
@@ -169,22 +192,13 @@ async def resolve_coverage(
             "state_patch": {},
         }
 
-    name = str(
-        matched.get("nombre")
-        or matched.get("distrito")
-        or matched.get("name")
-        or used_query
-    )
-    fee_sol = matched.get("precio_sol") or matched.get("tarifa_sol") or matched.get("precio")
-    fee_usd = matched.get("precio_usd") or matched.get("tarifa_usd")
-    try:
-        fee_sol_f = float(fee_sol) if fee_sol is not None else None
-    except (TypeError, ValueError):
-        fee_sol_f = None
-    try:
-        fee_usd_f = float(fee_usd) if fee_usd is not None else None
-    except (TypeError, ValueError):
-        fee_usd_f = None
+    # `distritos_cobertura` ya devuelve la forma canónica (`adapters.district`):
+    # nombre, tarifa_usd y tarifa_sol. La API cruda usa `nombre_distrito` y
+    # `tarifa_envio_distrito` en USD, y leerla directamente era el bug que hacía
+    # que NINGÚN distrito hiciera match.
+    name = str(matched.get("nombre") or used_query)
+    fee_sol_f = _as_float(matched.get("tarifa_sol") or matched.get("precio_sol"))
+    fee_usd_f = _as_float(matched.get("tarifa_usd") or matched.get("precio_usd"))
 
     ask = "¿Qué regalo quieres enviar? 🎁"
     if state.chosen_product_name or state.checkout_step not in ("idle", ""):

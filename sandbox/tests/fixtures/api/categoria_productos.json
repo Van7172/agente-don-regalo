@@ -1,0 +1,46 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "categoria": {
+      "id_categoria": 2,
+      "nombre_categoria": "Desayunos",
+      "descripcion_categoria": "Regalar un Desayuno Sorpresa por delivery siempre será un detalle especial, para cualquier ocasión( <a href=\"https://www.donregalo.pe/c/desayunos-de-cumpleanos\">Cumpleaños</a>, Aniversario, <a href=\"https://www.donregalo.pe/desayunos/desayunos-de-amor\">Amor</a>, etc.), sea para hombre o mujer. El envío de <b>desayunos a domicilio</b> lo hacemos durante las mañanas a partir de las 7am. Todos nuestros desayunos llegan con la <b>mejor presentación</b> y pueden contener tazas con diseños de la ocasión, decoración con globos, panes del día y otros <b>insumos de calidad</b> que unidos hacen de este desayuno especial y diferente.",
+      "url_categoria": "desayunos"
+    },
+    "productos": [
+      {
+        "id_producto": 1229,
+        "nombre_producto": "Pikeo en Tabla Gourmet ",
+        "descripcion_corta_producto": "Pikeo en Tabla Gourmet una delicia para disfrutar.",
+        "precio_producto": 40,
+        "stock_producto": 100,
+        "url_producto": "pikeo-en-tabla-gourmet-",
+        "destacado_producto": false,
+        "precio_final": 40,
+        "tiene_oferta": false,
+        "precio_oferta": null,
+        "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/1741194485tabla.jpg"
+      },
+      {
+        "id_producto": 1017,
+        "nombre_producto": "Desayuno Dulce Rosita",
+        "descripcion_corta_producto": "Dulce Rosita, es un lindo detalle para endulzar el día a esa persona tan especial.<br>\nHaz que el día de esa persona especial comience con una sonrisa con nuestro exclusivo Desayuno Sorpresa. Esta deliciosa canasta incluye una hermosa taza para acompañar cada momento del día, un adorable peluche con vestido, que será un tierno recuerdo, y una selección de delicias que no solo endulzarán su mañana, sino que también reflejan tu cariño.\n",
+        "precio_producto": 44,
+        "stock_producto": 10,
+        "url_producto": "dulce-rosita",
+        "destacado_producto": false,
+        "precio_final": 44,
+        "tiene_oferta": false,
+        "precio_oferta": null,
+        "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/1772469209dsc-0520tazaconejo2.jpg"
+      }
+    ]
+  },
+  "pagination": {
+    "total": 2,
+    "per_page": 3,
+    "current_page": 1,
+    "last_page": 1
+  }
+}

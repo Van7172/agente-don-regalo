@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id_producto": 1235,
+      "nombre_producto": "Gustito Consentidor para Cumpleaños",
+      "descripcion_corta_producto": "Gustito Consentidor para Cumpleaños. Si lo deseas para otra ocasión podemos cambiar el globo de acuerdo a la ocasión.",
+      "precio_producto": 30,
+      "url_producto": "gustito-para-mama",
+      "id_categoria": 12,
+      "nombre_categoria": "Desayunos Temáticos",
+      "categoria_url": "desayunos-tematicos",
+      "precio_final": 30,
+      "tiene_oferta": false,
+      "precio_oferta": null,
+      "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/20260615100312-6a3014308964f830559485-desayunotequiero.webp"
+    },
+    {
+      "id_producto": 290,
+      "nombre_producto": "Peluche Oso Loquito de Amor",
+      "descripcion_corta_producto": "Regala este Peluche Osito Marrón de pelaje antialérgico a esa persona especial.<br>\nViene en una caja junto a una tarjeta dedicatoria impresa.<br>",
+      "precio_producto": 19,
+      "url_producto": "peluche-oso-loquito-de-amor",
+      "id_categoria": 5,
+      "nombre_categoria": "Peluches",
+      "categoria_url": "peluches",
+      "precio_final": 19,
+      "tiene_oferta": false,
+      "precio_oferta": null,
+      "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/1653009970osocalado10111111.jpg"
+    },
+    {
+      "id_producto": 1081,
+      "nombre_producto": "Box sorpresa para papá",
+      "descripcion_corta_producto": "Sorprende a papá en su día con esta hermosa caja de regalo personalizada pensada para disfrutar del invierno con sabor y cariño. Perfecta para un momento de café y descanso.",
+      "precio_producto": 35,
+      "url_producto": "box-baileys-y-chocolate-la-iberica",
+      "id_categoria": 3,
+      "nombre_categoria": "Cestas",
+      "categoria_url": "cestas",
+      "precio_final": 35,
+      "tiene_oferta": false,
+      "precio_oferta": null,
+      "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/1749047487dsc-4678.jpg"
+    }
+  ]
+}
