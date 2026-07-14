@@ -161,6 +161,12 @@
   }
 
   /** Etiqueta del separador de día, como en WhatsApp: Hoy / Ayer / la fecha. */
+  function dayKey(value) {
+    const d = parseTs(value);
+    if (!d) return null;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
   function dayLabel(value) {
     const d = parseTs(value);
     if (!d) return null;
@@ -378,18 +384,20 @@
     return row;
   }
 
-  /** Burbujas + un separador cada vez que cambia el día. */
+  /** Burbujas + nubesita de día (Hoy / Ayer / fecha) al cambiar de jornada. */
   function threadNodes(messages) {
     const nodes = [];
-    let lastDay = null;
+    let lastKey = null;
 
     for (const m of messages) {
-      const label = dayLabel(m.created_at);
-      if (label && label !== lastDay) {
-        lastDay = label;
+      const key = dayKey(m.created_at);
+      const label = dayLabel(m.created_at) || (key ? key : null);
+      if (key && key !== lastKey) {
+        lastKey = key;
         const sep = document.createElement("div");
         sep.className = "day-sep";
-        sep.innerHTML = `<span>${esc(label)}</span>`;
+        sep.setAttribute("role", "separator");
+        sep.innerHTML = `<span>${esc(label || "Hoy")}</span>`;
         nodes.push(sep);
       }
       nodes.push(bubble(m));

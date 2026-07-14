@@ -492,16 +492,20 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   background: color-mix(in srgb, var(--color-surface) 35%, transparent);
 }
 
-/* — separador de día, estilo WhatsApp — */
+/* — nubesita de día, estilo WhatsApp — */
 .day-sep {
   display: flex; align-items: center; justify-content: center;
-  margin: 8px 0 2px;
+  margin: 10px 0 6px;
+  position: sticky; top: 0; z-index: 2;
+  pointer-events: none;
 }
 .day-sep span {
-  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
-  padding: 4px 12px; border-radius: 999px;
-  background: var(--color-bg); box-shadow: var(--shadow-sm);
-  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 5px 14px; border-radius: 999px;
+  background: #fff;
+  color: #54656f;
+  box-shadow: 0 1px 2px rgba(11, 20, 26, 0.12);
+  border: 1px solid color-mix(in srgb, #000 6%, transparent);
 }
 
 .msg-row { display: flex; animation: bubbleIn 0.3s ease; }

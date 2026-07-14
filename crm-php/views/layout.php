@@ -13,7 +13,7 @@ $userName = (string) ($user['name'] ?? '');
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title><?= e($appName) ?></title>
-  <link rel="stylesheet" href="<?= e(url_to('assets/app.css')) ?>" />
+  <link rel="stylesheet" href="<?= e(url_to('assets/app.css')) ?>?v=<?= (int) @filemtime(dirname(__DIR__) . '/public/assets/app.css') ?>" />
 </head>
 <body class="page-<?= e(preg_replace('/[^a-z0-9_-]/i', '', $name) ?: 'app') ?>">
 <?php if ($showChrome): ?>
