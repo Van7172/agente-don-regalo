@@ -31,6 +31,7 @@ from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
 from app.harness.router import classify
 from app.harness.state import ConversationState, load_state, save_state
+from app.harness.stock import is_available, unavailable_message
 from app.harness.trace import Trace
 from app.prompts.compose import build_system
 from app.prompts.playbooks import WELCOME
@@ -175,6 +176,23 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     if state.checkout_step in ("idle", ""):
         chosen = resolve_chosen_product(state, turn.text)
         if chosen is not None:
+            # El cliente pudo verlo hace horas, y Qdrant va con retraso respecto al
+            # catálogo. Cerrar el pedido de un producto dado de baja significa que
+            # el asesor entra al chat verde a cobrar algo que no existe.
+            if await is_available(chosen[0]) is False:
+                log.info("[stock] producto %s ya no disponible; no se abre el cierre", chosen[0])
+                # Fuera de la memoria del chat: si sigue ahí, el próximo "ese lo
+                # quiero" volvería a resolver al producto muerto. `patch` fusiona
+                # listas, así que hay que quitarlo a mano.
+                muerto = chosen[0]
+                state.recent_products = [
+                    p for p in state.recent_products if p.get("id_producto") != muerto
+                ]
+                state.shown_product_ids = [
+                    i for i in state.shown_product_ids if i != muerto
+                ]
+                return AgentResult(user_facing=unavailable_message(chosen[1]))
+
             # Solo fijamos el producto. El paso lo avanza `advance_checkout` desde
             # "idle", que además NO consume este texto: "quiero el panditas" es la
             # elección del producto, no el distrito.

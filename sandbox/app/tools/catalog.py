@@ -127,6 +127,39 @@ async def tipo_cambio(client: httpx.AsyncClient, _args: dict):
     return await _cached_get(client, f"{settings.donregalo_api_base}/configuracion/tipo-cambio")
 
 
+async def productos_activos(
+    client: httpx.AsyncClient, ids: list[int]
+) -> set[int] | None:
+    """Qué ids siguen vivos en el catálogo. `None` si la API no pudo responder.
+
+    Es la única forma de saber si un producto sigue existiendo. Importa porque las
+    dos fuentes del catálogo pueden estar desfasadas: Qdrant se sincroniza cada
+    cierto tiempo y el estado de la conversación guarda ids que el cliente vio
+    hace horas o días.
+
+    `None` (no se pudo verificar) NO es lo mismo que "no está activo": ante un
+    fallo de la API preferimos enseñar de más a bloquear una venta sana.
+    """
+    ids = [int(i) for i in ids if i is not None]
+    if not ids:
+        return set()
+    try:
+        payload = await get(
+            client,
+            f"{settings.donregalo_api_base}/productos/activos",
+            {"ids": ",".join(str(i) for i in ids)},
+        )
+    except Exception as err:
+        log.warning("[activos] la API no respondió (%s); no bloqueamos nada", err)
+        return None
+
+    data = (payload or {}).get("data")
+    if not isinstance(data, list):
+        log.warning("[activos] respuesta inesperada: %r", str(payload)[:120])
+        return None
+    return {int(i) for i in data}
+
+
 async def rastrear_pedido(client: httpx.AsyncClient, args: dict):
     r = await client.post(
         f"{settings.donregalo_api_base}/pedidos/rastrear",

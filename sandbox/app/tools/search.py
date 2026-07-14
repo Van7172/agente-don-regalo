@@ -143,30 +143,27 @@ def _build_filter(args: dict):
 
 
 async def _filtrar_activos(client: httpx.AsyncClient, productos: list[dict]) -> list[dict]:
-    """Valida contra la API cuáles productos siguen activos en el catálogo.
+    """Descarta lo que Qdrant devuelve pero ya no existe en el catálogo.
 
-    Qdrant se sincroniza periódicamente, así que puede devolver productos
-    desactivados desde la última sync. Este filtro consulta el estado real en
-    una sola llamada batch. Si la API falla, devuelve la lista SIN filtrar
-    (fail-open) para no romper la búsqueda por un problema transitorio.
+    Qdrant se sincroniza cada cierto tiempo, así que puede seguir devolviendo un
+    producto que la tienda dio de baja. Si la API no puede confirmarlo, devolvemos
+    la lista sin filtrar: preferimos enseñar de más a romper una búsqueda sana por
+    un fallo pasajero.
     """
+    from app.tools.catalog import productos_activos
+
     ids = [p["id_producto"] for p in productos if p.get("id_producto")]
     if not ids:
         return productos
-    try:
-        r = await client.get(
-            f"{settings.donregalo_api_base}/productos/activos",
-            params={"ids": ",".join(str(i) for i in ids)},
-        )
-        r.raise_for_status()
-        activos = set(r.json().get("data") or [])
-    except Exception as e:
-        log.warning("No se pudo validar productos activos (%s); devolviendo sin filtrar.", e)
-        return productos
+
+    activos = await productos_activos(client, ids)
+    if activos is None:
+        return productos  # no se pudo verificar
+
     filtrados = [p for p in productos if p.get("id_producto") in activos]
     descartados = len(productos) - len(filtrados)
     if descartados:
-        log.info("[ACTIVOS] %d producto(s) descartado(s) por estar inactivos", descartados)
+        log.info("[activos] %d producto(s) de Qdrant ya no existen; descartados", descartados)
     return filtrados
 
 
