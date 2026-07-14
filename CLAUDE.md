@@ -116,7 +116,9 @@ python -m pytest tests/ -q       # 281 pasan, offline
 
 ## Deuda conocida (del servidor, no de este código)
 
-- `GET /productos/{id}` devuelve un **error fatal de PHP con status 200** para
-  productos con imagen `null` (ej. id 1235). Hay que arreglarlo en el PHP del cliente.
+- ~~`GET /productos/{id}` devolvía un error fatal de PHP con status 200 para
+  productos con imagen `null` (id 1235).~~ **Corregido en producción (jul 2026):**
+  devuelve JSON; con `imagen_url: null` la foto sale de `imagenes[]` y el adapter la
+  recupera. Verificado de punta a punta.
 - La API se autocontradice: categorías usan `url_categoria`, productos `categoria_url`.
   El adapter acepta ambas.
