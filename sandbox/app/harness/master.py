@@ -23,10 +23,12 @@ from app.harness.checkout import (
 )
 from app.harness.contracts import AgentResult, EscalateReason, Turn
 from app.harness.coverage import resolve_coverage
-from app.harness.policies import dedupe_artifacts, grounding_violation, latest_user_text
+from app.harness.invariants import check_reply
+from app.harness.policies import dedupe_artifacts, latest_user_text
 from app.harness.registry import spec_for
 from app.harness.router import classify_intent
 from app.harness.state import ConversationState, load_state, save_state
+from app.harness.trace import Trace
 from app.prompts.compose import build_system
 from app.services.agent import HANDOFF_DONE, run_specialist
 
@@ -81,12 +83,12 @@ async def run_master(
     intent = classify_intent(turn.text, state)
     state.intent_last = intent
 
-    log.info(
-        "[harness] conversation=%s intent=%s agent=%s step=%s",
-        conversation_id,
-        intent,
-        spec_for(intent).name,
-        state.checkout_step,
+    trace = Trace(
+        conversation_id=conversation_id,
+        intent=intent,
+        agent=spec_for(intent).name,
+        checkout_step=state.checkout_step,
+        user_text=turn.text,
     )
 
     result = await _handle(
@@ -101,16 +103,21 @@ async def run_master(
         persist=persist,
     )
 
+    # Las invariantes se miden ANTES de reducir: comparan lo que trae este turno
+    # contra lo que el cliente ya había visto.
+    violations = check_reply(
+        result.user_facing, state=state, artifacts=result.artifacts
+    )
+
     state = _reduce(state, result)
 
-    if result.user_facing:
-        violation = grounding_violation(result.user_facing, result.artifacts)
-        if violation:
-            # No cortamos la respuesta (dejaría al cliente sin nada), pero queda
-            # en el log para que el eval lo cace.
-            log.warning(
-                "[harness] grounding conversation=%s: %s", conversation_id, violation
-            )
+    trace.tools = result.tools_used
+    trace.product_ids = result.product_ids
+    trace.escalated = result.escalate is not None
+    trace.handoff_reason = result.escalate.motivo if result.escalate else ""
+    trace.violations = [str(v) for v in violations]
+    trace.state_patch = result.state_patch
+    trace.done().emit()
 
     if conversation_id is not None:
         await save_state(conversation_id, state, wa_id=wa_id)

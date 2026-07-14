@@ -87,6 +87,7 @@ class AgentResult:
     artifacts: list[Product] = field(default_factory=list)
     escalate: Optional[EscalateReason] = None
     confidence: float = 1.0
+    tools_used: list[str] = field(default_factory=list)
 
     @property
     def product_ids(self) -> list[int]:

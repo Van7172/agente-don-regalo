@@ -186,6 +186,7 @@ async def run_specialist(
     """
     artifacts: list[Product] = []
     seen_ids: set[int] = set()
+    tools_used: list[str] = []
 
     def _absorb(raw_result: str) -> None:
         try:
@@ -254,7 +255,9 @@ async def run_specialist(
                     if early_filler_task and not early_filler_task.done():
                         early_filler_task.cancel()
                     return AgentResult(
-                        user_facing=msg.get("content"), artifacts=artifacts
+                        user_facing=msg.get("content"),
+                        artifacts=artifacts,
+                        tools_used=tools_used,
                     )
 
                 messages.append(msg)
@@ -341,6 +344,7 @@ async def run_specialist(
                         return AgentResult(
                             user_facing=None,
                             artifacts=artifacts,
+                            tools_used=[*tools_used, "escalar_a_humano"],
                             escalate=EscalateReason(motivo=motivo, is_payment=is_payment),
                         )
 
@@ -377,6 +381,7 @@ async def run_specialist(
                         except json.JSONDecodeError:
                             args = {}
                         log.info("[TOOL] %s args=%s", fn, args)
+                        tools_used.append(fn)
                         result = await execute_tool(fn, args)
                         return call["id"], result
 
@@ -410,10 +415,11 @@ async def run_specialist(
             return AgentResult(
                 user_facing=data["choices"][0]["message"].get("content"),
                 artifacts=artifacts,
+                tools_used=tools_used,
             )
     except Exception as e:
         log.error("Error en el bucle del agente: %s", e)
-        return AgentResult(user_facing=None, artifacts=artifacts)
+        return AgentResult(user_facing=None, artifacts=artifacts, tools_used=tools_used)
     finally:
         if early_filler_task and not early_filler_task.done():
             early_filler_task.cancel()

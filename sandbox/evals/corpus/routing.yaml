@@ -1,0 +1,74 @@
+# Enrutado: qué especialista atiende cada mensaje.
+#
+# El router es 100% determinista, así que estos casos corren sin OpenAI y en
+# milisegundos. Su caso por defecto es `catalog_search`, de modo que un fallo aquí
+# significa que un mensaje acaba buscando productos cuando no debía.
+
+- id: saludo
+  text: "Hola buenas tardes"
+  expect_intent: greet
+
+- id: cortesia-sin-pedido
+  text: "Todo en orden hoy"
+  expect_intent: small_talk
+
+- id: emoji-suelto
+  text: "👍"
+  expect_intent: small_talk
+
+- id: busqueda-libre
+  text: "Necesito un desayuno para un cumpleaños de hombre"
+  expect_intent: catalog_search
+
+- id: campana-fiestas-patrias
+  text: "Son regalos Corporativos por Fiestas Patrias"
+  expect_intent: catalog_search
+
+- id: cobertura-distrito
+  text: "¿Llegan a Miraflores?"
+  expect_intent: coverage
+
+- id: cobertura-zona
+  text: "¿Qué zonas cubren el delivery en Lima?"
+  expect_intent: coverage
+
+- id: politica-pago
+  text: "¿Cómo pago?"
+  expect_intent: policy_faq
+
+- id: rastreo
+  text: "¿Dónde está mi pedido?"
+  expect_intent: track_order
+
+- id: pide-asesor
+  text: "Quiero hablar con un asesor"
+  expect_intent: escalate
+
+- id: comprobante
+  text: "Ya les pagué, aquí está el comprobante"
+  expect_intent: escalate
+
+# Regresión: "quiero el panditas" nombra un producto YA mostrado. Es una compra,
+# no una búsqueda nueva. Antes acababa en catalog_search y volvía a buscar.
+- id: compra-por-nombre
+  text: "quiero el panditas"
+  state:
+    recent_products:
+      - {id_producto: 11, nombre: "Terrario Familia Panditas"}
+      - {id_producto: 22, nombre: "Ramo de Girasoles"}
+  expect_intent: checkout
+
+# Con productos a la vista, "quiero flores" sigue siendo una búsqueda: no toda
+# frase con "quiero" es una compra.
+- id: busqueda-aunque-haya-productos
+  text: "quiero flores"
+  state:
+    recent_products:
+      - {id_producto: 11, nombre: "Terrario Familia Panditas"}
+  expect_intent: catalog_search
+
+- id: cierre-en-curso-manda
+  text: "Miraflores"
+  state:
+    checkout_step: district
+  expect_intent: checkout

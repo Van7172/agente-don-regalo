@@ -109,6 +109,38 @@ Cobertura y cierre **no llaman al LLM**: son `harness/coverage.py` y
 productos no repetir, si un precio salió de una tool) son funciones puras en
 `harness/policies.py` — se testean sin red y en milisegundos.
 
+## Evals: la red de regresión
+
+Cada turno del orquestador emite un `Trace` (intención, agente, tools, ids de
+producto, handoff, violaciones, latencia) como una línea JSON en el log.
+
+Las **invariantes** (`harness/invariants.py`) son funciones puras sobre
+`(estado, respuesta, artifacts)`. Cada una nació de un incidente real:
+
+| Invariante | El incidente |
+| --- | --- |
+| `no_cash_on_delivery` | el bot ofreció pago contra entrega (y PSE, que es colombiano) |
+| `image_urls_on_own_line` | las fotos llegaron como links al perderse el formato |
+| `prices_are_sourced` | el modelo calculaba los soles de cabeza |
+| `no_repeated_products` | "otras opciones, no esas" y repetía las mismas |
+| `no_duplicates_within_reply` | el mismo producto dos veces en un paquete |
+
+Se evalúan en runtime (van a la traza) y en el corpus (`evals/corpus/*.yaml`).
+
+```bash
+python -m evals.runner      # informe legible
+pytest tests/test_evals.py  # el mismo corpus, en CI
+```
+
+El corpus es determinista: no llama a OpenAI ni a la API, así que corre en
+milisegundos. Cubre enrutado, invariantes de respuesta y política de handoff.
+
+**Regla de trabajo: cada bug arreglado deja un caso en el corpus.** En su primera
+ejecución ya cazó dos bugs vivos del router — "¿Dónde está mi pedido?" no casaba
+con el patrón de rastreo porque los patrones estaban escritos sin tildes, y "Todo
+en orden hoy" acababa en el catálogo buscando productos para alguien que no pedía
+nada.
+
 ## Invariantes con test
 
 - `test_prompts_architecture.py` — todo agente de cara al cliente lleva las

@@ -1,0 +1,74 @@
+# Respuestas del bot grabadas en producción, con lo que debería haber pasado.
+#
+# Cada caso `bad` es un incidente REAL. Si alguien vuelve a romper la regla, el
+# corpus lo caza en CI en vez de un cliente en WhatsApp.
+
+# ── Incidentes reales (deben dar violación) ───────────────────────────
+
+- id: contraentrega-inexistente
+  incident: "El bot ofreció un medio de pago que Don Regalo no acepta."
+  reply: "Claro 😊 ¿Prefieres pagar en línea (tarjeta/PSE) o contra entrega?"
+  expect_violations: [no_cash_on_delivery]
+
+- id: url-pegada-al-texto-llega-como-link
+  incident: "Al partir el prompt se perdió el formato; las fotos llegaron como links."
+  reply: |
+    https://donregalo.pe/img/a.jpg • 🎁 *Desayuno Cumpleañero* — S/146.20 ($43.00)
+    https://donregalo.pe/img/b.jpg • 🎁 *Gustito Criollo* — S/79.90 ($23.50)
+  artifacts:
+    - {id_producto: 1, nombre: "Desayuno Cumpleañero", precio_sol: 146.20, precio_usd: 43.0}
+    - {id_producto: 2, nombre: "Gustito Criollo", precio_sol: 79.90, precio_usd: 23.5}
+  expect_violations: [image_urls_on_own_line]
+
+- id: precio-inventado
+  incident: "El modelo calculaba los soles de cabeza y se los inventaba."
+  reply: "El Terrario Familia Panditas cuesta S/50.00 😊"
+  artifacts:
+    - {id_producto: 11, nombre: "Terrario Familia Panditas", precio_sol: 87.50, precio_usd: 25.0}
+  expect_violations: [prices_are_sourced]
+
+- id: producto-repetido
+  incident: "'Otras opciones, no esas' y el bot repetía las mismas."
+  reply: "Te muestro otras opciones 😊"
+  state:
+    shown_product_ids: [11, 22]
+  artifacts:
+    - {id_producto: 11, nombre: "Terrario Familia Panditas", precio_sol: 87.50}
+    - {id_producto: 33, nombre: "Cesta Criolla", precio_sol: 100.00}
+  expect_violations: [no_repeated_products]
+
+- id: duplicado-en-el-mismo-paquete
+  incident: "El mismo producto aparecía dos veces en una sola respuesta."
+  reply: "Aquí tienes 😊"
+  artifacts:
+    - {id_producto: 11, nombre: "Terrario Familia Panditas", precio_sol: 87.50}
+    - {id_producto: 11, nombre: "Terrario Familia Panditas", precio_sol: 87.50}
+  expect_violations: [no_duplicates_within_reply]
+
+# ── Respuestas correctas (no deben dar ninguna violación) ─────────────
+
+- id: listado-bien-formateado
+  reply: |
+    https://donregalo.pe/img/a.jpg
+    • 🎁 *Desayuno Cumpleañero* — S/146.20 ($43.00)
+
+    https://donregalo.pe/img/b.jpg
+    • 🎁 *Gustito Criollo* — S/79.90 ($23.50)
+
+    ¿Quieres más detalles de alguno? 😊
+  artifacts:
+    - {id_producto: 1, nombre: "Desayuno Cumpleañero", precio_sol: 146.20, precio_usd: 43.0}
+    - {id_producto: 2, nombre: "Gustito Criollo", precio_sol: 79.90, precio_usd: 23.5}
+  expect_violations: []
+
+- id: medios-de-pago-correctos
+  reply: "Puedes pagar con Yape, Plin, transferencia (BCP, Interbank) o tarjeta vía PayPal 💳"
+  expect_violations: []
+
+- id: cobertura-con-tarifa-real
+  reply: "¡Sí llegamos a Miraflores! El envío es S/14.18 ($4.17). ¿Qué regalo quieres enviar? 🎁"
+  expect_violations: []
+
+- id: cortesia
+  reply: "¡Me alegra saberlo! 😊 Cualquier cosa que necesites, aquí estoy."
+  expect_violations: []

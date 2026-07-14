@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import looks_like_coverage
+from app.harness.policies import is_small_talk
 from app.harness.state import ConversationState
 
 Intent = str  # greet|small_talk|catalog_search|coverage|product_detail|checkout|policy_faq|track_order|escalate
@@ -46,6 +48,12 @@ _SMALL_RE = re.compile(
 )
 
 
+def _strip_accents(text: str) -> str:
+    """"¿Dónde está mi pedido?" tiene que enrutar igual que "donde esta"."""
+    nfd = unicodedata.normalize("NFD", text)
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+
 def classify_intent(text: str, state: ConversationState | None = None) -> Intent:
     raw = (text or "").strip()
     if not raw:
@@ -53,52 +61,60 @@ def classify_intent(text: str, state: ConversationState | None = None) -> Intent
 
     state = state or ConversationState()
 
-    if _ESCALATE_RE.search(raw):
+    # Los patrones se escribieron sin tildes. Sin normalizar, "¿Dónde está mi
+    # pedido?" no casaba con `_TRACK_RE` y acababa en el catálogo, buscando
+    # productos en vez de rastrear el pedido.
+    norm = _strip_accents(raw)
+
+    if _ESCALATE_RE.search(norm):
         return "escalate"
 
-    if _TRACK_RE.search(raw):
+    if _TRACK_RE.search(norm):
         return "track_order"
 
     # Cierre en curso: prioridad al FSM
     if state.checkout_step and state.checkout_step not in ("idle", "done", "payment"):
         return "checkout"
 
-    if wants_checkout(raw) or raw.casefold() in ("ese", "esa", "este", "esta"):
+    if wants_checkout(norm) or norm.casefold() in ("ese", "esa", "este", "esta"):
         return "checkout"
 
     # "quiero el panditas" nombra un producto que YA se mostró: es una compra, no
     # una búsqueda nueva. Exigimos referencia explícita (nombre u ordinal): con un
     # solo producto a la vista, "quiero flores" sigue siendo una búsqueda.
     if (
-        _BUY_VERB_RE.search(raw)
+        _BUY_VERB_RE.search(norm)
         and resolve_chosen_product(state, raw, allow_implicit=False) is not None
     ):
         return "checkout"
 
-    if looks_like_coverage(raw) and not _CATALOG_RE.search(raw[:40]):
+    if looks_like_coverage(norm) and not _CATALOG_RE.search(norm[:40]):
         return "coverage"
 
     # Cobertura pura (pregunta de zonas)
-    if re.search(r"zonas?\s+cubren|distritos?\s+de\s+lima|llegan\s+a", raw, re.I):
+    if re.search(r"zonas?\s+cubren|distritos?\s+de\s+lima|llegan\s+a", norm, re.I):
         return "coverage"
 
-    if _DETAIL_RE.search(raw) and state.shown_product_ids:
+    if _DETAIL_RE.search(norm) and state.shown_product_ids:
         return "product_detail"
 
-    if _POLICY_RE.search(raw):
+    if _POLICY_RE.search(norm):
         return "policy_faq"
 
-    if _GREET_RE.match(raw) and len(raw) < 40:
+    if _GREET_RE.match(norm) and len(raw) < 40:
         return "greet"
 
-    if _SMALL_RE.match(raw):
+    # Misma definición de cortesía que usa la política de handoff. Antes el router
+    # tenía la suya, más pobre: "Todo en orden hoy" no le sonaba a charla y acababa
+    # en el catálogo, buscando productos para alguien que no pedía nada.
+    if is_small_talk([{"role": "user", "content": raw}]):
         return "small_talk"
 
-    if _CATALOG_RE.search(raw):
+    if _CATALOG_RE.search(norm):
         return "catalog_search"
 
     # Si hay distrito pendiente y mensaje corto tipo lugar → coverage
-    if len(raw) < 60 and looks_like_coverage(raw):
+    if len(raw) < 60 and looks_like_coverage(norm):
         return "coverage"
 
     return "catalog_search"
