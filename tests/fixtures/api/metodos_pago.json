@@ -1,0 +1,83 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id_metodo_pago": 1,
+      "nombre_metodo_pago": "Paypal",
+      "descripcion_metodo_pago": "<p><strong>PAGA CON TARJETA DE CRÉDITO DE FORMA SEGURA</strong>: VISA,  MASTERCARD, Discovery o American Express. <br /></p>",
+      "imagen_metodo_pago": "icon-paypal.jpg",
+      "icono_metodo_pago": "paypal-logo.png"
+    },
+    {
+      "id_metodo_pago": 2,
+      "nombre_metodo_pago": "BCP",
+      "descripcion_metodo_pago": "<p><strong>BANCO DE CREDITO DEL PERU<br /><strong>O  AGENTE DEL BCP</strong><br /></strong>Cuenta Corriente en soles: 194 1987991 0 15<br />CCI: 00219400198799101596\r\nTitular: Don Regalo SRL<br />Luego nos envía la constancia de depósito al correo de ventas@donregalo.pe</p>",
+      "imagen_metodo_pago": "icon-bcp.jpg",
+      "icono_metodo_pago": "bcp-logo.png"
+    },
+    {
+      "id_metodo_pago": 8,
+      "nombre_metodo_pago": "Payu",
+      "descripcion_metodo_pago": "<p>Pague seguro con Payu Latam (Tarjeta de crédito o débito VISA, MASTERCARD, AMERICAN EXPRESS, DINNERS CLUB) </p>",
+      "imagen_metodo_pago": "200430111749icon-paypal copia.jpg",
+      "icono_metodo_pago": "payu-logo.png"
+    },
+    {
+      "id_metodo_pago": 9,
+      "nombre_metodo_pago": "INTERBANK",
+      "descripcion_metodo_pago": "<p><strong> INTERBANK MEDIANTE TRANSFERENCIA / DEPOSITO O AGENTE </strong><br/>Cuenta Corriente en soles: 093-3002626274<br />CCI: 003-093-003002626274-28\nTitular: DON REGALO S.R.L.<br />Luego nos envía la constancia de depósito al correo de ventas@donregalo.pe</p>",
+      "imagen_metodo_pago": "icon-interbank.jpg",
+      "icono_metodo_pago": "interbank-logo.png"
+    },
+    {
+      "id_metodo_pago": 10,
+      "nombre_metodo_pago": "BBVA",
+      "descripcion_metodo_pago": "<div class=\"fp2\">\n<p><strong>TRANSFIERE POR INTERNET<br /><strong>O DEPOSITA AL BANCO O AGENTE <strong>BBVA</strong></strong><br /></strong><span>Cta. Ahorro en soles: </span><strong>0011-0143-02-00257748</strong><br /><span>Titular: Erika Valverde Morales DNI: 41723048</span><br /><span>Luego nos envía la constancia de depósito al correo de ventas@donregalo.pe</span></p>\n</div>",
+      "imagen_metodo_pago": "icon-bbva.jpg",
+      "icono_metodo_pago": "bbva-logo.png"
+    },
+    {
+      "id_metodo_pago": 11,
+      "nombre_metodo_pago": "SCOTIABANK",
+      "descripcion_metodo_pago": "<p><strong>TRANSFIERE POR INTERNET<br /><strong>O DEPÓSITA AL BANCO O AGENTE <strong>SCOTIABANK</strong></strong><br /></strong><span>Cta. Ahorro en soles: 0320165640</span><br /><span>Titular: Erika Valverde Morales DNI: 41723048</span><br /><span>Luego nos envía la constancia de depósito al correo de ventas@donregalo.pe</span></p>",
+      "imagen_metodo_pago": "icon-scotiabank.jpg",
+      "icono_metodo_pago": "scotiabank-logo.png"
+    },
+    {
+      "id_metodo_pago": 12,
+      "nombre_metodo_pago": "Yape",
+      "descripcion_metodo_pago": "<p><strong>PAGA CON YAPE</strong><br />  A ESTE NÚMERO <strong>943 113 807</strong><br /><span>Titular: Diana Valverde Morales </span><br />\n<span>Luego nos envía la constancia de depósito al correo de ventas@donregalo.pe o al Whatsapp: 977 174 485 </span></p>",
+      "imagen_metodo_pago": "logo-yape.png",
+      "icono_metodo_pago": "logo-yape.png"
+    },
+    {
+      "id_metodo_pago": 13,
+      "nombre_metodo_pago": "Plin",
+      "descripcion_metodo_pago": "<p><strong>PAGA CON PLIN</strong><br />  A ESTE NÚMERO <strong>943 113 807</strong><br /><span>Titular: Diana Valverde Morales </span><br />\n<span>Luego nos envía la constancia de depósito al correo de ventas@donregalo.pe o al Whatsapp: 977 174 485 </span></p>",
+      "imagen_metodo_pago": "plin-logo.png",
+      "icono_metodo_pago": "plin-logo.png"
+    },
+    {
+      "id_metodo_pago": 14,
+      "nombre_metodo_pago": "Transferencia / Depósito",
+      "descripcion_metodo_pago": "",
+      "imagen_metodo_pago": "transferencia-deposito.jpg",
+      "icono_metodo_pago": "transferencia-deposito.jpg"
+    },
+    {
+      "id_metodo_pago": 15,
+      "nombre_metodo_pago": "Tarjeta de crédito / débito",
+      "descripcion_metodo_pago": "",
+      "imagen_metodo_pago": "tarjeta-de-credito.jpg",
+      "icono_metodo_pago": "tarjeta-de-credito.jpg"
+    },
+    {
+      "id_metodo_pago": 16,
+      "nombre_metodo_pago": "Yape o Plin",
+      "descripcion_metodo_pago": "Pago instantáneo · Escanea el QR y confirma en 30 min",
+      "imagen_metodo_pago": "billetera-electronica.jpg",
+      "icono_metodo_pago": "billetera-electronica.jpg"
+    }
+  ]
+}

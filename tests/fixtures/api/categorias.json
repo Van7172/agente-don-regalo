@@ -1,0 +1,225 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id_categoria": 1,
+      "nombre_categoria": "Arreglos Florales",
+      "descripcion_categoria": "Preparamos Arreglos Florales para toda ocasión (<a href=\"https://www.donregalo.pe/c/arreglos-florales-de-cumpleanos\">cumpleaños</a>, <a href=\"https://www.donregalo.pe/c/arreglos-florales-de-aniversario\">aniversario</a>, amor, etc), para hombres y mujeres, realizamos envíos de flores a todo Lima Perú el mismo día. Sorprende a esa persona especial con un hermoso detalle hecho de flores, tenemos Rosas, <a href=\"https://www.donregalo.pe/f/flores/tulipanes\">Tulipanes</a>, Girasoles, etc.",
+      "url_categoria": "arreglos-florales",
+      "orden_categoria": 0,
+      "id_parent": 0,
+      "subcategorias": [
+        {
+          "id_categoria": 15,
+          "nombre_categoria": "Arreglos Florales Variados",
+          "descripcion_categoria": "En Don Regalo tenemos <a href=\"https://www.donregalo.pe/arreglos-florales\">Arreglos Florales</a> para toda Ocasión, cada uno de ellos son preparados con especial cuidado, agregando cada detalle de acuerdo a la ocasión un globo de cumpleaños, un detalle de aniversario, un peluche para acompañar la bienvenida de un nacimiento y así muchos detalles para que quien lo reciba quede encantado con un arreglo hecho por Don Regalo.",
+          "url_categoria": "arreglos-florales-variados",
+          "orden_categoria": 0,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 14,
+          "nombre_categoria": "Arreglos en Canasta",
+          "descripcion_categoria": "Envío de <a href=\"https://www.donregalo.pe/arreglos-florales\">Arreglos Florales</a> en canasta para regalar a esa persona especial. Las canastas de mimbre son las clásicas bases para los <a href=\"https://www.donregalo.pe/arreglos-florales\">arreglos florales</a> pero a la vez son hermosos complementos de un precioso arreglos floral.",
+          "url_categoria": "en-canasta",
+          "orden_categoria": 1,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 13,
+          "nombre_categoria": "Arreglos Florales con Peluches",
+          "descripcion_categoria": "Regalar <a href=\"https://www.donregalo.pe/arreglos-florales\">arreglos florales</a> con <a href=\"https://www.donregalo.pe/peluches\">peluches</a> es un gran detalle, si lo acompañas de un hermoso que con su carita trasmita mejor los sentimientos que deseas expresar. Un Osito tierno, Una gatita feliz incluso los colores del peluche son importantes al momento de acompañar un arreglo floral.\r\nEs importante  sepas que todos nuestros peluches son anti alérgicos  y quedarán para siempre junto a la persona a quien desees sorprender junto  con el  hermoso arreglo floral.",
+          "url_categoria": "arreglos-florales-con-peluche",
+          "orden_categoria": 1,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 7,
+          "nombre_categoria": "Cajas",
+          "descripcion_categoria": "Lindas Cajas de Rosas, tulipanes, girasoles. Envío por delivery de flores en caja con diseños elegentes.",
+          "url_categoria": "cajas",
+          "orden_categoria": 3,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 25,
+          "nombre_categoria": "Corporativos",
+          "descripcion_categoria": "<a href=\"https://www.donregalo.pe/arreglos-florales\">Arreglos florales</a> corporativos, para aniversarios de empresas, colegios, oficinas, locales, corporativos, institucionales",
+          "url_categoria": "corporativos",
+          "orden_categoria": 4,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 8,
+          "nombre_categoria": "Ramos",
+          "descripcion_categoria": "Ramos de Flores en Perú, hermosos ramos para sorprender a esa persona especial, envíos a domicilio en Lima Perú.",
+          "url_categoria": "ramos-de-flores",
+          "orden_categoria": 4,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 6,
+          "nombre_categoria": "Floreros",
+          "descripcion_categoria": "Arreglos Florales en Floreros de Vidrio, Jarrones de Cristal redondos con hermosos diseños medianos o grandes.",
+          "url_categoria": "floreros",
+          "orden_categoria": 5,
+          "id_parent": 1
+        },
+        {
+          "id_categoria": 106,
+          "nombre_categoria": "Arreglos Florales de Navidad",
+          "descripcion_categoria": "Arreglos Florales de Navidad",
+          "url_categoria": "arreglos-florales-de-navidad",
+          "orden_categoria": 10,
+          "id_parent": 1
+        }
+      ]
+    },
+    {
+      "id_categoria": 2,
+      "nombre_categoria": "Desayunos",
+      "descripcion_categoria": "Regalar un Desayuno Sorpresa por delivery siempre será un detalle especial, para cualquier ocasión( <a href=\"https://www.donregalo.pe/c/desayunos-de-cumpleanos\">Cumpleaños</a>, Aniversario, <a href=\"https://www.donregalo.pe/desayunos/desayunos-de-amor\">Amor</a>, etc.), sea para hombre o mujer. El envío de <b>desayunos a domicilio</b> lo hacemos durante las mañanas a partir de las 7am. Todos nuestros desayunos llegan con la <b>mejor presentación</b> y pueden contener tazas con diseños de la ocasión, decoración con globos, panes del día y otros <b>insumos de calidad</b> que unidos hacen de este desayuno especial y diferente.",
+      "url_categoria": "desayunos",
+      "orden_categoria": 1,
+      "id_parent": 0,
+      "subcategorias": [
+        {
+          "id_categoria": 9,
+          "nombre_categoria": "Desayunos Criollos",
+          "descripcion_categoria": "Desayunos criollos en Lima Peru, Sorprende regalando un desayuno criollo esa persona especial, Don regalo envia desayunos a domicilio en lima Perú",
+          "url_categoria": "desayunos-criollos",
+          "orden_categoria": 0,
+          "id_parent": 2
+        },
+        {
+          "id_categoria": 11,
+          "nombre_categoria": "Desayunos de Amor",
+          "descripcion_categoria": "Regala <a href=\"https://www.donregalo.pe/desayunos\">Desayunos</a> de Amor en Lima Perú, Un desayuno de amor, puede ser para ocasiones especiales como un Aniversario o para Enamorar a esa persona especial. En Don Regalo hemos diseñado productos con insumos como tazas y dulces con frases que van de acuerdo a la ocasión, envía desayunos de amor con la mejor presentación a domicilio en Lima Perú.",
+          "url_categoria": "desayunos-de-amor",
+          "orden_categoria": 2,
+          "id_parent": 2
+        },
+        {
+          "id_categoria": 10,
+          "nombre_categoria": "Desayunos Light",
+          "descripcion_categoria": "Don Regalo envia <a href=\"https://www.donregalo.pe/desayunos\">Desayunos</a> Light por delivery en Lima Peru, sabemos que un desayuno saludable es ideal para sorprender a esa persona especial empezando la mañana .",
+          "url_categoria": "desayunos-light",
+          "orden_categoria": 3,
+          "id_parent": 2
+        },
+        {
+          "id_categoria": 12,
+          "nombre_categoria": "Desayunos Temáticos",
+          "descripcion_categoria": "Lindos desayunos temáticos enví­o delivery a Lima, ideal para esa persona especial",
+          "url_categoria": "desayunos-tematicos",
+          "orden_categoria": 4,
+          "id_parent": 2
+        }
+      ]
+    },
+    {
+      "id_categoria": 5,
+      "nombre_categoria": "Peluches",
+      "descripcion_categoria": "Peluches en Lima Peru, sorprende a un ser querido regalandole un peluche de Don Regalo. Los peluches son un tierno detalle para aquella persona especial, escoge y enviamos el peluche por delivery.",
+      "url_categoria": "peluches",
+      "orden_categoria": 2,
+      "id_parent": 0,
+      "subcategorias": []
+    },
+    {
+      "id_categoria": 16,
+      "nombre_categoria": "Arreglos Fúnebres",
+      "descripcion_categoria": "Enví­o de Arreglos Florales para Funeral, Arreglos de Condolencias, los tenemos Aquí­, preparado por EXPERTOS FLORISTAS. Tenemos una variedad de modelos en Coronas fúnebres, Cruces para Funeral, Lágrimas Fúnebres y más. Delivery Hoy.",
+      "url_categoria": "arreglos-funebres",
+      "orden_categoria": 2,
+      "id_parent": 0,
+      "subcategorias": [
+        {
+          "id_categoria": 19,
+          "nombre_categoria": "Cruces Fúnebres",
+          "descripcion_categoria": "Hacer un Arreglo para Funeral es nuestra especialidad con más de 5 años en el mercado sabemos que tipo de Arreglos ofrecerte y aquí encontrarás algunos de nuestros modelos en Coronas Fúnebres, Cruces para Funeral, Lágrimas para Velorio, arreglos grandes y pequeños, Reserva y lo enviamos como delivery hoy.  Enviar un Arreglo de flores para velorio es una señal de sentido pesar por el fallecimiento de un ser cercano. ",
+          "url_categoria": "cruces-funebres",
+          "orden_categoria": 2,
+          "id_parent": 16
+        },
+        {
+          "id_categoria": 17,
+          "nombre_categoria": "Lágrimas Fúnebres",
+          "descripcion_categoria": "Envía un Arreglo Fúnebre como Tributo de Condolencias\r\nCoronas Fúnebres, arreglos fúnebres en color blanco, rosado, amarillo, rojo y azul.",
+          "url_categoria": "lagrimas-funebres",
+          "orden_categoria": 3,
+          "id_parent": 16
+        },
+        {
+          "id_categoria": 18,
+          "nombre_categoria": "Coronas Fúnebres",
+          "descripcion_categoria": "LAS CORONAS FUNEBRES PARA DIFUNTOS SE HAN CONVERTIDO EN UNA SEï¿½AL CLARA DE CONDOLENCIAS, POR ELLO ENVIAR UN ARREGLO FLORAL FUNEBRE ES CADA VEZ Mï¿½S SOLICITADO",
+          "url_categoria": "coronas-para-difuntos",
+          "orden_categoria": 4,
+          "id_parent": 16
+        },
+        {
+          "id_categoria": 20,
+          "nombre_categoria": "Mantos Fúnebres",
+          "descripcion_categoria": "Mantos Fúnebres para enviar por delivery en Lima, Flores y Arreglos especiales para un funeral.",
+          "url_categoria": "mantos-funebres",
+          "orden_categoria": 5,
+          "id_parent": 16
+        }
+      ]
+    },
+    {
+      "id_categoria": 61,
+      "nombre_categoria": "Regalos para Bebé",
+      "descripcion_categoria": "Lindo para un momento tan especial como la llegada de un bebe ... ",
+      "url_categoria": "regalo-para-bebe",
+      "orden_categoria": 3,
+      "id_parent": 0,
+      "subcategorias": []
+    },
+    {
+      "id_categoria": 3,
+      "nombre_categoria": "Cestas",
+      "descripcion_categoria": "Encontrar el regalo ideal para él siempre es complicado, pero un detalle para hombre nunca pasará desapercibido y valorado por él, sorpréndelo y no esperes un día especial.",
+      "url_categoria": "cestas",
+      "orden_categoria": 4,
+      "id_parent": 0,
+      "subcategorias": []
+    },
+    {
+      "id_categoria": 26,
+      "nombre_categoria": "Plantas",
+      "descripcion_categoria": "Plantas para regalar por delivery en Lima. Nuestras plantas son naturales y pequeñas ideales para regalar y colocarlo en un escrcitorio de oficina. Contamos con suculentas, orquideas, terrarios, kokedamas y mas plantas para oficina.\r\nTambién contamos con <a href=\"https://regaloscorporativos.pe/categorias/7/plantas\"  target=\" _blank\"> Plantas corporativas<a/> para diversas ocasiones para empresas y eventos visítanos en: <a href=\"https://regaloscorporativos.pe/categorias/7/plantas\"  target=\" _blank\"> Regalos corporativos<a/>",
+      "url_categoria": "plantas",
+      "orden_categoria": 5,
+      "id_parent": 0,
+      "subcategorias": [
+        {
+          "id_categoria": 29,
+          "nombre_categoria": "Terrarios",
+          "descripcion_categoria": "Terrarios con plantas miniaturas con delivery en Lima. Todas nuestros terrarios son armados co forma de paisaje y contienen plantas y piedras naturales, además de sus hermosos detalles algunos contienen un valor místico que lo hace aún más especial.",
+          "url_categoria": "terrarios",
+          "orden_categoria": 5,
+          "id_parent": 26
+        },
+        {
+          "id_categoria": 30,
+          "nombre_categoria": "Orquideas",
+          "descripcion_categoria": "Las orquídeas simbolizan amor, belleza y sofisticación, siendo un regalo ideal para expresar admiración y buenos deseos. Son flores duraderas y fáciles de cuidar, perfectas para cualquier ocasión. Además, representan prosperidad y buena energía.",
+          "url_categoria": "orquideas",
+          "orden_categoria": 5,
+          "id_parent": 26
+        },
+        {
+          "id_categoria": 31,
+          "nombre_categoria": "Suculentas",
+          "descripcion_categoria": "Planta suculeta en Lima con delivery. Todas nuestras suculentas son armados en base de ceramica elegantes.",
+          "url_categoria": "suculentas",
+          "orden_categoria": 5,
+          "id_parent": 26
+        }
+      ]
+    }
+  ]
+}

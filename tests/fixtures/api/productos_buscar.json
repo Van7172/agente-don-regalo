@@ -1,0 +1,57 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id_producto": 734,
+      "nombre_producto": "Gustito Consintiéndote con Amor",
+      "descripcion_corta_producto": "Sorprende con un Desayuno Regalo para enamorar, Para este día especial consiente a esa persona especial. Delivery Lima<br>",
+      "precio_producto": 22,
+      "stock_producto": 100,
+      "url_producto": "consintiendote",
+      "id_categoria": 11,
+      "nombre_categoria": "Desayunos de Amor",
+      "categoria_url": "desayunos-de-amor",
+      "precio_final": 22,
+      "tiene_oferta": false,
+      "precio_oferta": null,
+      "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/20260629165017-6a42e8991baa8878392328-gemini-generated-image-t2zd9pt2zd9pt2zd-copia.webp"
+    },
+    {
+      "id_producto": 515,
+      "nombre_producto": "Gustito Criollo",
+      "descripcion_corta_producto": "Un delicioso desayuno para comenzar el día es un excelente regalo para empezar la mañana con energía. ",
+      "precio_producto": 23.5,
+      "stock_producto": 100,
+      "url_producto": "gustito-criollo",
+      "id_categoria": 9,
+      "nombre_categoria": "Desayunos Criollos",
+      "categoria_url": "desayunos-criollos",
+      "precio_final": 23.5,
+      "tiene_oferta": false,
+      "precio_oferta": null,
+      "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/1757370906gustito-criollo.jpg"
+    },
+    {
+      "id_producto": 345,
+      "nombre_producto": "Gustito para Papá",
+      "descripcion_corta_producto": "Gustito de media mañana para engreír y sorprender. Desayuno por el día del padre.",
+      "precio_producto": 24.71,
+      "stock_producto": 40,
+      "url_producto": "gustito-de-cumpleanos",
+      "id_categoria": 24,
+      "nombre_categoria": "Día del Padre ",
+      "categoria_url": "dia-del-padre",
+      "precio_final": 24.71,
+      "tiene_oferta": false,
+      "precio_oferta": null,
+      "imagen_url": "https://donregalo.pe/app/publicroot/imgs/files/medium/20260612115638-6a2c3a4661f47287934508-desayuno3.webp"
+    }
+  ],
+  "pagination": {
+    "total": 24,
+    "per_page": 3,
+    "current_page": 1,
+    "last_page": 8
+  }
+}

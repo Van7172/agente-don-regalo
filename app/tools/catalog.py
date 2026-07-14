@@ -8,6 +8,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.tools import adapters
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,17 @@ async def get(client: httpx.AsyncClient, url: str, params: dict | None = None):
 
 
 # ─── Implementaciones de herramientas ────────────────────────────────────────
+#
+# Todo lo que devuelve productos o distritos pasa por `adapters`: la API usa tres
+# formas distintas de producto y una cuarta de distrito, y entrega los precios en
+# USD. Aquí salen ya canónicos y en ambas monedas.
+
+
+async def _productos(client: httpx.AsyncClient, url: str, params: dict | None = None):
+    payload = await get(client, url, params)
+    rate = await adapters.usd_pen_rate(client)
+    return adapters.products_payload(payload, rate)
+
 
 async def listar_categorias(client: httpx.AsyncClient, _args: dict):
     return await get(client, f"{settings.donregalo_api_base}/categorias")
@@ -51,12 +63,12 @@ async def buscar_productos(client: httpx.AsyncClient, args: dict):
         params["orden"] = args["orden"]
     if args.get("id_ocasion"):
         params["ocasion"] = int(args["id_ocasion"])
-    return await get(client, f"{settings.donregalo_api_base}/productos/buscar", params)
+    return await _productos(client, f"{settings.donregalo_api_base}/productos/buscar", params)
 
 
 async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
     slug = args.get("slug", "").strip("/")
-    return await get(
+    return await _productos(
         client,
         f"{settings.donregalo_api_base}/categorias/{slug}/productos",
         {"per_page": DEFAULT_PER_PAGE},
@@ -64,7 +76,7 @@ async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
 
 
 async def productos_destacados(client: httpx.AsyncClient, _args: dict):
-    return await get(
+    return await _productos(
         client,
         f"{settings.donregalo_api_base}/productos/destacados",
         {"limit": DEFAULT_PER_PAGE},
@@ -72,7 +84,7 @@ async def productos_destacados(client: httpx.AsyncClient, _args: dict):
 
 
 async def productos_oferta(client: httpx.AsyncClient, _args: dict):
-    return await get(
+    return await _productos(
         client,
         f"{settings.donregalo_api_base}/productos/ofertas",
         {"per_page": DEFAULT_PER_PAGE},
@@ -80,11 +92,13 @@ async def productos_oferta(client: httpx.AsyncClient, _args: dict):
 
 
 async def detalle_producto(client: httpx.AsyncClient, args: dict):
-    return await get(client, f"{settings.donregalo_api_base}/productos/{int(args['id_producto'])}")
+    return await _productos(
+        client, f"{settings.donregalo_api_base}/productos/{int(args['id_producto'])}"
+    )
 
 
 async def productos_por_ocasion(client: httpx.AsyncClient, args: dict):
-    return await get(
+    return await _productos(
         client,
         f"{settings.donregalo_api_base}/ocasiones/{int(args['id_ocasion'])}/productos",
         {"per_page": DEFAULT_PER_PAGE},
@@ -92,7 +106,9 @@ async def productos_por_ocasion(client: httpx.AsyncClient, args: dict):
 
 
 async def distritos_cobertura(client: httpx.AsyncClient, _args: dict):
-    return await _cached_get(client, f"{settings.donregalo_api_base}/distritos")
+    payload = await _cached_get(client, f"{settings.donregalo_api_base}/distritos")
+    rate = await adapters.usd_pen_rate(client)
+    return adapters.districts_payload(payload, rate)
 
 
 async def metodos_pago(client: httpx.AsyncClient, _args: dict):

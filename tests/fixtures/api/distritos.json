@@ -1,0 +1,293 @@
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id_distrito": 140103,
+      "nombre_distrito": "ATE",
+      "tarifa_envio_distrito": 5.56,
+      "informacion_distrito": "De Salamanca hasta estación mercado Santa Anita",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 250403,
+      "nombre_distrito": "ATE",
+      "tarifa_envio_distrito": 7.78,
+      "informacion_distrito": "Real plaza puruchuco Hasta Nicolas Ayllon & Nicolas de piérola",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140125,
+      "nombre_distrito": "BARRANCO",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 141145,
+      "nombre_distrito": "BELLAVISTA",
+      "tarifa_envio_distrito": 4.45,
+      "informacion_distrito": "",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140104,
+      "nombre_distrito": "BREÑA",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 141144,
+      "nombre_distrito": "CALLAO",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": "Esta tarifa no cubre Ventanilla, está como otro distrito.",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140105,
+      "nombre_distrito": "CARABAYLLO",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 141147,
+      "nombre_distrito": "CARMEN DE LA LEGUA-REYNOSO",
+      "tarifa_envio_distrito": 4.72,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140108,
+      "nombre_distrito": "CHORRILLOS",
+      "tarifa_envio_distrito": 6.32,
+      "informacion_distrito": "No cubre los cedros de villa, la encantada de villa, pantano de villa",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 250404,
+      "nombre_distrito": "CHORRILLOS",
+      "tarifa_envio_distrito": 7,
+      "informacion_distrito": "",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140106,
+      "nombre_distrito": "COMAS",
+      "tarifa_envio_distrito": 4.44,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140135,
+      "nombre_distrito": "EL AGUSTINO",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140134,
+      "nombre_distrito": "INDEPENDENCIA",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140133,
+      "nombre_distrito": "JESUS MARIA",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 250405,
+      "nombre_distrito": "LA MOLINA",
+      "tarifa_envio_distrito": 7,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140110,
+      "nombre_distrito": "LA MOLINA",
+      "tarifa_envio_distrito": 6,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 141148,
+      "nombre_distrito": "LA PERLA",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 70105,
+      "nombre_distrito": "LA PUNTA",
+      "tarifa_envio_distrito": 5.56,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140109,
+      "nombre_distrito": "LA VICTORIA",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140101,
+      "nombre_distrito": "LIMA - CERCADO",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140111,
+      "nombre_distrito": "LINCE",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140142,
+      "nombre_distrito": "LOS OLIVOS",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 250402,
+      "nombre_distrito": "LURIGANCHO-ZARATE",
+      "tarifa_envio_distrito": 6.86,
+      "informacion_distrito": "Hasta la Av. Lurigancho. No llegamos a Mangomarca, Puruchuco, Ñaña, chosica o más allá",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140114,
+      "nombre_distrito": "MAGDALENA DEL MAR",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140115,
+      "nombre_distrito": "MIRAFLORES",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140117,
+      "nombre_distrito": "PUEBLO LIBRE",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140119,
+      "nombre_distrito": "PUENTE PIEDRA",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": "No cubre Santa Rosa.",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140122,
+      "nombre_distrito": "RIMAC",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140140,
+      "nombre_distrito": "SAN BORJA",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140124,
+      "nombre_distrito": "SAN ISIDRO",
+      "tarifa_envio_distrito": 4,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140137,
+      "nombre_distrito": "SAN JUAN DE LURIGANCHO",
+      "tarifa_envio_distrito": 6.86,
+      "informacion_distrito": "Hasta Mariscal Cáceres. No llegamos a Jicamarca, ni Chosica.",
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140136,
+      "nombre_distrito": "SAN JUAN DE MIRAFLORES",
+      "tarifa_envio_distrito": 7.39,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140138,
+      "nombre_distrito": "SAN LUIS",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140126,
+      "nombre_distrito": "SAN MARTIN DE PORRES",
+      "tarifa_envio_distrito": 5,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140127,
+      "nombre_distrito": "SAN MIGUEL",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140143,
+      "nombre_distrito": "SANTA ANITA",
+      "tarifa_envio_distrito": 6.11,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140129,
+      "nombre_distrito": "SANTA ROSA",
+      "tarifa_envio_distrito": 10,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140130,
+      "nombre_distrito": "SANTIAGO DE SURCO",
+      "tarifa_envio_distrito": 4.17,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140131,
+      "nombre_distrito": "SURQUILLO",
+      "tarifa_envio_distrito": 4,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140141,
+      "nombre_distrito": "VILLA EL SALVADOR",
+      "tarifa_envio_distrito": 8,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    },
+    {
+      "id_distrito": 140132,
+      "nombre_distrito": "VILLA MARIA DEL TRIUNFO",
+      "tarifa_envio_distrito": 8,
+      "informacion_distrito": null,
+      "moneda": "USD"
+    }
+  ]
+}

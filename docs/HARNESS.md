@@ -73,6 +73,35 @@ tool que su toolset no tenía y el modelo la alucinaba en silencio.
 handoff. Ahí es donde el modelo mandaba a un asesor ventas sanas ("regalos
 corporativos por Fiestas Patrias").
 
+## La capa de adaptadores
+
+La API de donregalo.pe devuelve **tres formas distintas de producto** (listados
+con `nombre_producto`/`precio_final`, detalle con `nombre`/`precio`/`imagenes[]`,
+y Qdrant con `nombre`/`precio`) más una cuarta para distritos (`nombre_distrito`,
+`tarifa_envio_distrito`). Nadie adaptaba entre ellas: quien tapaba la diferencia
+era el LLM, leyendo el JSON crudo y adivinando los campos.
+
+Donde el código sí asumía una forma, fallaba en silencio:
+
+- `match_district` buscaba `nombre` y la API devuelve `nombre_distrito`, así que
+  **ningún distrito hizo match nunca**: todo cliente que preguntaba "¿llegan a
+  Miraflores?" recibía "búscalo en Google Maps".
+- `/categorias/{slug}/productos` anida los productos bajo `data.productos`, y no
+  se extraían.
+
+`tools/adapters.py` normaliza todo a una forma canónica en la frontera de las
+tools. Nada aguas abajo vuelve a ver el JSON crudo.
+
+**El dinero se calcula en código.** La API entrega todo en USD. Antes el modelo
+llamaba a `tipo_cambio` y multiplicaba él mismo cada precio — aritmética de dinero
+a cargo de un LLM, en un prompt que a la vez le prohíbe inventar precios. Ahora el
+adaptador convierte y `tipo_cambio` **ya no es una tool de ningún agente**: los
+productos llegan con `precio_sol` y `precio_usd`, y el playbook solo los copia.
+
+Los tests de `test_adapters.py` corren contra **payloads reales grabados** en
+`tests/fixtures/api/`. El test viejo de cobertura inventaba la forma del payload y
+por eso pasaba en verde mientras la función estaba rota en producción.
+
 ## Qué es determinista y qué es LLM
 
 Cobertura y cierre **no llaman al LLM**: son `harness/coverage.py` y

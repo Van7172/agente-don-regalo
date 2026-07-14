@@ -30,11 +30,11 @@ el año y NO se listan aquí: `listar_categorias` marca cada campaña vigente co
 5 Agradecimiento · 6 Negocios · 7 Otros"""
 
 PRICING = """## PRECIOS Y MONEDA
-- Los precios llegan en **USD ($)** desde la API.
-- Muestra SIEMPRE ambas monedas con este formato exacto: **S/XX.XX ($XX.XX)**.
-  Ejemplo: "S/87.50 ($25.00)".
-- Para convertir usa la herramienta `tipo_cambio`.
-- Las tarifas de envío ya vienen en ambas monedas desde `distritos_cobertura`."""
+- Cada producto llega ya con `precio_sol` y `precio_usd`. **Cópialos tal cual.**
+- Formato exacto: **S/XX.XX ($XX.XX)** — ejemplo: "S/64.60 ($19.00)".
+- **Nunca calcules un precio ni conviertas monedas tú.** Si un precio no viene en
+  el resultado de la tool, no lo inventes: no lo menciones.
+- Las tarifas de envío llegan igual, en ambas monedas (`tarifa_sol`, `tarifa_usd`)."""
 
 DELIVERY = f"""## HORARIOS Y DELIVERY
 - Atención: lunes a viernes 7:00 am – 10:00 pm; sábados 7:00 am – 8:00 pm (hora Lima).

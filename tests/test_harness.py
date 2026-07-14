@@ -168,26 +168,38 @@ async def test_local_state_roundtrip():
 
 
 @pytest.mark.asyncio
-async def test_coverage_resolve_mocked(monkeypatch):
+async def test_coverage_resolve_con_payload_real(monkeypatch):
+    """Con la respuesta REAL de /distritos, no con una forma inventada.
+
+    El mock anterior devolvía `{"nombre": ..., "precio_sol": ...}`, campos que la
+    API no tiene. El test pasaba mientras el bot mandaba a todo el mundo a Google
+    Maps porque ningún distrito hacía match.
+    """
+    import json
+    import pathlib
+
     from app.harness import coverage as cov
+    from app.tools import adapters
+
+    crudo = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "api" / "distritos.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     async def fake_distritos(client, args):
-        return {
-            "data": [
-                {"nombre": "Independencia", "precio_sol": 17.0, "precio_usd": 5.0},
-                {"nombre": "Callao", "precio_sol": 20.0, "precio_usd": 6.0},
-            ]
-        }
+        return adapters.districts_payload(crudo, 3.4)
 
     monkeypatch.setattr(cov.catalog, "distritos_cobertura", fake_distritos)
     st = ConversationState()
-    # Mensaje buffer: Independencia + Palao
     text = "Independencia creo que es el distrito\nDonde es 2da de palao?\nA ver si me ayudas porfa"
     result = await cov.resolve_coverage(text, st)
-    # Debe resolver a un distrito (Independencia o Callao por palao) en UNA respuesta
-    assert result["user_facing"]
-    assert result["user_facing"].count("S/") <= 1
-    # No debe tener 3 narrativas (confirmar + preguntar + reconfirmar)
+
+    # Resuelve el distrito, en UNA sola respuesta, con la tarifa en soles.
+    assert result["structured"]["resolved_district"], "debería resolver el distrito"
+    assert result["structured"]["covered"] is True
+    assert result["state_patch"]["shipping_fee_sol"] > 0
+    assert result["user_facing"].count("S/") == 1
     assert result["user_facing"].count("¿Confirmo") == 0
 
 

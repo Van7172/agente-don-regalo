@@ -1,0 +1,216 @@
+"""Capa anticorrupción: normaliza lo que devuelven las APIs al modelo del dominio.
+
+La API de donregalo.pe devuelve **tres formas distintas de producto**:
+
+- listados (`/productos/destacados`, `/buscar`, `/categorias/{slug}/productos`):
+  `nombre_producto`, `precio_producto`, `descripcion_corta_producto`…
+- detalle (`/productos/{id}`): `nombre`, `precio`, `imagenes[]`…
+- Qdrant: `nombre`, `precio`, `imagen_url`…
+
+Y los distritos usan una cuarta (`nombre_distrito`, `tarifa_envio_distrito`).
+Nadie adaptaba entre ellas: el LLM leía el JSON crudo y adivinaba los campos.
+Cuando el código sí asumía una forma concreta, fallaba en silencio — `match_district`
+buscaba `nombre` y la API devuelve `nombre_distrito`, así que **ningún distrito
+llegó a hacer match jamás**.
+
+Todo lo que sale de una tool pasa por aquí y llega al resto del sistema con la
+misma forma, y con el precio ya convertido a soles. La conversión es aritmética,
+no una tarea para un modelo de lenguaje.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+
+log = logging.getLogger(__name__)
+
+# Si la API del tipo de cambio falla, es mejor un precio aproximado con un valor
+# reciente que ningún precio. Se revisa en el log.
+DEFAULT_USD_PEN = 3.40
+
+
+async def usd_pen_rate(client: httpx.AsyncClient) -> float:
+    """Tipo de cambio USD→PEN (cacheado 1 h en `catalog._cached_get`)."""
+    from app.tools import catalog
+
+    try:
+        payload = await catalog.tipo_cambio(client, {})
+        data = (payload or {}).get("data") or {}
+        rate = float(data.get("tipo_cambio"))
+        if rate > 0:
+            return round(rate, 4)
+    except Exception as err:
+        log.warning("[adapters] tipo de cambio no disponible (%s); uso %.2f", err, DEFAULT_USD_PEN)
+    return DEFAULT_USD_PEN
+
+
+def _num(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_sol(usd: float | None, rate: float) -> float | None:
+    if usd is None:
+        return None
+    return round(usd * rate, 2)
+
+
+def _first_image(raw: dict[str, Any]) -> str:
+    url = str(raw.get("imagen_url") or "").strip()
+    if url:
+        return url
+    # El detalle no trae `imagen_url`: trae `imagenes[]` con varias resoluciones.
+    for img in raw.get("imagenes") or []:
+        if not isinstance(img, dict):
+            continue
+        for key in ("medium", "large", "original", "thumbnail", "url"):
+            candidate = str(img.get(key) or "").strip()
+            if candidate:
+                return candidate
+    return ""
+
+
+def product(raw: dict[str, Any], rate: float) -> dict[str, Any] | None:
+    """Cualquiera de las tres formas de producto → la forma canónica."""
+    if not isinstance(raw, dict):
+        return None
+
+    pid = raw.get("id_producto")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+
+    # `precio_final` ya contempla la oferta; los otros son el precio de lista.
+    precio_usd = (
+        _num(raw.get("precio_final"))
+        if raw.get("precio_final") is not None
+        else _num(raw.get("precio_producto")) or _num(raw.get("precio")) or _num(raw.get("precio_usd"))
+    )
+    lista_usd = _num(raw.get("precio_producto")) or _num(raw.get("precio"))
+
+    categoria = raw.get("categoria")
+    if isinstance(categoria, dict):  # forma del detalle
+        categoria_nombre = str(categoria.get("nombre") or "")
+        categoria_slug = str(categoria.get("url") or "")
+    else:
+        categoria_nombre = str(raw.get("nombre_categoria") or categoria or "")
+        categoria_slug = str(raw.get("categoria_url") or raw.get("categoria_slug") or "")
+
+    canonical: dict[str, Any] = {
+        "id_producto": pid,
+        "nombre": str(raw.get("nombre_producto") or raw.get("nombre") or "").strip(),
+        "descripcion_corta": str(
+            raw.get("descripcion_corta_producto") or raw.get("descripcion_corta") or ""
+        ).strip(),
+        "precio_usd": precio_usd,
+        "precio_sol": _to_sol(precio_usd, rate),
+        "imagen_url": _first_image(raw),
+        "url": str(raw.get("url_producto") or raw.get("url") or "").strip(),
+        "categoria": categoria_nombre,
+        "categoria_slug": categoria_slug,
+    }
+
+    if raw.get("tiene_oferta"):
+        canonical["tiene_oferta"] = True
+        canonical["precio_lista_usd"] = lista_usd
+        canonical["precio_lista_sol"] = _to_sol(lista_usd, rate)
+
+    stock = raw.get("stock_producto") if "stock_producto" in raw else raw.get("stock")
+    if stock is not None:
+        canonical["stock"] = stock
+
+    if raw.get("score") is not None:  # viene de Qdrant
+        canonical["score"] = raw["score"]
+
+    return canonical
+
+
+def district(raw: dict[str, Any], rate: float) -> dict[str, Any] | None:
+    """`nombre_distrito` / `tarifa_envio_distrito` (USD) → forma canónica."""
+    if not isinstance(raw, dict):
+        return None
+
+    nombre = str(
+        raw.get("nombre_distrito") or raw.get("nombre") or raw.get("distrito") or ""
+    ).strip()
+    if not nombre:
+        return None
+    if nombre.isupper():  # la API los guarda en mayúsculas ("MIRAFLORES")
+        nombre = nombre.title()
+
+    tarifa_usd = _num(raw.get("tarifa_envio_distrito"))
+    if tarifa_usd is None:
+        tarifa_usd = _num(raw.get("tarifa_usd")) or _num(raw.get("precio_usd"))
+
+    return {
+        "id_distrito": raw.get("id_distrito"),
+        "nombre": nombre,
+        "tarifa_usd": tarifa_usd,
+        "tarifa_sol": _to_sol(tarifa_usd, rate),
+        "informacion": str(raw.get("informacion_distrito") or raw.get("informacion") or "").strip(),
+    }
+
+
+def _items(payload: Any) -> list[dict[str, Any]]:
+    """Saca la lista de productos de un payload, venga como venga envuelta."""
+    data = payload.get("data") if isinstance(payload, dict) else payload
+
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+
+    if isinstance(data, dict):
+        # `/categorias/{slug}/productos` anida: {"categoria": {...}, "productos": [...]}
+        for key in ("productos", "data", "items", "resultados"):
+            nested = data.get(key)
+            if isinstance(nested, list):
+                return [x for x in nested if isinstance(x, dict)]
+
+    return []
+
+
+def products_payload(payload: Any, rate: float) -> Any:
+    """Normaliza un payload de productos dejando siempre `data` como lista plana."""
+    if not isinstance(payload, dict):
+        return payload
+
+    data = payload.get("data")
+
+    # Detalle: `data` es un único producto.
+    if isinstance(data, dict) and data.get("id_producto") and "productos" not in data:
+        canonical = product(data, rate)
+        if canonical is None:
+            return payload
+        # El detalle trae extras que el listado no: los conservamos.
+        for extra in ("descripcion", "ocasiones", "imagenes", "relacionados", "tags"):
+            if data.get(extra):
+                canonical[extra] = data[extra]
+        return {**payload, "data": canonical}
+
+    items = _items(payload)
+    if not items:
+        return payload
+
+    productos = [p for p in (product(raw, rate) for raw in items) if p]
+    out = {**payload, "data": productos, "total": len(productos)}
+
+    if isinstance(data, dict) and isinstance(data.get("categoria"), dict):
+        out["categoria"] = data["categoria"]
+
+    return out
+
+
+def districts_payload(payload: Any, rate: float) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    items = _items(payload)
+    if not items:
+        return payload
+    distritos = [d for d in (district(raw, rate) for raw in items) if d]
+    return {**payload, "data": distritos, "total": len(distritos)}

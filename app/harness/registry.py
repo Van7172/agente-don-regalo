@@ -14,6 +14,10 @@ from app.tools.definitions import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS
 
 _BY_NAME = {t["function"]["name"]: t for t in TOOLS}
 
+# `tipo_cambio` ya NO es una tool de ningún agente: los precios llegan en ambas
+# monedas desde `tools/adapters.py`. Antes el modelo pedía el tipo de cambio y
+# multiplicaba él mismo los precios — aritmética de dinero a cargo de un LLM, en
+# un prompt que a la vez le prohíbe inventar precios.
 CATALOG_TOOLS = (
     "buscar_semantico",
     "productos_similares",
@@ -24,7 +28,6 @@ CATALOG_TOOLS = (
     "productos_destacados",
     "productos_oferta",
     "productos_por_ocasion",
-    "tipo_cambio",
 )
 
 
@@ -72,7 +75,7 @@ AGENTS: dict[str, AgentSpec] = {
         name="detail",
         playbook=playbooks.DETAIL,
         facts=("pricing",),
-        tool_names=("detalle_producto", "productos_similares", "tipo_cambio"),
+        tool_names=("detalle_producto", "productos_similares"),
     ),
     "coverage": AgentSpec(
         name="coverage",
@@ -84,7 +87,7 @@ AGENTS: dict[str, AgentSpec] = {
         name="checkout",
         playbook=playbooks.CHECKOUT,
         facts=("delivery", "pricing"),
-        tool_names=("distritos_cobertura", "metodos_pago", "tipo_cambio"),
+        tool_names=("distritos_cobertura", "metodos_pago"),
         can_handoff=True,
     ),
     "policy": AgentSpec(

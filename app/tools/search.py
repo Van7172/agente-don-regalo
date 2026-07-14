@@ -170,6 +170,14 @@ async def _filtrar_activos(client: httpx.AsyncClient, productos: list[dict]) -> 
     return filtrados
 
 
+async def _canonical(client: httpx.AsyncClient, payload: dict) -> dict:
+    """Qdrant guarda el precio en USD; el cliente lo quiere en soles."""
+    from app.tools import adapters
+
+    rate = await adapters.usd_pen_rate(client)
+    return adapters.products_payload(payload, rate)
+
+
 def _hit_to_producto(h) -> dict:
     p = h.payload or {}
     return {
@@ -243,12 +251,12 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
         p.pop("_rank", None)
         productos.append(p)
 
-    return {
+    return await _canonical(client, {
         "data": productos,
         "total": len(productos),
         "fuente": "semantico",
         "personalizado": personalizado,
-    }
+    })
 
 
 async def productos_similares(client: httpx.AsyncClient, args: dict):
@@ -284,7 +292,10 @@ async def productos_similares(client: httpx.AsyncClient, args: dict):
     candidatos = [_hit_to_producto(h) for h in hits if h.id != pid]
     candidatos = await _filtrar_activos(client, candidatos)
     productos  = candidatos[:settings.semantic_limit]
-    return {"data": productos, "total": len(productos), "fuente": "similares", "referencia": pid}
+    return await _canonical(
+        client,
+        {"data": productos, "total": len(productos), "fuente": "similares", "referencia": pid},
+    )
 
 
 async def buscar_conocimiento(args: dict):
