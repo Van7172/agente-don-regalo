@@ -35,6 +35,9 @@ class ConversationState:
     date: str = ""
     time_slot: str = ""
     shown_product_ids: list[int] = field(default_factory=list)
+    # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
+    # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".
+    recent_products: list[dict] = field(default_factory=list)
     campaign_slug: str = ""
     handoff_reason: str = ""
     keep_human: bool = False
@@ -61,6 +64,20 @@ class ConversationState:
             if k == "shown_product_ids" and isinstance(v, list):
                 merged = list(dict.fromkeys([*self.shown_product_ids, *[int(x) for x in v if x is not None]]))
                 setattr(self, k, merged)
+            elif k == "recent_products" and isinstance(v, list):
+                # Los del turno actual van primero: "el segundo" se refiere a lo
+                # último que vio el cliente, no a lo de hace cinco mensajes.
+                merged_products: list[dict] = []
+                seen: set[int] = set()
+                for item in [*v, *self.recent_products]:
+                    if not isinstance(item, dict):
+                        continue
+                    pid = item.get("id_producto")
+                    if pid is None or pid in seen:
+                        continue
+                    seen.add(pid)
+                    merged_products.append({"id_producto": pid, "nombre": item.get("nombre") or ""})
+                setattr(self, k, merged_products[:12])
             else:
                 setattr(self, k, v)
         return self

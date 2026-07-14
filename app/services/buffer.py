@@ -13,7 +13,7 @@ from app.crm import http_client as crm_http
 from app.crm import repository as repo
 from app.crm.models import Message
 from app.db import SessionLocal
-from app.prompts.system import SYSTEM_PROMPT
+from app.prompts.compose import profile_block
 from app.services.agent import HANDOFF_DONE
 from app.harness.master import run_master
 from app.harness.releaser import REENGAGE_MSG, try_release_conversation
@@ -243,17 +243,15 @@ async def _flush_buffer(conversation_id: int) -> None:
 
 
 async def _build_messages(profile: dict, history: list, user_content) -> list:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    """Perfil + historial + turno. El system message lo compone el harness.
+
+    Antes aquí se inyectaba el SYSTEM_PROMPT monolítico y el master lo descartaba
+    después buscando un string dentro. Ahora cada especialista recibe el suyo,
+    compuesto en `prompts/compose.py`.
+    """
+    messages: list = []
     if profile:
-        datos = "\n".join(f"- {k}: {v}" for k, v in profile.items() if v)
-        messages.append({
-            "role": "system",
-            "content": (
-                "DATOS CONOCIDOS DEL CLIENTE (de conversaciones previas):\n"
-                f"{datos}\n"
-                "Úsalos para personalizar la atención y NO vuelvas a preguntar lo que ya sabes."
-            ),
-        })
+        messages.append({"role": "system", "content": profile_block(profile)})
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_content})

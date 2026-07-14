@@ -1,80 +1,64 @@
-"""Regalito Master: clasifica intención, delega a specialties y guarda estado."""
+"""Orquestador del harness.
+
+Un turno = percibir → clasificar → delegar → reducir → persistir.
+
+Dos reglas que lo definen:
+
+1. **El orquestador no habla con el cliente.** Todo texto de cara al cliente sale
+   de un especialista (`registry.AGENTS`), incluidos los saludos, que atiende el
+   `concierge`. Por eso su propio prompt no lleva ni identidad ni estilo.
+2. **El estado se reduce desde `AgentResult`,** nunca desde la prosa de la
+   respuesta. Los ids de producto vienen de los resultados de las tools.
+"""
 from __future__ import annotations
 
-import json
 import logging
-import re
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.harness.checkout import advance_checkout, start_checkout, wants_checkout
+from app.harness.checkout import (
+    advance_checkout,
+    resolve_chosen_product,
+    wants_checkout,
+)
+from app.harness.contracts import AgentResult, EscalateReason, Turn
 from app.harness.coverage import resolve_coverage
+from app.harness.policies import dedupe_artifacts, grounding_violation, latest_user_text
+from app.harness.registry import spec_for
 from app.harness.router import classify_intent
 from app.harness.state import ConversationState, load_state, save_state
-from app.harness.toolsets import tools_for
-from app.prompts.harness import MASTER_PROMPT, SPECIALTY_PROMPTS
-from app.services.agent import HANDOFF_DONE, run_agent
+from app.prompts.compose import build_system
+from app.services.agent import HANDOFF_DONE, run_specialist
 
 log = logging.getLogger(__name__)
 
-_PRODUCT_ID_RE = re.compile(r'"id_producto"\s*:\s*(\d+)')
+
+def perceive(messages: list) -> Turn:
+    """Qué nos llega del cliente en este turno."""
+    text = latest_user_text(messages)
+    return Turn(text=text or "", has_media=text is None, messages=messages)
 
 
-def _latest_user_text(messages: list) -> str:
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            content = m.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                bits = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        bits.append(part.get("text") or "")
-                return "\n".join(bits)
-    return ""
+def _reduce(state: ConversationState, result: AgentResult) -> ConversationState:
+    """Aplica al estado lo que el especialista aprendió."""
+    if result.state_patch:
+        state.patch(result.state_patch)
 
+    if result.artifacts:
+        state.patch({
+            "shown_product_ids": [p.id_producto for p in result.artifacts],
+            "recent_products": [
+                {"id_producto": p.id_producto, "nombre": p.nombre}
+                for p in result.artifacts
+            ],
+        })
 
-def _extract_shown_ids(text: str) -> list[int]:
-    return [int(x) for x in _PRODUCT_ID_RE.findall(text or "")]
+    if result.escalate is not None:
+        state.handoff_reason = result.escalate.motivo or state.handoff_reason
+        if result.escalate.is_payment:
+            state.checkout_step = "payment"
 
-
-def _build_specialty_messages(
-    history_messages: list,
-    *,
-    intent: str,
-    state: ConversationState,
-) -> list:
-    specialty = SPECIALTY_PROMPTS.get(intent, SPECIALTY_PROMPTS["catalog_search"])
-    state_blob = json.dumps(
-        {
-            "checkout_step": state.checkout_step,
-            "district": state.district,
-            "shown_product_ids": state.shown_product_ids[-30:],
-            "chosen_product_id": state.chosen_product_id,
-            "chosen_product_name": state.chosen_product_name,
-            "shipping_fee_sol": state.shipping_fee_sol,
-        },
-        ensure_ascii=False,
-    )
-    system = (
-        MASTER_PROMPT
-        + "\n\n"
-        + specialty
-        + "\n\n## ESTADO HARNESS (fuente de verdad)\n"
-        + state_blob
-        + "\nUsa excluir_ids con shown_product_ids cuando el cliente pida más opciones."
-    )
-    out: list[dict[str, Any]] = [{"role": "system", "content": system}]
-    # Conservar historial + profile systems excepto el SYSTEM_PROMPT monolítico viejo
-    for m in history_messages:
-        if m.get("role") == "system" and "Eres Regalito, el asistente virtual" in (
-            m.get("content") or ""
-        ):
-            continue
-        out.append(m)
-    return out
+    return state
 
 
 async def run_master(
@@ -87,151 +71,160 @@ async def run_master(
     use_external_crm: bool = False,
     persist=None,
 ) -> str | None:
-    """Entrada del harness: un turno = classify + (specialty | FSM | LLM acotado)."""
-    user_text = _latest_user_text(messages)
+    turn = perceive(messages)
     state = (
         await load_state(conversation_id, wa_id=wa_id)
         if conversation_id is not None
         else ConversationState()
     )
 
-    intent = classify_intent(user_text, state)
+    intent = classify_intent(turn.text, state)
     state.intent_last = intent
+
     log.info(
-        "[harness] conversation=%s intent=%s step=%s",
+        "[harness] conversation=%s intent=%s agent=%s step=%s",
         conversation_id,
         intent,
+        spec_for(intent).name,
         state.checkout_step,
     )
 
-    # ── Cobertura determinística ─────────────────────────────────
-    if intent == "coverage":
-        result = await resolve_coverage(user_text, state)
-        state.patch(result.get("state_patch") or {})
-        if conversation_id is not None:
-            await save_state(conversation_id, state, wa_id=wa_id)
-        return result.get("user_facing") or result.get("structured", {}).get("ask")
-
-    # ── Cierre FSM ───────────────────────────────────────────────
-    if intent == "checkout" or (
-        wants_checkout(user_text) and state.checkout_step in ("idle", "")
-    ):
-        if state.checkout_step in ("idle", ""):
-            # Intentar capturar nombre de producto citado / “me gusta esta”
-            start_checkout(state)
-        state, reply, meta = advance_checkout(state, user_text)
-        if conversation_id is not None:
-            await save_state(conversation_id, state, wa_id=wa_id)
-        if meta.get("escalate"):
-            # Delegar handoff real al loop del agente con tool forzada vía prompt
-            esc_messages = _build_specialty_messages(
-                messages, intent="escalate", state=state
-            )
-            esc_messages.append({
-                "role": "system",
-                "content": (
-                    "El cliente confirmó el resumen o está en pago. "
-                    "Llama YA escalar_a_humano con motivo: "
-                    f"{state.handoff_reason or 'pago/comprobante'}."
-                ),
-            })
-            tools = tools_for("escalate", with_memory=True, with_handoff=True)
-            result = await run_agent(
-                esc_messages,
-                wa_id=wa_id,
-                contact_id=contact_id,
-                conversation_id=conversation_id,
-                session=session,
-                use_external_crm=use_external_crm,
-                persist=persist,
-                tools_override=tools,
-                include_handoff=True,
-                include_memory=True,
-            )
-            return result if result else reply
-        return reply
-
-    # ── Saludos / cortesía ───────────────────────────────────────
-    if intent in ("greet", "small_talk"):
-        greet_messages = [
-            {"role": "system", "content": MASTER_PROMPT},
-            {
-                "role": "system",
-                "content": (
-                    "El cliente solo saluda o hace cortesía. Responde corto y cálido. "
-                    "No ofrezcas catálogo a la fuerza. No llames tools."
-                ),
-            },
-            {"role": "user", "content": user_text},
-        ]
-        reply = await run_agent(
-            greet_messages,
-            wa_id=wa_id,
-            contact_id=contact_id,
-            conversation_id=conversation_id,
-            session=session,
-            use_external_crm=use_external_crm,
-            persist=persist,
-            tools_override=[],
-            include_handoff=False,
-            include_memory=False,
-        )
-        if conversation_id is not None:
-            await save_state(conversation_id, state, wa_id=wa_id)
-        return reply or "¡Hola! 😊 ¿En qué regalo te ayudo hoy?"
-
-    # ── Escalate explícito ───────────────────────────────────────
-    if intent == "escalate":
-        state.handoff_reason = state.handoff_reason or "cliente pide asesor / frustración"
-        if conversation_id is not None:
-            await save_state(conversation_id, state, wa_id=wa_id)
-
-    # ── Specialty LLM con toolset acotado ────────────────────────
-    tools = tools_for(
+    result = await _handle(
         intent,
-        with_memory=bool(contact_id or use_external_crm),
-        with_handoff=conversation_id is not None,
-    )
-    # Inyectar excluir_ids hint en system
-    specialty_messages = _build_specialty_messages(messages, intent=intent, state=state)
-    if state.shown_product_ids and intent == "catalog_search":
-        specialty_messages.insert(
-            1,
-            {
-                "role": "system",
-                "content": (
-                    "Al llamar buscar_semantico pasa excluir_ids="
-                    f"{state.shown_product_ids[-40:]}"
-                ),
-            },
-        )
-
-    reply = await run_agent(
-        specialty_messages,
+        turn,
+        state,
         wa_id=wa_id,
         contact_id=contact_id,
         conversation_id=conversation_id,
         session=session,
         use_external_crm=use_external_crm,
         persist=persist,
-        tools_override=tools if tools else None,
-        include_handoff=intent in ("escalate", "policy_faq", "checkout"),
-        include_memory=True,
     )
 
-    if reply and reply != HANDOFF_DONE:
-        ids = _extract_shown_ids(reply)
-        # También IDs pueden venir solo de tools; el historial del agent no está aquí.
-        # Heurística: si el reply es listado, no siempre trae id — OK.
-        if ids:
-            state.patch({"shown_product_ids": ids})
-        # Detectar nombre entre * * como producto elegido en cierre futuro
-        m = re.search(r"\*([^*\n]{3,80})\*", reply)
-        if m and intent == "catalog_search":
-            # No forzar chosen; solo memoria blanda del último listado
-            pass
+    state = _reduce(state, result)
+
+    if result.user_facing:
+        violation = grounding_violation(result.user_facing, result.artifacts)
+        if violation:
+            # No cortamos la respuesta (dejaría al cliente sin nada), pero queda
+            # en el log para que el eval lo cace.
+            log.warning(
+                "[harness] grounding conversation=%s: %s", conversation_id, violation
+            )
 
     if conversation_id is not None:
         await save_state(conversation_id, state, wa_id=wa_id)
 
-    return reply
+    if result.escalate is not None:
+        return HANDOFF_DONE
+    return result.user_facing
+
+
+async def _handle(intent: str, turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+    """Enruta el turno al especialista o a la máquina de estados que le toca."""
+
+    # ── Cobertura: determinista, sin LLM ──────────────────────────
+    if intent == "coverage":
+        raw = await resolve_coverage(turn.text, state)
+        return AgentResult(
+            user_facing=raw.get("user_facing") or raw.get("structured", {}).get("ask"),
+            state_patch=raw.get("state_patch") or {},
+        )
+
+    # ── Cierre: máquina de estados, sin LLM ───────────────────────
+    if intent == "checkout" or (
+        wants_checkout(turn.text) and state.checkout_step in ("idle", "")
+    ):
+        return await _handle_checkout(turn, state, **ctx)
+
+    # ── Resto: especialista LLM con toolset acotado ───────────────
+    return await _run_specialty(intent, turn, state, **ctx)
+
+
+async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+    if state.checkout_step in ("idle", ""):
+        chosen = resolve_chosen_product(state, turn.text)
+        if chosen is not None:
+            # Solo fijamos el producto. El paso lo avanza `advance_checkout` desde
+            # "idle", que además NO consume este texto: "quiero el panditas" es la
+            # elección del producto, no el distrito.
+            state.chosen_product_id, state.chosen_product_name = chosen
+        elif state.recent_products:
+            # Varias opciones a la vista y una referencia ambigua ("ese"):
+            # preguntar es mejor que cerrar el pedido del producto equivocado.
+            names = ", ".join(
+                p["nombre"] for p in state.recent_products[:5] if p.get("nombre")
+            )
+            return AgentResult(
+                user_facing=(
+                    f"¡Genial! 😊 ¿Cuál de estos te llevas: {names}?"
+                    if names
+                    else "¡Genial! 😊 ¿Cuál de los que te mostré te llevas?"
+                )
+            )
+
+    state, reply, meta = advance_checkout(state, turn.text)
+
+    if not meta.get("escalate"):
+        return AgentResult(user_facing=reply)
+
+    # Resumen confirmado: el pago lo coordina un humano.
+    motivo = state.handoff_reason or "cliente listo para pagar / coordinar comprobante"
+    escalated = await _run_specialty(
+        "escalate",
+        turn,
+        state,
+        extra_system=(
+            "El cliente confirmó el resumen del pedido y pasa a pago. "
+            f"Llama YA `escalar_a_humano` con motivo: {motivo}."
+        ),
+        **ctx,
+    )
+    if escalated.escalate is not None:
+        return escalated
+
+    # El especialista no llamó la tool: el handoff se hace igual. Un cliente
+    # listo para pagar no puede quedarse esperando.
+    return AgentResult(
+        user_facing=reply, escalate=EscalateReason(motivo=motivo, is_payment=True)
+    )
+
+
+async def _run_specialty(
+    intent: str,
+    turn: Turn,
+    state: ConversationState,
+    *,
+    wa_id: str,
+    contact_id: int | None = None,
+    conversation_id: int | None = None,
+    session: AsyncSession | None = None,
+    use_external_crm: bool = False,
+    persist=None,
+    extra_system: str = "",
+) -> AgentResult:
+    spec = spec_for(intent)
+    system = build_system(spec, state, extra=extra_system)
+
+    result = await run_specialist(
+        [{"role": "system", "content": system}, *turn.messages],
+        wa_id=wa_id,
+        contact_id=contact_id,
+        conversation_id=conversation_id,
+        session=session,
+        use_external_crm=use_external_crm,
+        persist=persist,
+        tools_override=spec.tools(
+            with_memory=bool(contact_id or use_external_crm),
+            with_handoff=conversation_id is not None,
+        ),
+        include_handoff=spec.can_handoff,
+        include_memory=spec.customer_facing,
+    )
+
+    # Nunca mostrar dos veces el mismo producto: el cliente lo lee como que no le
+    # hicimos caso ("otras, no esas").
+    if spec.name == "catalog":
+        result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
+
+    return result

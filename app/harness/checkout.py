@@ -2,25 +2,21 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
+from app.delivery_windows import SCHEDULE_MAP as _SCHEDULE_MAP
+from app.delivery_windows import SCHEDULE_OPTIONS
 from app.harness.state import ConversationState
 
-SCHEDULE_OPTIONS = (
-    "1. Mañana temprano — 07:00 AM a 09:00 AM\n"
-    "2. Mañana — 09:00 AM a 11:00 AM\n"
-    "3. Mediodía — 11:00 AM a 02:00 PM\n"
-    "4. Tarde — 02:00 PM a 05:00 PM\n"
-    "5. Tarde-noche — 04:00 PM a 07:00 PM"
-)
-
-_SCHEDULE_MAP = {
-    "1": "07:00 AM a 09:00 AM",
-    "2": "09:00 AM a 11:00 AM",
-    "3": "11:00 AM a 02:00 PM",
-    "4": "02:00 PM a 05:00 PM",
-    "5": "04:00 PM a 07:00 PM",
-}
+__all__ = [
+    "SCHEDULE_OPTIONS",
+    "advance_checkout",
+    "parse_schedule",
+    "resolve_chosen_product",
+    "start_checkout",
+    "wants_checkout",
+]
 
 _BUY_RE = re.compile(
     r"lo\s+quiero|me\s+lo\s+llevo|quiero\s+(ese|esa|este|esta|comprar)|"
@@ -79,8 +75,12 @@ def advance_checkout(state: ConversationState, user_text: str) -> tuple[Conversa
         return state, "¿Para qué fecha lo necesitas? 📅", meta
 
     if step == "district":
-        # No guardar intenciones de compra como nombre de distrito.
-        if wants_checkout(text) or len(text) > 80:
+        # No guardar como distrito lo que claramente no lo es: una intención de
+        # compra ("lo quiero") o el nombre de un producto que le mostramos.
+        looks_like_product = (
+            resolve_chosen_product(state, text, allow_implicit=False) is not None
+        )
+        if wants_checkout(text) or len(text) > 80 or looks_like_product:
             return state, "¡Perfecto! 🎉 ¿A qué distrito lo enviamos?", meta
         if text:
             state.district = text
@@ -163,3 +163,68 @@ def start_checkout(state: ConversationState, product_name: str = "", product_id:
         state.chosen_product_id = product_id
     state.checkout_step = "district" if not state.district else "date"
     return state
+
+
+_ORDINALS: dict[str, int] = {
+    "primero": 0, "primera": 0, "1": 0, "uno": 0,
+    "segundo": 1, "segunda": 1, "2": 1, "dos": 1,
+    "tercero": 2, "tercera": 2, "3": 2, "tres": 2,
+    "cuarto": 3, "cuarta": 3, "4": 3, "cuatro": 3,
+    "quinto": 4, "quinta": 4, "5": 4, "cinco": 4,
+}
+
+
+def resolve_chosen_product(
+    state: ConversationState, user_text: str, *, allow_implicit: bool = True
+) -> tuple[int, str] | None:
+    """¿A cuál de los productos mostrados se refiere el cliente?
+
+    Sin esto el resumen del pedido decía literalmente "Producto elegido": el
+    cierre arrancaba sin saber qué se estaba vendiendo. Devuelve `None` si es
+    ambiguo, y entonces preguntar es mejor que adivinar.
+
+    `allow_implicit=False` exige una referencia explícita (nombre u ordinal). Lo
+    usa el router: con un solo producto a la vista, "quiero flores" es una
+    búsqueda nueva, no la compra de ese producto.
+    """
+    recent = [p for p in (state.recent_products or []) if p.get("id_producto")]
+    if not recent:
+        return None
+
+    text = _norm(user_text)
+
+    # 1. Por nombre: "me gusta el panda", "quiero el Ramo de Girasoles".
+    matches = [
+        p for p in recent
+        if (name := _norm(p.get("nombre") or "")) and _name_hit(name, text)
+    ]
+    if len(matches) == 1:
+        return int(matches[0]["id_producto"]), str(matches[0].get("nombre") or "")
+
+    # 2. Por ordinal: "el segundo", "la 3".
+    for word, index in _ORDINALS.items():
+        if re.search(rf"\b(?:el|la|opci[oó]n|numero|n[uú]mero)?\s*{word}\b", text):
+            if index < len(recent):
+                chosen = recent[index]
+                return int(chosen["id_producto"]), str(chosen.get("nombre") or "")
+            break
+
+    # 3. "ese" / "lo quiero" sin más: solo es unívoco si mostramos uno solo.
+    if allow_implicit and len(recent) == 1:
+        return int(recent[0]["id_producto"]), str(recent[0].get("nombre") or "")
+
+    return None
+
+
+def _norm(text: str) -> str:
+    text = unicodedata.normalize("NFD", (text or "").casefold())
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _name_hit(name: str, text: str) -> bool:
+    """Un nombre de producto acierta si alguna palabra suya larga sale en el texto."""
+    if name and name in text:
+        return True
+    words = [w for w in name.split() if len(w) >= 5]
+    return any(w in text for w in words)

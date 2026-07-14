@@ -1,6 +1,10 @@
 """
-Loop agéntico adaptado al sandbox: envía por WhatsApp Cloud API y handoff vía CRM.
-Soporta ejecución de tools en paralelo (excepto handoff/memoria).
+Loop agéntico: ejecuta un especialista del harness contra OpenAI, envía por
+WhatsApp Cloud API y hace el handoff vía CRM.
+
+Devuelve un `AgentResult`, no un `str`: el orquestador necesita saber qué
+productos citó el especialista para poder reducir el estado. Las reglas de
+negocio (cuándo un handoff procede) viven en `harness/policies.py`, no aquí.
 """
 from __future__ import annotations
 
@@ -8,20 +12,29 @@ import asyncio
 import json
 import logging
 import random
-import re
-import unicodedata
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.crm import repository as repo
+from app.harness.contracts import AgentResult, EscalateReason, Product, extract_products
+from app.harness.policies import (
+    handoff_policy,
+    is_payment_reason,
+    is_small_talk,
+    should_discard_handoff,
+)
 from app.services.messenger import notify_team, send_message, set_typing
 from app.tools import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS, execute_tool
 
 log = logging.getLogger(__name__)
 
 HANDOFF_DONE = "__handoff_done__"
+
+# Alias privados: los tests de regresión de handoff/charla trivial apuntan aquí.
+_is_small_talk = is_small_talk
+_should_discard_handoff = should_discard_handoff
 
 # Un 429 de OpenAI suele ser un pico de rate limit que se resuelve en segundos.
 # Sin reintento, el bucle devolvía None y el chat quedaba aparcado en HUMAN
@@ -94,21 +107,6 @@ _FILLER_BY_TOOL: dict[str, list[str]] = {
     "buscar_conocimiento_equipo": ["Déjame verificar eso para darte la mejor respuesta 😊"],
 }
 
-# Saludos cortos: no mandar filler temprano (evita "Un momento..." + saludo real).
-_GREETING_RE = re.compile(
-    r"^(?:"
-    r"h+o+l+a+s?|holis|"
-    r"buenas?|"
-    r"buen[oa]s?\s+d[ií]as?|"
-    r"buenas?\s+tardes?|"
-    r"buenas?\s+noches?|"
-    r"qu[eé]\s+tal|"
-    r"c[oó]mo\s+est[aá]s?|"
-    r"hey|hi|hello|saludos?"
-    r")"
-    r"(?:\s+(?:a\s+todos?|amigo|amiga|equipo|don\s*regalo))?$"
-)
-
 _filler_conversations: set[int] = set()
 
 
@@ -119,144 +117,6 @@ def _filler_for_tools(tool_calls: list) -> str | None:
         if opciones:
             return random.choice(opciones)
     return None
-
-
-def _latest_user_text(messages: list) -> str | None:
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            texts: list[str] = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") in ("image_url", "image"):
-                    return None
-                if part.get("type") == "text":
-                    texts.append(part.get("text") or "")
-            joined = "\n".join(t for t in texts if t).strip()
-            return joined or None
-        return None
-    return None
-
-
-def _normalize_greeting_text(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text).lower().strip()
-    text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
-    text = re.sub(r"[^\w\sáéíóúüñ]", " ", text, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _is_simple_greeting(messages: list) -> bool:
-    """True si el último mensaje del usuario es solo un saludo breve."""
-    raw = _latest_user_text(messages)
-    if not raw or len(raw) > 80:
-        return False
-    norm = _normalize_greeting_text(raw)
-    if not norm or len(norm) > 60:
-        return False
-    return bool(_GREETING_RE.match(norm))
-
-
-# Vocabulario de cortesía: "ok gracias", "todo en orden hoy", "jaja", "👍"...
-# Un mensaje formado SOLO por estas palabras no pide nada, así que no hay nada
-# que escalar. Lista blanca corta a propósito: preferimos dejar pasar charla
-# trivial a suprimir una escalación de verdad.
-_SMALL_TALK_WORDS = frozenset(
-    """
-    gracias muchas mil ok oka okay okey vale listo perfecto genial excelente
-    buenisimo entiendo entendido claro dale bueno buena ya ah aja si no nada
-    todo bien en orden correcto estamos igualmente a ti usted de acuerdo por
-    ahora hoy amigo amiga saludos chevere tranquilo tranquila
-    """.split()
-)
-
-
-def _is_small_talk(messages: list) -> bool:
-    """True si el último mensaje del usuario es cortesía o charla sin pedido."""
-    raw = _latest_user_text(messages)
-    if not raw or len(raw) > 80 or "?" in raw:
-        return False
-
-    if _is_simple_greeting(messages):
-        return True
-
-    norm = _normalize_greeting_text(raw)
-    if not norm:
-        # Se quedó vacío al normalizar: era solo emojis ("👍", "😊").
-        return True
-
-    tokens = norm.split()
-    if not tokens or len(tokens) > 6:
-        return False
-
-    # "jaja", "jejeje", "jjj"... son risas, no un pedido.
-    return all(
-        t in _SMALL_TALK_WORDS or re.fullmatch(r"(?:ja|je|ji|ha)+|j+", t)
-        for t in tokens
-    )
-
-
-# Si el cliente pide esto, el handoff SÍ procede aunque también diga "corporativo".
-_HANDOFF_FORCE_RE = re.compile(
-    r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
-    r"comprobante|ya\s+pagu|transfer[ií]|"
-    r"descuento|cancelar|modificar\s+(el\s+)?pedido|"
-    r"mala\s+atenci|no\s+me\s+ayud|quiero\s+hablar\s+con",
-    re.IGNORECASE,
-)
-
-# Contexto de venta en curso: el bot debe seguir preguntando, no escalar.
-_SALES_CONTINUE_RE = re.compile(
-    r"corporativ|empresa|b2b|mayorista|colegio|instituci|"
-    r"recuerdo|exposici|fiestas?\s+patrias|patrias|"
-    r"cantidad|unidades|docena|presupuesto|cotizaci|"
-    r"cat[aá]logo|en\s+su\s+p[aá]gina|en\s+la\s+p[aá]gina|"
-    r"desayuno|cesta|suculenta|arreglo|girasol|rosa|ramo|floral|"
-    r"disponib|stock|horario|distrito|delivery|entrega|"
-    r"tarjeta|visa|mastercard|paypal|"
-    r"reserv[aoe]|me\s+gusta\s+est|elijo|escoger|"
-    r"\d+\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)|"
-    r"\b\d+\s*(?:y|,|/|&)\s*\d+\b|\by\s*\d+\b",
-    re.IGNORECASE,
-)
-
-
-def _should_discard_handoff(messages: list) -> bool | str:
-    """
-    True/motivo si hay que rechazar escalar_a_humano.
-    Charla trivial O venta en curso (corporativo, catálogo, opción 2 y 3…)
-    sin pedido explícito de humano/pago.
-    """
-    if _is_small_talk(messages):
-        return (
-            "El cliente no está pidiendo nada: es cortesía o charla suelta. "
-            "No se escala. Responde tú, corto y cálido, y deja la puerta abierta."
-        )
-    raw = _latest_user_text(messages)
-    if not raw:
-        return False
-    # Solo media (sin texto útil): seguir vendiendo, no escalar por “vacío”.
-    if re.fullmatch(r"\[(?:image|video|audio|document|sticker)\]", raw.strip(), re.I):
-        return (
-            "El cliente envió solo un archivo/media. Identifica el producto "
-            "(nombre en la captura si hay visión) o pregunta a qué se refiere; "
-            "NO escales."
-        )
-    if _HANDOFF_FORCE_RE.search(raw):
-        return False
-    if _SALES_CONTINUE_RE.search(raw):
-        return (
-            "El cliente sigue en un flujo de venta (producto, corporativo, "
-            "catálogo, campaña o eligiendo opciones). NO escalas: pregunta "
-            "cantidad, presupuesto, distrito o fecha, o muestra productos con "
-            "las tools. Solo escala si pide asesor, pago/comprobante, descuento "
-            "o cancelación."
-        )
-    return False
 
 
 async def _say(wa_id: str, text: str, persist) -> str | None:
@@ -287,6 +147,57 @@ async def run_agent(
     include_handoff: bool = True,
     include_memory: bool = True,
 ) -> str | None:
+    """Fachada de compatibilidad: solo el texto. Úsala fuera del harness."""
+    result = await run_specialist(
+        messages,
+        wa_id=wa_id,
+        contact_id=contact_id,
+        conversation_id=conversation_id,
+        session=session,
+        use_external_crm=use_external_crm,
+        persist=persist,
+        tools_override=tools_override,
+        include_handoff=include_handoff,
+        include_memory=include_memory,
+    )
+    if result.escalate is not None:
+        return HANDOFF_DONE
+    return result.user_facing
+
+
+async def run_specialist(
+    messages: list,
+    *,
+    wa_id: str,
+    contact_id: int | None = None,
+    conversation_id: int | None = None,
+    session: AsyncSession | None = None,
+    use_external_crm: bool = False,
+    persist=None,
+    tools_override: list | None = None,
+    include_handoff: bool = True,
+    include_memory: bool = True,
+) -> AgentResult:
+    """Ejecuta un especialista y devuelve lo que dijo Y lo que aprendió.
+
+    Los `artifacts` salen de los resultados de las tools, no de la prosa de la
+    respuesta: son la única fuente fiable de los ids de producto que el
+    orquestador necesita para no repetirlos después.
+    """
+    artifacts: list[Product] = []
+    seen_ids: set[int] = set()
+
+    def _absorb(raw_result: str) -> None:
+        try:
+            payload = json.loads(raw_result)
+        except (TypeError, ValueError):
+            return
+        for product in extract_products(payload):
+            if product.id_producto in seen_ids:
+                continue
+            seen_ids.add(product.id_producto)
+            artifacts.append(product)
+
     if tools_override is not None:
         all_tools = list(tools_override)
     else:
@@ -342,7 +253,9 @@ async def run_agent(
                 if not tool_calls:
                     if early_filler_task and not early_filler_task.done():
                         early_filler_task.cancel()
-                    return msg.get("content")
+                    return AgentResult(
+                        user_facing=msg.get("content"), artifacts=artifacts
+                    )
 
                 messages.append(msg)
 
@@ -381,20 +294,20 @@ async def run_agent(
 
                         # Red de seguridad: el modelo a veces escala ventas sanas
                         # ("regalos corporativos", "2 y 3") o charla trivial.
-                        discard = _should_discard_handoff(messages)
-                        if discard:
+                        decision = handoff_policy(messages)
+                        if not decision.allow:
                             log.info(
                                 "[HANDOFF] descartado conversation=%s motivo_modelo=%s motivo_guard=%s",
                                 conversation_id,
                                 motivo,
-                                discard[:80],
+                                decision.reason[:80],
                             )
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": call["id"],
                                 "content": json.dumps({
                                     "ok": False,
-                                    "motivo": discard,
+                                    "motivo": decision.reason,
                                 }, ensure_ascii=False),
                             })
                             continue
@@ -411,22 +324,25 @@ async def run_agent(
                         await notify_team(
                             f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
                         )
-                        # Persist handoff reason for payment releaser exemption.
+                        # El releaser exime los handoff de pago del retorno HUMAN→AI:
+                        # un asesor cobrando puede tardar horas en contestar.
+                        is_payment = is_payment_reason(motivo)
                         if conversation_id is not None:
                             try:
                                 from app.harness.state import load_state, save_state
 
                                 st = await load_state(conversation_id, wa_id=wa_id or "")
                                 st.handoff_reason = motivo or st.handoff_reason
-                                if any(
-                                    t in (motivo or "").casefold()
-                                    for t in ("pago", "comprobante", "yape", "transfer")
-                                ):
+                                if is_payment:
                                     st.checkout_step = "payment"
                                 await save_state(conversation_id, st, wa_id=wa_id or "")
                             except Exception as err:
                                 log.warning("[harness] no se guardó handoff_reason: %s", err)
-                        return HANDOFF_DONE
+                        return AgentResult(
+                            user_facing=None,
+                            artifacts=artifacts,
+                            escalate=EscalateReason(motivo=motivo, is_payment=is_payment),
+                        )
 
                     if fn == "guardar_datos_cliente":
                         if use_external_crm and wa_id:
@@ -466,6 +382,7 @@ async def run_agent(
 
                     results = await asyncio.gather(*[_run_one(c) for c in parallel])
                     for tool_call_id, result in results:
+                        _absorb(result)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
@@ -490,10 +407,13 @@ async def run_agent(
             )
             if early_filler_task and not early_filler_task.done():
                 early_filler_task.cancel()
-            return data["choices"][0]["message"].get("content")
+            return AgentResult(
+                user_facing=data["choices"][0]["message"].get("content"),
+                artifacts=artifacts,
+            )
     except Exception as e:
         log.error("Error en el bucle del agente: %s", e)
-        return None
+        return AgentResult(user_facing=None, artifacts=artifacts)
     finally:
         if early_filler_task and not early_filler_task.done():
             early_filler_task.cancel()
