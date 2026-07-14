@@ -16,6 +16,7 @@ from app.channels.whatsapp.webhook import router as whatsapp_router
 from app.config import settings
 from app.crm.api import router as crm_router
 from app.db import init_db
+from app.services.outbox_poller import start_outbox_drain, stop_outbox_drain
 from app.services.watchdog import start_watchdog, stop_watchdog
 
 logging.basicConfig(
@@ -44,8 +45,15 @@ async def lifespan(_app: FastAPI):
                 "[BOOT] CRM_INTERNAL_TOKEN inválido o de ejemplo — "
                 "debe coincidir EXACTO con crm_internal_token en config.php del CRM PHP"
             )
+        if settings.whatsapp_dry_run:
+            log.error(
+                "[BOOT] WHATSAPP_DRY_RUN=1 — los mensajes del asesor se verán en el CRM "
+                "pero NO llegarán a WhatsApp. Pon WHATSAPP_DRY_RUN=0 en EasyPanel."
+            )
     start_watchdog()
+    start_outbox_drain()
     yield
+    stop_outbox_drain()
     stop_watchdog()
 
 

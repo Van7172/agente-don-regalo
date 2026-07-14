@@ -1,12 +1,16 @@
 """Endpoints internos agent ↔ CRM (outbox del asesor)."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
 from app.crm import http_client as crm_http
-from app.services.messenger import send_media, send_message
+from app.services.outbox_drain import deliver_outbox
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -35,52 +39,19 @@ async def outbox_send(
 ):
     _check_token(x_agent_token)
     try:
-        media_key = body.media_path
-
-        if media_key and body.type in ("image", "audio", "document"):
-            # El CRM guarda el archivo; aquí se recupera, se convierte si hace
-            # falta (nota de voz webm → ogg) y se sube a Meta.
-            data, mime = await crm_http.fetch_media(media_key)
-            wa_mid = await send_media(
-                body.wa_id,
-                body.type,
-                data,
-                mime,
-                filename=body.filename,
-                caption=body.content,
-            )
-            # CRM exige content no vacío al persistir; placeholders los oculta el inbox.
-            stored_content = (body.content or "").strip()
-            if not stored_content:
-                if body.type == "document":
-                    stored_content = body.filename or "[document]"
-                elif body.type == "image":
-                    stored_content = "[image]"
-                elif body.type == "audio":
-                    stored_content = "[audio]"
-                else:
-                    stored_content = "[media]"
-        else:
-            if not body.content.strip():
-                raise ValueError("mensaje vacío")
-            wa_mid = await send_message(body.wa_id, body.content)
-            stored_content = body.content
-            media_key = None
-
-        if body.outbox_id and crm_http.crm_enabled():
-            await crm_http.mark_outbox(body.outbox_id, "sent")
-        if body.conversation_id and crm_http.crm_enabled():
-            await crm_http.append_outbound(
-                body.conversation_id,
-                stored_content,
-                sender_type="agent",
-                role="human",
-                wa_message_id=wa_mid,
-                media_url=media_key,
-            )
-            await crm_http.set_mode(body.conversation_id, "HUMAN")
-        return {"status": "ok", "wa_message_id": wa_mid}
+        return await deliver_outbox(
+            wa_id=body.wa_id,
+            content=body.content,
+            conversation_id=body.conversation_id,
+            outbox_id=body.outbox_id,
+            msg_type=body.type,
+            media_path=body.media_path,
+            filename=body.filename,
+        )
     except Exception as err:
+        log.error("[OUTBOX] push falló: %s", err)
         if body.outbox_id and crm_http.crm_enabled():
-            await crm_http.mark_outbox(body.outbox_id, "failed", str(err))
+            # Dejamos pending para el drenaje; solo marcamos failed si ya se intentó metada.
+            # Si Meta falló, sí marcamos failed para no reintentar en bucle eterno.
+            await crm_http.mark_outbox(body.outbox_id, "failed", str(err)[:500])
         raise HTTPException(502, f"send failed: {err}") from err

@@ -358,8 +358,22 @@ try {
 
         $agentUrl = rtrim((string) ($config['agent_base_url'] ?? ''), '/');
         $agentToken = (string) ($config['agent_internal_token'] ?? '');
-        if ($agentUrl === '') {
-            Http::jsonOk(['ok' => true, 'outbox_id' => $outboxId, 'queued' => true]);
+        $urlLooksFake = $agentUrl === ''
+            || strpos($agentUrl, 'XXXX') !== false
+            || strpos($agentUrl, 'example') !== false
+            || strpos($agentUrl, 'cambia-') !== false;
+
+        // Sin URL válida: dejamos pending para que el agente lo drene; avisamos al panel.
+        if ($urlLooksFake) {
+            Http::jsonOk([
+                'ok' => true,
+                'outbox_id' => $outboxId,
+                'queued' => true,
+                'pushed' => false,
+                'warning' =>
+                    'agent_base_url vacío o de ejemplo en config.php. '
+                    . 'El mensaje quedó en cola; configura la URL pública del agente en EasyPanel.',
+            ]);
         }
 
         $payload = json_encode([
@@ -374,8 +388,14 @@ try {
 
         $ch = curl_init($agentUrl . '/internal/outbox/send');
         if ($ch === false) {
-            Repository::markOutbox($outboxId, 'failed', 'curl_init failed');
-            Http::jsonError('No se pudo contactar al agente', 502);
+            // Pending: el drenaje del agente puede recuperarlo.
+            Http::jsonOk([
+                'ok' => true,
+                'outbox_id' => $outboxId,
+                'queued' => true,
+                'pushed' => false,
+                'warning' => 'No se pudo iniciar curl hacia el agente; mensaje en cola.',
+            ]);
         }
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -386,21 +406,30 @@ try {
             CURLOPT_POSTFIELDS => $payload,
             CURLOPT_RETURNTRANSFER => true,
             // Los medios tardan más: el agente descarga, convierte y sube a Meta.
-            CURLOPT_TIMEOUT => $type === 'text' ? 20 : 60,
+            CURLOPT_TIMEOUT => $type === 'text' ? 25 : 60,
         ]);
         $resBody = (string) curl_exec($ch);
+        $curlErr = curl_error($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
         // El agente ya: envió a WA, marcó el outbox, guardó el mensaje y puso modo HUMAN.
         // No insertar el mensaje aquí (evita duplicados en el inbox).
         if ($code < 200 || $code >= 300) {
-            Repository::markOutbox($outboxId, 'failed', substr($resBody, 0, 500) ?: "HTTP {$code}");
-            // Antes fallaba en silencio y el asesor creía que se había enviado.
-            Http::jsonError('El agente no pudo enviar el mensaje', 502);
+            // Dejamos pending (no failed) para que el drenaje del agente reintente.
+            $detail = $curlErr !== '' ? $curlErr : (substr($resBody, 0, 300) ?: "HTTP {$code}");
+            Http::jsonOk([
+                'ok' => true,
+                'outbox_id' => $outboxId,
+                'queued' => true,
+                'pushed' => false,
+                'warning' =>
+                    'El agente no respondió bien al push (' . $detail . '). '
+                    . 'Mensaje en cola; si en ~30s no llega a WhatsApp, revisa agent_base_url y AGENT_INTERNAL_TOKEN.',
+            ]);
         }
 
-        Http::jsonOk(['ok' => true, 'outbox_id' => $outboxId]);
+        Http::jsonOk(['ok' => true, 'outbox_id' => $outboxId, 'queued' => false, 'pushed' => true]);
     }
     if ($path === '/outbox' && $method === 'PATCH') {
         Auth::assertInternalToken();

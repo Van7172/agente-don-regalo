@@ -735,17 +735,20 @@
     setSending(true);
     try {
       if (!attachments.length) {
-        await api("/outbox", {
+        const json = await api("/outbox", {
           method: "POST",
           body: JSON.stringify({ conversation_id: selectedId, content }),
         });
+        if (json.queued && json.pushed === false) {
+          showError(json.warning || "Mensaje en cola hacia WhatsApp…");
+        }
       } else {
         // Un outbox por archivo (WA no agrupa álbumes desde Cloud API).
         // El texto del borrador va de pie en la primera imagen/doc.
         for (let i = 0; i < attachments.length; i++) {
           const file = attachments[i];
           const up = await uploadMedia(file.blob, file.name);
-          await api("/outbox", {
+          const json = await api("/outbox", {
             method: "POST",
             body: JSON.stringify({
               conversation_id: selectedId,
@@ -754,6 +757,9 @@
               filename: file.name,
             }),
           });
+          if (json.queued && json.pushed === false) {
+            showError(json.warning || "Mensaje en cola hacia WhatsApp…");
+          }
         }
       }
 
