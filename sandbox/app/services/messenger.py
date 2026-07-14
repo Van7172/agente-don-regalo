@@ -13,7 +13,17 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-_IMG_LINE = re.compile(r"^\s*(https?://\S+\.(?:jpg|jpeg|png|webp))\s*$", re.IGNORECASE)
+_IMG_EXT = r"(?:jpe?g|png|webp|gif)"
+# URL de imagen aunque el LLM la pegue con texto, números o querystring.
+_IMG_URL = re.compile(
+    rf"(https?://[^\s<>\"']+\.{_IMG_EXT})(?:\?[^\s<>\"']*)?",
+    re.IGNORECASE,
+)
+# Línea que es SOLO la URL (flujo ideal).
+_IMG_LINE = re.compile(
+    rf"^\s*(https?://\S+\.{_IMG_EXT}(?:\?\S*)?)\s*$",
+    re.IGNORECASE,
+)
 # Viñeta de producto: "• 🎁 *Nombre* — S/…" o sin asteriscos/emoji.
 _PRODUCT_BULLET = re.compile(
     r"^[\s•\*\-]+\s*"
@@ -23,6 +33,42 @@ _PRODUCT_BULLET = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_IMAGE_MIMES = {"image/jpeg", "image/png"}
+
+
+def _clean_image_url(raw: str) -> str:
+    """Quita puntuación pegada por el LLM al final de la URL."""
+    return str(raw or "").strip().rstrip(".,);]>\"'")
+
+
+def extract_image_url(line: str) -> tuple[str | None, str]:
+    """Si la línea trae una URL de imagen, devuelve (url, resto_de_texto)."""
+    m = _IMG_URL.search(line or "")
+    if not m:
+        return None, line or ""
+    url = _clean_image_url(m.group(0))
+    # Recortar de nuevo si el regex dejó puntuación dentro del match
+    url = _clean_image_url(url)
+    rest = ((line or "")[: m.start()] + (line or "")[m.end() :]).strip()
+    # Prefijos típicos: "1.", "•", "-", markdown
+    rest = re.sub(r"^[\s\-•*]+", "", rest)
+    rest = re.sub(r"^\d+[\).\:\-]\s*", "", rest)
+    return url, rest.strip()
+
+
+def normalize_product_image_lines(reply: str) -> str:
+    """Separa URL y viñeta cuando el modelo las pegó en la misma línea."""
+    if not reply:
+        return reply
+    out: list[str] = []
+    for line in reply.split("\n"):
+        url, rest = extract_image_url(line)
+        if url and (rest or not _IMG_LINE.match(line)):
+            out.append(url)
+            if rest:
+                out.append(rest)
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def human_delay(text: str) -> float:
@@ -49,14 +95,17 @@ def dedupe_products_in_reply(reply: str) -> str:
     if not reply:
         return reply
 
+    reply = normalize_product_image_lines(reply)
+
     seen: set[str] = set()
     out: list[str] = []
     skipping_dup = False
 
     for line in reply.split("\n"):
-        if _IMG_LINE.match(line):
+        url, _rest = extract_image_url(line)
+        if url:
             skipping_dup = False
-            out.append(line)
+            out.append(url)
             continue
 
         key = _product_key(line)
@@ -72,7 +121,7 @@ def dedupe_products_in_reply(reply: str) -> str:
         if skipping_dup:
             stripped = line.strip()
             # Descripción del duplicado (no vacío, no pregunta de cierre, no URL).
-            if stripped and not stripped.startswith("¿") and not _IMG_LINE.match(line):
+            if stripped and not stripped.startswith("¿") and not extract_image_url(stripped)[0]:
                 continue
             skipping_dup = False
 
@@ -82,7 +131,8 @@ def dedupe_products_in_reply(reply: str) -> str:
 
 
 def split_reply(reply: str) -> list[dict]:
-    reply = dedupe_products_in_reply(reply)
+    # dedupe ya normaliza líneas URL+texto pegados
+    reply = dedupe_products_in_reply(reply or "")
     lines = reply.split("\n")
     segments: list[dict] = []
     pending_image: str | None = None
@@ -94,15 +144,17 @@ def split_reply(reply: str) -> list[dict]:
         return text
 
     for line in lines:
-        m = _IMG_LINE.match(line)
-        if m:
+        url, rest = extract_image_url(line)
+        if url:
             if pending_image is not None:
                 segments.append({"type": "image", "url": pending_image, "caption": flush_text()})
             else:
                 leftover = flush_text()
                 if leftover:
                     segments.append({"type": "text", "text": leftover})
-            pending_image = m.group(1)
+            pending_image = url
+            if rest:
+                text_buffer.append(rest)
         else:
             text_buffer.append(line)
 
