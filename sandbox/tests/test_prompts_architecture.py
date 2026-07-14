@@ -84,16 +84,23 @@ def test_los_facts_van_solo_a_quien_los_necesita():
     assert "DEVOLUCIONES" in build_system(AGENTS["policy"], ConversationState())
 
 
-@pytest.mark.parametrize("name", ["checkout", "policy", "escalate"])
-def test_quien_habla_de_pagos_sabe_que_no_hay_contraentrega(name):
-    """El bot llegó a preguntar "¿pagas en línea o contra entrega?" — no existe.
+@pytest.mark.parametrize("name", sorted(AGENTS))
+def test_ningun_agente_puede_ofrecer_contraentrega(name):
+    """Don Regalo cobra por adelantado. No hay contraentrega, y PSE es colombiano.
 
-    El agente de cierre tenía la tool `metodos_pago` pero ningún dato de pago
-    inyectado, así que improvisaba medios (incluido PSE, que es colombiano).
+    La prohibición vive en el CORE, no en los facts de pago: el bot llegó a
+    preguntar "¿en línea o contra entrega?", y basta con que un agente sin datos de
+    pago se ponga creativo para volver a prometerle al cliente algo que no existe.
     """
     system = build_system(AGENTS[name], ConversationState())
-    assert "MÉTODOS DE PAGO" in system, f"{name} habla de pagos sin los datos"
     assert "NO existe el pago contra entrega" in system
+    assert "Nequi" in system  # el bloque completo, no una frase suelta
+
+
+@pytest.mark.parametrize("name", ["policy", "escalate"])
+def test_quien_habla_de_pagos_tiene_los_medios_reales(name):
+    system = build_system(AGENTS[name], ConversationState())
+    assert "MÉTODOS DE PAGO" in system, f"{name} habla de pagos sin los datos"
     assert "Yape / Plin" in system
 
 
