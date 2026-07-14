@@ -56,6 +56,7 @@
     btnSend: document.getElementById("btn-send"),
     fileInput: document.getElementById("file-input"),
     btnAttach: document.getElementById("btn-attach"),
+    saleCard: document.getElementById("sale-card"),
     btnRecord: document.getElementById("btn-record"),
     attachPreview: document.getElementById("attach-preview"),
     attachList: document.getElementById("attach-list"),
@@ -265,7 +266,10 @@
     const meta = STATUS_META[status];
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `list-item${c.id === selectedId ? " active" : ""}`;
+    // Venta cerrada por el agente: el chat va en verde. El vendedor solo tiene que
+    // entrar a cobrar; el pedido ya está cerrado y se muestra en la cabecera.
+    const sold = !!c.sale;
+    btn.className = `list-item${c.id === selectedId ? " active" : ""}${sold ? " is-sold" : ""}`;
 
     const wait = status === "help" ? waitLabel(c.last_message_at) : "";
     btn.innerHTML = `
@@ -281,6 +285,7 @@
         <div class="item-phone">${esc(c.contact?.wa_id || "")}</div>
         <div class="item-preview">${esc(c.last_message || "Sin mensajes")}</div>
         <div class="item-foot">
+          ${sold ? `<span class="tag tag-sold">💚 VENTA CERRADA</span>` : ""}
           <span class="tag ${meta.tag}">${esc(meta.badge)}</span>
           ${wait ? `<span class="item-wait">${esc(wait)}</span>` : ""}
         </div>
@@ -452,12 +457,41 @@
       .join("");
   }
 
+  /**
+   * Ficha del pedido que cerró el agente. Sin esto, el vendedor entra al chat y
+   * tiene que reconstruir producto, distrito, fecha y horario leyendo veinte
+   * mensajes hacia arriba.
+   */
+  function saleCard(sale) {
+    if (!sale) return "";
+    const fila = (etiqueta, valor) =>
+      valor ? `<div class="sale-row"><span>${etiqueta}</span><b>${esc(String(valor))}</b></div>` : "";
+    const envio =
+      sale.envio_sol != null ? `S/${Number(sale.envio_sol).toFixed(2)}` : "";
+
+    return `
+      <div class="sale-card">
+        <div class="sale-head">💚 Venta cerrada por Regalito — solo falta cobrar</div>
+        ${fila("Producto", sale.producto)}
+        ${fila("Distrito", sale.distrito)}
+        ${fila("Envío", envio)}
+        ${fila("Fecha", sale.fecha)}
+        ${fila("Horario", sale.horario)}
+      </div>`;
+  }
+
   function renderThread(conv, messages, lead) {
     el.chatPlaceholder.hidden = true;
     el.chatBody.hidden = false;
 
     const status = statusOf(conv);
     const name = displayName(conv);
+
+    if (el.saleCard) {
+      el.saleCard.innerHTML = saleCard(conv.sale);
+      el.saleCard.hidden = !conv.sale;
+    }
+    el.chatBody.classList.toggle("is-sold", !!conv.sale);
 
     el.chatAvatar.className = `avatar ${avatarClass(conv.contact?.wa_id || conv.id)}`;
     el.chatAvatar.textContent = initials(name);
@@ -654,6 +688,59 @@
     loadThread();
   }
 
+  // ── aviso sonoro del handoff ────────────────────────────────
+  //
+  // Los vendedores no viven mirando el panel. Cuando el agente cede el control
+  // ("necesita ayuda humana"), hay un cliente esperando AHORA. El pitido solo
+  // suena en la TRANSICIÓN, nunca en cada refresco: un panel que pita cada cuatro
+  // segundos se silencia el primer día y deja de servir para nada.
+
+  let audioCtx = null;
+
+  function beep() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      audioCtx = audioCtx || new AudioCtx();
+      // Los navegadores bloquean el audio hasta que el usuario interactúa.
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      const now = audioCtx.currentTime;
+      [880, 1320].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, now + i * 0.18);
+        gain.gain.exponentialRampToValueAtTime(0.25, now + i * 0.18 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.18 + 0.16);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(now + i * 0.18);
+        osc.stop(now + i * 0.18 + 0.18);
+      });
+    } catch (err) {
+      /* sin audio no pasa nada: el chat igual se pinta */
+    }
+  }
+
+  function notifyHandoff(conv) {
+    beep();
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      new Notification("Regalito pidió ayuda", {
+        body: `${displayName(conv)} necesita un asesor ahora.`,
+        tag: `handoff-${conv.id}`,
+      });
+    }
+  }
+
+  /** Solo los que ACABAN de pasar a "necesita ayuda humana". */
+  function alertOnHandoff(prev, next) {
+    if (!prev.length) return; // primera carga: no es una transición
+    const antes = new Set(prev.filter((c) => statusOf(c) === "help").map((c) => c.id));
+    const nuevos = next.filter((c) => statusOf(c) === "help" && !antes.has(c.id));
+    if (nuevos.length) notifyHandoff(nuevos[0]);
+  }
+
   async function loadList() {
     try {
       const json = await api("/conversations");
@@ -665,6 +752,7 @@
       const next = json.data;
       const sig = JSON.stringify(next);
       if (sig !== listSig) {
+        alertOnHandoff(conversations, next);
         listSig = sig;
         conversations = next;
         renderList();
@@ -937,6 +1025,28 @@
   el.btnBack.addEventListener("click", () => {
     root.dataset.mobileChat = "false";
   });
+
+  // Los navegadores bloquean audio y notificaciones hasta que el usuario
+  // interactúa con la página. Lo desbloqueamos en el primer clic del asesor; si no,
+  // el primer handoff del día sonaría en silencio.
+  document.addEventListener(
+    "click",
+    () => {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          audioCtx = audioCtx || new AudioCtx();
+          if (audioCtx.state === "suspended") audioCtx.resume();
+        }
+        if ("Notification" in window && Notification.permission === "default") {
+          Notification.requestPermission();
+        }
+      } catch (err) {
+        /* sin audio ni notificaciones el panel sigue funcionando */
+      }
+    },
+    { once: true }
+  );
 
   el.composer.addEventListener("submit", send);
 

@@ -12,6 +12,7 @@ Best-effort: nunca debe tumbar el agente.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Optional
@@ -20,6 +21,8 @@ import httpx
 
 from app.config import settings
 from app.crm import http_client as crm_http
+from app.harness.sale import sale_key
+from app.harness.sale import summary as sale_summary
 from app.services.messenger import send_message
 
 log = logging.getLogger(__name__)
@@ -31,6 +34,8 @@ REALERT_SEC = 30 * 60
 DAILY_EVERY_SEC = 20 * 60 * 60
 FALLBACK_WINDOW_SEC = 15 * 60
 FALLBACK_THRESHOLD = 3
+# Una venta cerrada que nadie atiende en 15 min es un lead enfriándose.
+SALE_IDLE_SEC = 15 * 60
 EMERGENCY_MARKERS = (
     "un asesor de nuestro equipo continúa contigo",
     "te conecto con un asesor",
@@ -229,9 +234,56 @@ async def check_human_abandoned() -> None:
         await _marcar("human_idle")
 
 
+async def check_unattended_sales() -> None:
+    """Ventas cerradas que nadie ha ido a cobrar.
+
+    Es la alerta que más dinero vale: el bot ya cerró el pedido (producto,
+    distrito, fecha, horario) y el cliente está esperando para pagar. Si el chat
+    verde lleva rato sin que ningún asesor entre, el lead se enfría solo.
+    """
+    if not crm_http.crm_enabled():
+        return
+
+    try:
+        pendientes = await crm_http.get_unanswered(SALE_IDLE_SEC, 24 * 3600)
+    except Exception as err:
+        log.warning("[watchdog] no pude listar pendientes: %s", err)
+        return
+
+    for conv in pendientes or []:
+        conv_id = conv.get("id") or conv.get("id_conversation")
+        if not conv_id:
+            continue
+        try:
+            raw = await crm_http.get_setting(sale_key(int(conv_id)))
+        except Exception:
+            continue
+        if not raw:
+            continue  # no hay venta cerrada en este chat
+
+        # Un aviso por venta. Si el asesor no entra, el recordatorio vuelve a los
+        # REALERT_SEC, no cada tick.
+        if await _en_cooldown(f"sale_{conv_id}"):
+            continue
+
+        try:
+            venta = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+
+        quien = conv.get("name") or conv.get("phone") or f"#{conv_id}"
+        ok = await _send_alert(
+            f"⏳ Venta cerrada SIN ATENDER hace más de {SALE_IDLE_SEC // 60} min\n"
+            f"Cliente: {quien}\n\n{sale_summary(venta, int(conv_id))}"
+        )
+        if ok:
+            await _marcar(f"sale_{conv_id}")
+
+
 async def _tick() -> None:
     try:
         await check_mute()
+        await check_unattended_sales()
         await check_human_abandoned()
         await check_balance()
         await check_fallback_spike()

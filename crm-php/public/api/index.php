@@ -143,6 +143,11 @@ try {
                     'bot_active' => (bool) $conv['bot_active'],
                     'human_support' => (bool) $conv['human_support'],
                     'last_message_at' => Repository::iso($conv['last_message_at']),
+                    // El agente cerró la venta: el panel pinta el chat en verde y
+                    // muestra el pedido para que el vendedor no lo reconstruya.
+                    'sale' => isset($conv['sale']) && $conv['sale'] !== null
+                        ? json_decode((string) $conv['sale'], true)
+                        : null,
                     'contact' => [
                         'wa_id' => $conv['wa_id'],
                         'name' => $conv['nombre_contact'],

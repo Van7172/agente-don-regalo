@@ -43,9 +43,13 @@
   --color-accent-2-800: #3d472b;
   --color-accent-2-900: #272e1b;
 
-  --font-heading: "Caprasimo", system-ui, sans-serif;
+  /* El fallback de emoji NO es decorativo: sin él, un mensaje del cliente que sea
+     solo un emoji se ve como una caja vacía (□). Ni Figtree ni Caprasimo traen
+     glifos de emoji, y el navegador no siempre sustituye por su cuenta. */
+  --emoji: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-heading: "Caprasimo", system-ui, var(--emoji), sans-serif;
   --font-heading-weight: 400;
-  --font-body: "Figtree", system-ui, sans-serif;
+  --font-body: "Figtree", system-ui, var(--emoji), sans-serif;
 
   --space-1: 4.4px;
   --space-2: 8.8px;
@@ -814,3 +818,54 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   .topbar-nav { gap: 2px; }
   .topbar-nav a { padding: 8px 12px; }
 }
+
+
+/* ── Venta cerrada por el agente ─────────────────────────────────
+   El bot cerró el pedido con todos los datos. El vendedor solo entra a cobrar,
+   así que el chat se distingue de un vistazo y el pedido va en la cabecera: sin
+   esto, hay que reconstruirlo leyendo veinte mensajes hacia arriba. */
+
+.list-item.is-sold {
+  background: linear-gradient(90deg, rgba(34, 160, 90, 0.16), rgba(34, 160, 90, 0.04));
+  border-left: 4px solid #22a05a;
+}
+.list-item.is-sold.active {
+  background: linear-gradient(90deg, rgba(34, 160, 90, 0.28), rgba(34, 160, 90, 0.1));
+}
+
+.tag-sold {
+  background: #22a05a;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.sale-card-wrap[hidden] { display: none; }
+
+.sale-card {
+  margin: 12px 16px 0;
+  padding: 12px 14px;
+  border: 1px solid #22a05a;
+  border-left: 5px solid #22a05a;
+  border-radius: 10px;
+  background: rgba(34, 160, 90, 0.08);
+  font-size: 14px;
+}
+
+.sale-head {
+  font-weight: 700;
+  color: #14713d;
+  margin-bottom: 8px;
+}
+
+.sale-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+.sale-row span { color: #4a5a50; }
+.sale-row b { text-align: right; }
+
+/* Emoji sueltos en una burbuja: que se vean grandes, como en WhatsApp. */
+.bubble { font-family: var(--font-body); }

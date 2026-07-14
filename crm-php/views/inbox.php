@@ -90,6 +90,9 @@
           </button>
         </div>
 
+        <!-- Venta cerrada por el agente: el pedido, ya listo, para que el
+             vendedor no lo reconstruya leyendo el hilo. -->
+        <div class="sale-card-wrap" id="sale-card" hidden></div>
         <div class="thread" id="thread"></div>
 
         <!-- Bot al mando: sin composer, hay que tomar la conversación -->

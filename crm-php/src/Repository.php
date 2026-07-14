@@ -86,17 +86,24 @@ final class Repository
     {
         $tenantId = self::ensureTenantId();
         $limit = max(1, min(200, $limit));
+        // `sale`: el agente cerró la venta con todos los datos del pedido. El panel
+        // pinta ese chat en verde para que el vendedor entre directo a cobrarlo.
         return Database::fetchAll(
             "SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support, c.last_message_at,
                     ct.wa_id, ct.nombre_contact,
+                    s.valor_setting AS sale,
                     (SELECT m.content_message FROM crm_messages m
                      WHERE m.id_conversation = c.id_conversation
                      ORDER BY m.id_message DESC LIMIT 1) AS last_message_preview
              FROM crm_conversations c
              JOIN crm_contacts ct ON ct.id_contact = c.id_contact
+             LEFT JOIN crm_settings s
+                    ON s.id_tenant = c.id_tenant
+                   AND s.llave_setting = CONCAT('sale_', c.id_conversation)
              WHERE c.id_tenant = :tenantId
-             ORDER BY c.human_support DESC,
+             ORDER BY (s.valor_setting IS NOT NULL) DESC,
+                      c.human_support DESC,
                       COALESCE(c.last_message_at, c.fecha_creacion) DESC
              LIMIT {$limit}",
             ['tenantId' => $tenantId]
@@ -108,9 +115,13 @@ final class Repository
         return Database::fetchOne(
             'SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support, c.last_message_at,
-                    ct.wa_id, ct.nombre_contact
+                    ct.wa_id, ct.nombre_contact,
+                    s.valor_setting AS sale
              FROM crm_conversations c
              JOIN crm_contacts ct ON ct.id_contact = c.id_contact
+             LEFT JOIN crm_settings s
+                    ON s.id_tenant = c.id_tenant
+                   AND s.llave_setting = CONCAT(\'sale_\', c.id_conversation)
              WHERE c.id_conversation = :id LIMIT 1',
             ['id' => $id]
         );
@@ -565,6 +576,10 @@ final class Repository
             'bot_active' => (bool) $c['bot_active'],
             'human_support' => (bool) $c['human_support'],
             'last_message_at' => self::iso($c['last_message_at']),
+            // Venta cerrada por el agente: el panel lo pinta en verde.
+            'sale' => isset($c['sale']) && $c['sale'] !== null
+                ? json_decode((string) $c['sale'], true)
+                : null,
             'contact' => [
                 'wa_id' => $c['wa_id'],
                 'name' => $c['nombre_contact'],

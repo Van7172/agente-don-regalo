@@ -27,6 +27,7 @@ from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
 from app.harness.policies import dedupe_artifacts, latest_user_text
 from app.harness.registry import spec_for
+from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
 from app.harness.router import classify
 from app.harness.state import ConversationState, load_state, save_state
@@ -197,7 +198,14 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     if not meta.get("escalate"):
         return AgentResult(user_facing=reply)
 
-    # Resumen confirmado: el pago lo coordina un humano.
+    # Resumen confirmado: el bot cerró la venta. Se lo dejamos anotado al vendedor
+    # (el CRM pinta ese chat en verde) ANTES de escalar, para que cuando entre ya
+    # tenga el pedido delante en vez de reconstruirlo leyendo el hilo.
+    conversation_id = ctx.get("conversation_id")
+    if conversation_id is not None:
+        await announce_sale(conversation_id, state)
+
+    # El pago lo coordina un humano.
     motivo = state.handoff_reason or "cliente listo para pagar / coordinar comprobante"
     escalated = await _run_specialty(
         "escalate",
