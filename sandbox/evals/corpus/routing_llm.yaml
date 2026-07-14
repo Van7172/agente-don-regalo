@@ -1,0 +1,43 @@
+# Mensajes que las REGLAS no saben clasificar: aquí es donde entra el LLM.
+#
+# Antes, todos estos caían en el catch-all y acababan en el catálogo. El peor es
+# "Me llegó dañado": una queja que terminaba en el buscador de productos.
+#
+# Estos casos SÍ llaman a OpenAI, así que no corren en CI por defecto:
+#   RUN_LLM_EVALS=1 pytest tests/test_evals_llm.py -q
+#   RUN_LLM_EVALS=1 python -m evals.runner --llm
+
+- id: ocasion-sin-pedido-explicito
+  text: "Mi esposa cumple años mañana"
+  expect_intent: catalog_search
+  note: "Quien cuenta a quién le regala está buscando un regalo."
+
+- id: para-quien-es
+  text: "Es para mi mamá que cumple 60"
+  expect_intent: catalog_search
+
+- id: gusto-vago
+  text: "Necesito algo bonito y elegante"
+  expect_intent: catalog_search
+
+- id: horario-coloquial
+  text: "¿A qué hora abren?"
+  expect_intent: policy_faq
+  note: "Las reglas solo conocían 'horario de atención'."
+
+- id: recojo-en-tienda
+  text: "¿Puedo recogerlo yo mismo?"
+  expect_intent: policy_faq
+
+- id: queja-producto-danado
+  text: "Me llegó dañado"
+  expect_intent: escalate
+  note: "Una queja acababa en el buscador de productos."
+
+- id: pedido-no-llego
+  text: "Nadie ha venido y ya es tardísimo"
+  expect_intent: escalate
+
+- id: presupuesto
+  text: "Tengo 100 soles nada más"
+  expect_intent: catalog_search

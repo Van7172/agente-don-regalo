@@ -115,11 +115,59 @@ def run_handoff() -> list[Result]:
 
 
 def run_all() -> list[Result]:
+    """Solo lo determinista: sin OpenAI, sin API. Es lo que corre en CI."""
     return [*run_routing(), *run_replies(), *run_handoff()]
 
 
+async def run_routing_llm() -> list[Result]:
+    """Los mensajes que las reglas NO saben clasificar. Llama a OpenAI de verdad.
+
+    Mide justo el hueco que antes se tragaba el catálogo, así que es el único
+    conjunto donde el clasificador LLM se está evaluando a sí mismo.
+    """
+    from app.harness.router import classify, classify_rules
+
+    out: list[Result] = []
+    for case in _load("routing_llm"):
+        state = _state(case.get("state"))
+
+        rules = classify_rules(case["text"], state)
+        if rules.source != "fallback":
+            # Si las reglas ya lo resuelven, este caso ya no pertenece aquí.
+            out.append(
+                Result(
+                    case_id=case["id"],
+                    kind="routing_llm",
+                    passed=rules.intent == case["expect_intent"],
+                    detail=f"lo resolvieron las reglas ({rules.intent})",
+                )
+            )
+            continue
+
+        got = await classify(case["text"], state)
+        out.append(
+            Result(
+                case_id=case["id"],
+                kind="routing_llm",
+                passed=got.intent == case["expect_intent"],
+                detail=(
+                    f"esperaba {case['expect_intent']}, obtuvo {got.intent} "
+                    f"(conf {got.confidence:.2f}, {got.source})"
+                ),
+            )
+        )
+    return out
+
+
 def main() -> int:
-    results = run_all()
+    import sys
+
+    if "--llm" in sys.argv:
+        import asyncio
+
+        results = asyncio.run(run_routing_llm())
+    else:
+        results = run_all()
     fallos = [r for r in results if not r.passed]
 
     for r in results:

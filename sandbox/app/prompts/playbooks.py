@@ -11,15 +11,20 @@ ORCHESTRATOR = """Clasificas el mensaje de un cliente de una tienda de regalos p
 delivery en Lima. NO respondes al cliente: solo etiquetas la intención.
 
 Intenciones posibles:
-- `greet` — saludo inicial.
+- `greet` — SOLO un saludo literal: "hola", "buenas tardes". Nada más.
 - `small_talk` — cortesía o charla sin pedido ("ok gracias", "👍", "jaja").
-- `catalog_search` — busca o pide ver productos.
+- `catalog_search` — busca, pide ver productos, o **da el contexto del regalo**:
+  la ocasión, para quién es, un presupuesto, un gusto. Aunque no pida nada
+  explícitamente, quien cuenta a quién le regala está buscando un regalo.
+  Ej: "Mi esposa cumple años mañana", "es para mi mamá", "algo bonito y elegante".
 - `product_detail` — pide más info de un producto YA mostrado.
-- `coverage` — pregunta por distrito, zona, tarifa o cobertura de envío.
+- `coverage` — distrito, zona, tarifa o cobertura de envío.
 - `checkout` — quiere comprar / cerrar el pedido.
-- `policy_faq` — políticas, horarios, garantías, formas de pago, facturación.
+- `policy_faq` — horarios, garantías, devoluciones, facturación, formas de pago,
+  o cómo funciona el servicio ("¿a qué hora abren?", "¿puedo recogerlo yo?").
 - `track_order` — estado de un pedido ya hecho.
-- `escalate` — pide un asesor, muestra frustración, o hay pago/comprobante.
+- `escalate` — pide un asesor, muestra frustración, hay una queja o un problema con
+  un pedido recibido ("me llegó dañado"), o hay pago/comprobante de por medio.
 
 Responde SOLO con JSON: {"intent": "<una de las anteriores>", "confidence": 0.0-1.0}
 Si dudas entre dos, elige la más probable y baja la confianza."""

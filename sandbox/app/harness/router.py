@@ -1,13 +1,30 @@
-"""Clasificador de intención (heurístico + barato). El Master LLM puede refinar después."""
+"""Router de intención: reglas deterministas + clasificador LLM de respaldo.
+
+Las reglas son rápidas y precisas cuando aciertan. El problema era qué pasaba
+cuando NO acertaban: el caso por defecto devolvía `catalog_search`, así que
+cualquier mensaje que ninguna regla reconociera acababa buscando productos. Los
+dos bugs que cazó el corpus el primer día tenían justo esa forma.
+
+Ahora las reglas devuelven confianza, y por debajo de `CONFIDENCE_FLOOR` decide un
+clasificador LLM barato. Si el LLM falla o no hay clave, mandan las reglas: el
+router nunca puede tumbar un turno.
+"""
 from __future__ import annotations
 
+import json
+import logging
 import re
 import unicodedata
+from dataclasses import dataclass
+
+import httpx
 
 from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import looks_like_coverage
 from app.harness.policies import is_small_talk
 from app.harness.state import ConversationState
+
+log = logging.getLogger(__name__)
 
 Intent = str  # greet|small_talk|catalog_search|coverage|product_detail|checkout|policy_faq|track_order|escalate
 
@@ -54,10 +71,32 @@ def _strip_accents(text: str) -> str:
     return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
 
 
+@dataclass(frozen=True)
+class Classification:
+    intent: Intent
+    confidence: float
+    source: str  # "rules" | "llm" | "fallback"
+
+
+# Por debajo de esto, las reglas no saben: entra el clasificador LLM.
+CONFIDENCE_FLOOR = 0.5
+
+
 def classify_intent(text: str, state: ConversationState | None = None) -> Intent:
+    """Solo la etiqueta de las reglas. Determinista: no llama a nadie."""
+    return classify_rules(text, state).intent
+
+
+def classify_rules(text: str, state: ConversationState | None = None) -> Classification:
+    """Reglas: rápidas y precisas cuando aciertan, mudas cuando no.
+
+    Devuelven confianza para que el orquestador sepa si puede fiarse. El caso por
+    defecto (catálogo) sale con confianza baja a propósito: era el agujero por el
+    que se colaba todo lo que ninguna regla reconocía.
+    """
     raw = (text or "").strip()
     if not raw:
-        return "small_talk"
+        return Classification("small_talk", 0.9, "rules")
 
     state = state or ConversationState()
 
@@ -67,17 +106,17 @@ def classify_intent(text: str, state: ConversationState | None = None) -> Intent
     norm = _strip_accents(raw)
 
     if _ESCALATE_RE.search(norm):
-        return "escalate"
+        return Classification("escalate", 0.95, "rules")
 
     if _TRACK_RE.search(norm):
-        return "track_order"
+        return Classification("track_order", 0.95, "rules")
 
     # Cierre en curso: prioridad al FSM
     if state.checkout_step and state.checkout_step not in ("idle", "done", "payment"):
-        return "checkout"
+        return Classification("checkout", 1.0, "rules")
 
     if wants_checkout(norm) or norm.casefold() in ("ese", "esa", "este", "esta"):
-        return "checkout"
+        return Classification("checkout", 0.9, "rules")
 
     # "quiero el panditas" nombra un producto que YA se mostró: es una compra, no
     # una búsqueda nueva. Exigimos referencia explícita (nombre u ordinal): con un
@@ -86,35 +125,111 @@ def classify_intent(text: str, state: ConversationState | None = None) -> Intent
         _BUY_VERB_RE.search(norm)
         and resolve_chosen_product(state, raw, allow_implicit=False) is not None
     ):
-        return "checkout"
+        return Classification("checkout", 0.95, "rules")
 
     if looks_like_coverage(norm) and not _CATALOG_RE.search(norm[:40]):
-        return "coverage"
+        return Classification("coverage", 0.85, "rules")
 
     # Cobertura pura (pregunta de zonas)
     if re.search(r"zonas?\s+cubren|distritos?\s+de\s+lima|llegan\s+a", norm, re.I):
-        return "coverage"
+        return Classification("coverage", 0.95, "rules")
 
     if _DETAIL_RE.search(norm) and state.shown_product_ids:
-        return "product_detail"
+        return Classification("product_detail", 0.9, "rules")
 
     if _POLICY_RE.search(norm):
-        return "policy_faq"
+        return Classification("policy_faq", 0.85, "rules")
 
     if _GREET_RE.match(norm) and len(raw) < 40:
-        return "greet"
+        return Classification("greet", 0.95, "rules")
 
     # Misma definición de cortesía que usa la política de handoff. Antes el router
     # tenía la suya, más pobre: "Todo en orden hoy" no le sonaba a charla y acababa
     # en el catálogo, buscando productos para alguien que no pedía nada.
     if is_small_talk([{"role": "user", "content": raw}]):
-        return "small_talk"
+        return Classification("small_talk", 0.9, "rules")
 
     if _CATALOG_RE.search(norm):
-        return "catalog_search"
+        return Classification("catalog_search", 0.8, "rules")
 
     # Si hay distrito pendiente y mensaje corto tipo lugar → coverage
     if len(raw) < 60 and looks_like_coverage(norm):
-        return "coverage"
+        return Classification("coverage", 0.7, "rules")
 
-    return "catalog_search"
+    # Ninguna regla reconoció el mensaje. Antes se devolvía `catalog_search` a
+    # secas y el cliente acababa recibiendo productos que no pidió. Ahora sale con
+    # confianza baja para que `classify()` se lo pase al clasificador LLM.
+    return Classification("catalog_search", 0.3, "fallback")
+
+
+VALID_INTENTS = frozenset(
+    {
+        "greet",
+        "small_talk",
+        "catalog_search",
+        "product_detail",
+        "coverage",
+        "checkout",
+        "policy_faq",
+        "track_order",
+        "escalate",
+    }
+)
+
+
+async def classify(text: str, state: ConversationState | None = None) -> Classification:
+    """Reglas primero; el LLM solo cuando las reglas no saben.
+
+    Las reglas resuelven la inmensa mayoría de los turnos sin coste ni latencia.
+    El LLM entra únicamente en el hueco que antes se tragaba el catálogo.
+    """
+    rules = classify_rules(text, state)
+    if rules.confidence >= CONFIDENCE_FLOOR:
+        return rules
+
+    llm = await classify_with_llm(text)
+    return llm or rules
+
+
+async def classify_with_llm(text: str) -> Classification | None:
+    """Clasificador barato con salida estructurada. `None` si no se puede."""
+    from app.config import settings
+
+    if not settings.openai_api_key:
+        return None
+
+    from app.prompts.playbooks import ORCHESTRATOR
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json={
+                    "model": settings.router_model,
+                    "messages": [
+                        {"role": "system", "content": ORCHESTRATOR},
+                        {"role": "user", "content": (text or "")[:500]},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0,
+                },
+            )
+            r.raise_for_status()
+            data = json.loads(r.json()["choices"][0]["message"]["content"])
+    except Exception as err:
+        # El router nunca puede tumbar un turno: si el LLM falla, mandan las reglas.
+        log.warning("[router] clasificador LLM no disponible: %s", err)
+        return None
+
+    intent = str(data.get("intent") or "").strip()
+    if intent not in VALID_INTENTS:
+        log.warning("[router] el LLM devolvió una intención desconocida: %r", intent)
+        return None
+
+    try:
+        confidence = float(data.get("confidence", 0.6))
+    except (TypeError, ValueError):
+        confidence = 0.6
+
+    return Classification(intent, min(max(confidence, 0.0), 1.0), "llm")

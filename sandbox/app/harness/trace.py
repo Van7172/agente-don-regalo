@@ -23,6 +23,8 @@ class Trace:
     conversation_id: int | None = None
     intent: str = ""
     agent: str = ""
+    confidence: float = 1.0
+    router: str = ""       # rules | llm | fallback
     checkout_step: str = ""
     user_text: str = ""
     tools: list[str] = field(default_factory=list)

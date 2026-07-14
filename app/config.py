@@ -43,6 +43,9 @@ class Settings:
 
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        # Clasificador de intención del router: solo se usa cuando las reglas no
+        # saben, así que puede ser el modelo más barato disponible.
+        self.router_model: str = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
 
         self.bot_active_label: str = os.getenv("BOT_ACTIVE_LABEL", "agente_on")
         self.human_support_label: str = os.getenv("HUMAN_SUPPORT_LABEL", "soporte_humano")

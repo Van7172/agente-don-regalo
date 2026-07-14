@@ -26,7 +26,7 @@ from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
 from app.harness.policies import dedupe_artifacts, latest_user_text
 from app.harness.registry import spec_for
-from app.harness.router import classify_intent
+from app.harness.router import classify
 from app.harness.state import ConversationState, load_state, save_state
 from app.harness.trace import Trace
 from app.prompts.compose import build_system
@@ -80,13 +80,16 @@ async def run_master(
         else ConversationState()
     )
 
-    intent = classify_intent(turn.text, state)
+    classification = await classify(turn.text, state)
+    intent = classification.intent
     state.intent_last = intent
 
     trace = Trace(
         conversation_id=conversation_id,
         intent=intent,
         agent=spec_for(intent).name,
+        confidence=classification.confidence,
+        router=classification.source,
         checkout_step=state.checkout_step,
         user_text=turn.text,
     )

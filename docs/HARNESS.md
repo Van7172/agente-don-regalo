@@ -141,6 +141,29 @@ con el patrón de rastreo porque los patrones estaban escritos sin tildes, y "To
 en orden hoy" acababa en el catálogo buscando productos para alguien que no pedía
 nada.
 
+## El router es híbrido
+
+Las reglas (`harness/router.py`) son rápidas y precisas cuando aciertan. El
+problema era qué pasaba cuando **no** acertaban: el caso por defecto devolvía
+`catalog_search`, así que cualquier mensaje que ninguna regla reconociera acababa
+buscando productos. Medido sobre frases reales de cliente, **la mitad caían por ese
+agujero** — incluido "Me llegó dañado", una queja que terminaba en el buscador.
+
+Ahora las reglas devuelven **confianza** y, por debajo de `CONFIDENCE_FLOOR`,
+decide un clasificador LLM barato (`ROUTER_MODEL`, por defecto el mismo mini).
+
+Tres garantías, todas con test en `tests/test_router_hibrido.py`:
+
+1. **Si las reglas saben, el LLM no se llama.** Cuesta dinero y latencia en un
+   canal donde el cliente mira el "escribiendo…".
+2. **Si el LLM falla** (timeout, 429, sin clave), mandan las reglas: un router
+   caído no puede dejar a nadie sin respuesta.
+3. **Si el LLM inventa una intención**, se descarta en vez de propagarla al
+   registro de agentes.
+
+La traza de cada turno registra `confidence` y `router` (`rules` | `llm` |
+`fallback`), así que se puede medir cuánto se está usando el LLM en producción.
+
 ## Invariantes con test
 
 - `test_prompts_architecture.py` — todo agente de cara al cliente lleva las
