@@ -45,7 +45,11 @@ _ESCALATE_RE = re.compile(
 )
 _POLICY_RE = re.compile(
     r"politica|pol[ií]tica|horario\s+de\s+atenci|garant|devoluci|factura|"
-    r"hasta\s+que\s+hora\s+puedo\s+pagar|metodo\s+de\s+pago|c[oó]mo\s+pago",
+    r"hasta\s+que\s+hora\s+puedo\s+pagar|m[eé]todos?\s+de\s+pago|c[oó]mo\s+pago|"
+    # Preguntas de pago tal como las escribe el cliente. Sin esto, "¿puedo pagar
+    # contra entrega?" en mitad del cierre lo absorbía el FSM.
+    r"puedo\s+pagar|formas?\s+de\s+pago|contra\s*entrega|contraentrega|"
+    r"pagar\s+en\s+efectivo|aceptan\s+(yape|plin|tarjeta|transferencia)",
     re.I,
 )
 _CATALOG_RE = re.compile(
@@ -111,8 +115,15 @@ def classify_rules(text: str, state: ConversationState | None = None) -> Classif
     if _TRACK_RE.search(norm):
         return Classification("track_order", 0.95, "rules")
 
-    # Cierre en curso: prioridad al FSM
+    # Cierre en curso: manda el FSM… salvo que el cliente pregunte otra cosa.
+    #
+    # Antes esto devolvía `checkout` con confianza 1.0 pasara lo que pasara, así que
+    # "¿puedo pagar contra entrega?" en mitad del cierre no recibía respuesta:
+    # recibía el siguiente paso del formulario. El cierre no se pierde — el paso
+    # sigue en el estado y el FSM lo retoma en el turno siguiente.
     if state.checkout_step and state.checkout_step not in ("idle", "done", "payment"):
+        if _POLICY_RE.search(norm):
+            return Classification("policy_faq", 0.8, "rules")
         return Classification("checkout", 1.0, "rules")
 
     if wants_checkout(norm) or norm.casefold() in ("ese", "esa", "este", "esta"):

@@ -72,3 +72,31 @@
   state:
     checkout_step: district
   expect_intent: checkout
+
+# Regresión: el FSM se tragaba CUALQUIER mensaje durante el cierre. Preguntar
+# "¿puedo pagar contra entrega?" mientras el bot pedía la fecha no obtenía
+# respuesta: obtenía el siguiente paso del formulario.
+- id: pregunta-de-pago-durante-el-cierre
+  text: "¿Puedo pagar contra entrega?"
+  state:
+    checkout_step: date
+  expect_intent: policy_faq
+
+- id: metodos-de-pago-durante-el-cierre
+  text: "¿Qué métodos de pago tienen?"
+  state:
+    checkout_step: schedule
+  expect_intent: policy_faq
+
+- id: factura-durante-el-cierre
+  text: "¿Hacen factura?"
+  state:
+    checkout_step: card
+  expect_intent: policy_faq
+
+# …pero una respuesta al paso sigue siendo del FSM.
+- id: respuesta-al-paso-sigue-en-el-fsm
+  text: "el viernes"
+  state:
+    checkout_step: date
+  expect_intent: checkout

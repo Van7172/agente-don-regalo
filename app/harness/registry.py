@@ -41,7 +41,10 @@ class AgentSpec:
     tool_names: tuple[str, ...] = ()
     customer_facing: bool = True
     can_handoff: bool = False
-    # El orquestador nunca escribe al cliente; los demás sí.
+    # `deterministic`: el orquestador lo resuelve en código y NUNCA llama al LLM
+    # con este spec. Su playbook y sus facts son documentación del flujo, no un
+    # prompt: no los lee ningún modelo. Ver `master._handle`.
+    deterministic: bool = False
 
     def tools(self, *, with_memory: bool = False, with_handoff: bool = False) -> list:
         out = [_BY_NAME[n] for n in self.tool_names if n in _BY_NAME]
@@ -77,21 +80,23 @@ AGENTS: dict[str, AgentSpec] = {
         facts=("pricing",),
         tool_names=("detalle_producto", "productos_similares"),
     ),
+    # Cobertura y cierre los resuelve el código (`harness/coverage.py` y
+    # `harness/checkout.py`). Sus tools las llama el orquestador directamente, no
+    # un LLM: por eso `deterministic=True`.
     "coverage": AgentSpec(
         name="coverage",
         playbook=playbooks.COVERAGE,
         facts=("delivery",),
         tool_names=("distritos_cobertura", "buscar_conocimiento_equipo"),
+        deterministic=True,
     ),
     "checkout": AgentSpec(
         name="checkout",
         playbook=playbooks.CHECKOUT,
-        # `payment` es obligatorio aquí: sin él, el agente de cierre tenía la tool
-        # `metodos_pago` pero ningún dato, e improvisaba medios inexistentes
-        # ("¿pagas en línea o contra entrega?", "PSE").
         facts=("delivery", "pricing", "payment"),
         tool_names=("distritos_cobertura", "metodos_pago"),
         can_handoff=True,
+        deterministic=True,
     ),
     "policy": AgentSpec(
         name="policy",
