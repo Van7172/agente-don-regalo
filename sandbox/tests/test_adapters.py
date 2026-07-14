@@ -84,6 +84,25 @@ def test_el_detalle_usa_otra_forma_mas_y_tambien_se_normaliza():
     assert p["descripcion"], "el detalle conserva sus campos extra"
 
 
+def test_el_slug_de_categoria_sale_de_url_categoria():
+    """La API usa `url_categoria` (API.md nota #4), no `categoria_url`.
+
+    El servidor corrigió la contradicción y renombró el campo. El adapter leía el
+    nombre viejo, así que dejó de captar el slug y `enforce_category` no podía
+    filtrar los resultados de las listas de la API (solo los de Qdrant).
+    """
+    raw = {
+        "id_producto": 1,
+        "nombre_producto": "Desayuno de Amor",
+        "precio_producto": 30,
+        "url_categoria": "desayunos-de-amor",
+        "nombre_categoria": "Desayunos de Amor",
+    }
+    p = adapters.product(raw, RATE)
+    assert p["categoria_slug"] == "desayunos-de-amor"
+    assert p["categoria"] == "Desayunos de Amor"
+
+
 def test_una_oferta_conserva_el_precio_de_lista():
     raw = {
         "id_producto": 9,

@@ -66,7 +66,8 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    una cuarta de distrito, todo en **USD**. Todo pasa por
    [`tools/adapters.py`](app/tools/adapters.py), que normaliza a una forma canónica y
    convierte a soles. `tipo_cambio` NO es tool de ningún agente: el dinero lo calcula
-   el adapter, no el LLM.
+   el adapter, no el LLM. El contrato oficial de la API está en [`API.md`](API.md);
+   el slug de categoría es **siempre `url_categoria`** (no `categoria_url`).
 3. **Si el cliente nombra una categoría, es un límite duro.** La API manda; solo si no
    tiene nada de esa categoría entra Qdrant, y esos productos van marcados
    `aproximado: true` para que el bot diga que son alternativas
@@ -120,5 +121,7 @@ python -m pytest tests/ -q       # 281 pasan, offline
   productos con imagen `null` (id 1235).~~ **Corregido en producción (jul 2026):**
   devuelve JSON; con `imagen_url: null` la foto sale de `imagenes[]` y el adapter la
   recupera. Verificado de punta a punta.
-- La API se autocontradice: categorías usan `url_categoria`, productos `categoria_url`.
-  El adapter acepta ambas.
+- ~~La API se autocontradecía: categorías usaban `url_categoria`, productos
+  `categoria_url`.~~ **Corregido en producción (jul 2026):** ahora es `url_categoria`
+  en todas partes (API.md nota #4). El adapter lee ese campo; mantiene `categoria_url`
+  solo como respaldo histórico.

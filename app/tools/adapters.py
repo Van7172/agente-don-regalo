@@ -96,12 +96,21 @@ def product(raw: dict[str, Any], rate: float) -> dict[str, Any] | None:
     lista_usd = _num(raw.get("precio_producto")) or _num(raw.get("precio"))
 
     categoria = raw.get("categoria")
-    if isinstance(categoria, dict):  # forma del detalle
+    if isinstance(categoria, dict):  # forma del detalle: {"url": ..., "nombre": ...}
         categoria_nombre = str(categoria.get("nombre") or "")
-        categoria_slug = str(categoria.get("url") or "")
+        categoria_slug = str(categoria.get("url") or categoria.get("url_categoria") or "")
     else:
         categoria_nombre = str(raw.get("nombre_categoria") or categoria or "")
-        categoria_slug = str(raw.get("categoria_url") or raw.get("categoria_slug") or "")
+        # `url_categoria` es el campo canónico (API.md nota #4). `categoria_url` fue
+        # la variante contradictoria que ya se corrigió en el servidor; se mantiene
+        # como respaldo por si algún endpoint viejo la sigue devolviendo. Y
+        # `categoria_slug` es el que trae Qdrant en su payload.
+        categoria_slug = str(
+            raw.get("url_categoria")
+            or raw.get("categoria_url")
+            or raw.get("categoria_slug")
+            or ""
+        )
 
     canonical: dict[str, Any] = {
         "id_producto": pid,
@@ -204,12 +213,14 @@ def products_payload(payload: Any, rate: float, *, default_slug: str = "") -> An
 
     productos = [p for p in (product(raw, rate) for raw in items) if p]
 
+    # El sobre de `/categorias/{slug}/productos` usa las claves de la API
+    # (`url_categoria`, `nombre_categoria`), no `url`/`nombre`.
     sobre = data.get("categoria") if isinstance(data, dict) else None
     slug_sobre = ""
     nombre_sobre = ""
     if isinstance(sobre, dict):
-        slug_sobre = str(sobre.get("url") or sobre.get("categoria_url") or "")
-        nombre_sobre = str(sobre.get("nombre") or "")
+        slug_sobre = str(sobre.get("url_categoria") or sobre.get("url") or "")
+        nombre_sobre = str(sobre.get("nombre_categoria") or sobre.get("nombre") or "")
 
     slug = default_slug or slug_sobre
     if slug:
