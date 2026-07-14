@@ -52,14 +52,13 @@
     composerWrap: document.getElementById("composer-wrap"),
     composer: document.getElementById("composer"),
     draft: document.getElementById("draft"),
+    slashMenu: document.getElementById("slash-menu"),
     btnSend: document.getElementById("btn-send"),
     fileInput: document.getElementById("file-input"),
     btnAttach: document.getElementById("btn-attach"),
     btnRecord: document.getElementById("btn-record"),
     attachPreview: document.getElementById("attach-preview"),
-    attachIcon: document.getElementById("attach-icon"),
-    attachName: document.getElementById("attach-name"),
-    attachSize: document.getElementById("attach-size"),
+    attachList: document.getElementById("attach-list"),
     attachClear: document.getElementById("attach-clear"),
     recBar: document.getElementById("recording-bar"),
     recTime: document.getElementById("rec-time"),
@@ -74,14 +73,43 @@
   };
 
   const MAX_BYTES = 16 * 1024 * 1024;
+  const MAX_ATTACH = 10;
 
   let conversations = [];
   let selectedId = null;
   let query = "";
   let listSig = "";
   let threadSig = "";
-  let pendingFile = null; // File o Blob elegido/grabado, aún sin enviar
+  let pendingFiles = []; // [{ blob, name, kind }]
   let sending = false;
+
+  // Mensajes rápidos fijos (editar aquí / redeploy CRM). Slash: /
+  const QUICK_REPLIES = [
+    {
+      cmd: "formulario",
+      label: "Pedir formulario de pedido",
+      body:
+        "Llene los siguientes datos en este formulario para registrar su pedido porfavor. Es importante nos avise una vez lo termine. No coloque comillas simples ' ni emojis.",
+    },
+    {
+      cmd: "origen",
+      label: "Encuesta: ¿dónde nos encontraste?",
+      body:
+        "Buenas tardes, Queríamos hacerle una consulta rápida 🙏 ¿Dónde nos encontraste? 👀\n1️⃣ Google\n2️⃣ Instagram\n3️⃣ TikTok\n4️⃣ Facebook\n5️⃣ RAPPI",
+    },
+    {
+      cmd: "ubicacion",
+      label: "Pedir pin de Google Maps (MZ/Lte)",
+      body:
+        "Dado que la ubicación es por MZ y Lte le pido compartir la ubicación exacta del lugar de entrega por Google maps, ya que puede tomar mucho tiempo llegar a la ubicación y la idea es llegar a tiempo.",
+    },
+  ];
+
+  let slashOpen = false;
+  let slashMatches = [];
+  let slashIndex = 0;
+  let slashRange = null; // { start, end } del token /cmd en el draft
+
 
   // ── utilidades ──────────────────────────────────────────────
 
@@ -466,24 +494,60 @@
     return "document";
   }
 
-  function setPendingFile(file, name) {
+  function renderPendingFiles() {
+    if (!pendingFiles.length) {
+      el.attachPreview.hidden = true;
+      el.attachList.innerHTML = "";
+      return;
+    }
+    el.attachPreview.hidden = false;
+    el.attachList.innerHTML = pendingFiles
+      .map(
+        (f, i) => `<div class="attach-item">
+          <div class="attach-icon">${ATTACH_ICONS[f.kind]}</div>
+          <div class="attach-meta">
+            <div class="attach-name">${esc(f.name)}</div>
+            <div class="attach-size">${esc(humanSize(f.blob.size || 0))}</div>
+          </div>
+          <button type="button" class="icon-btn attach-remove" data-idx="${i}" aria-label="Quitar adjunto">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>`
+      )
+      .join("");
+  }
+
+  function addPendingFile(file, name) {
     if (file.size > MAX_BYTES) {
       showError(`El archivo pesa ${humanSize(file.size)}; el máximo es 16 MB.`);
       return;
     }
-    pendingFile = { blob: file, name: name || file.name || "archivo", kind: kindOfFile(file) };
-    el.attachIcon.innerHTML = ATTACH_ICONS[pendingFile.kind];
-    el.attachName.textContent = pendingFile.name;
-    el.attachSize.textContent = humanSize(file.size);
-    el.attachPreview.hidden = false;
+    if (pendingFiles.length >= MAX_ATTACH) {
+      showError(`Máximo ${MAX_ATTACH} archivos por envío.`);
+      return;
+    }
+    pendingFiles.push({
+      blob: file,
+      name: name || file.name || "archivo",
+      kind: kindOfFile(file),
+    });
+    renderPendingFiles();
     showError("");
     el.draft.focus();
   }
 
-  function clearPendingFile() {
-    pendingFile = null;
-    el.attachPreview.hidden = true;
+  function clearPendingFiles() {
+    pendingFiles = [];
     el.fileInput.value = "";
+    renderPendingFiles();
+  }
+
+  function removePendingAt(idx) {
+    pendingFiles.splice(idx, 1);
+    renderPendingFiles();
   }
 
   // ── grabación de nota de voz ────────────────────────────────
@@ -550,7 +614,8 @@
 
       const blob = new Blob(recChunks, { type: format });
       const ext = extForMime(format);
-      setPendingFile(blob, `nota-de-voz.${ext}`);
+      clearPendingFiles();
+      addPendingFile(blob, `nota-de-voz.${ext}`);
     });
 
     recorder.start();
@@ -575,7 +640,8 @@
     selectedId = id;
     threadSig = "";
     root.dataset.mobileChat = "true";
-    clearPendingFile();
+    clearPendingFiles();
+    hideSlashMenu();
     renderList();
     loadThread();
   }
@@ -663,24 +729,37 @@
     if (selectedId == null || sending) return;
 
     const content = (el.draft.value || "").trim();
-    const attachment = pendingFile;
-    if (!content && !attachment) return;
+    const attachments = pendingFiles.slice();
+    if (!content && !attachments.length) return;
 
     setSending(true);
     try {
-      const payload = { conversation_id: selectedId, content };
-
-      if (attachment) {
-        const up = await uploadMedia(attachment.blob, attachment.name);
-        payload.media_path = up.key;
-        payload.filename = attachment.name;
+      if (!attachments.length) {
+        await api("/outbox", {
+          method: "POST",
+          body: JSON.stringify({ conversation_id: selectedId, content }),
+        });
+      } else {
+        // Un outbox por archivo (WA no agrupa álbumes desde Cloud API).
+        // El texto del borrador va de pie en la primera imagen/doc.
+        for (let i = 0; i < attachments.length; i++) {
+          const file = attachments[i];
+          const up = await uploadMedia(file.blob, file.name);
+          await api("/outbox", {
+            method: "POST",
+            body: JSON.stringify({
+              conversation_id: selectedId,
+              content: i === 0 ? content : "",
+              media_path: up.key,
+              filename: file.name,
+            }),
+          });
+        }
       }
-
-      await api("/outbox", { method: "POST", body: JSON.stringify(payload) });
 
       el.draft.value = "";
       el.draft.style.height = "auto";
-      clearPendingFile();
+      clearPendingFiles();
       listSig = "";
       await Promise.all([loadThread(), loadList()]);
       showError("");
@@ -699,6 +778,130 @@
       localStorage.setItem("dr.leadPanelCollapsed", collapsed ? "1" : "0");
     } catch {
       /* almacenamiento no disponible: el panel no recuerda su estado */
+    }
+  }
+
+  // ── mensajes rápidos (/) ────────────────────────────────────
+
+  function hideSlashMenu() {
+    slashOpen = false;
+    slashMatches = [];
+    slashIndex = 0;
+    slashRange = null;
+    if (el.slashMenu) {
+      el.slashMenu.hidden = true;
+      el.slashMenu.innerHTML = "";
+    }
+  }
+
+  /** Detecta un token /cmd justo antes del caret. */
+  function detectSlashToken(text, caret) {
+    const before = text.slice(0, caret ?? text.length);
+    const m = before.match(/(^|\s)\/([^\s]*)$/);
+    if (!m) return null;
+    const query = m[2];
+    const start = before.length - query.length - 1;
+    return { query: query.toLowerCase(), start, end: caret ?? text.length };
+  }
+
+  function filterQuickReplies(query) {
+    const q = String(query || "").toLowerCase();
+    if (!q) return QUICK_REPLIES.slice();
+    return QUICK_REPLIES.filter(
+      (r) =>
+        r.cmd.includes(q) ||
+        r.label.toLowerCase().includes(q) ||
+        r.body.toLowerCase().includes(q)
+    );
+  }
+
+  function renderSlashMenu() {
+    if (!el.slashMenu || !slashOpen) return;
+    if (!slashMatches.length) {
+      el.slashMenu.hidden = false;
+      el.slashMenu.innerHTML =
+        `<div class="slash-empty">Sin coincidencias. Prueba /formulario, /origen o /ubicacion.</div>`;
+      return;
+    }
+    el.slashMenu.hidden = false;
+    el.slashMenu.innerHTML =
+      `<div class="slash-menu-hint">Mensajes rápidos</div>` +
+      slashMatches
+        .map((r, i) => {
+          const preview = String(r.body).replace(/\s+/g, " ").slice(0, 110);
+          return `<button type="button" class="slash-item${i === slashIndex ? " is-active" : ""}" role="option" data-idx="${i}" aria-selected="${i === slashIndex}">
+            <div class="slash-item-cmd">/${esc(r.cmd)}</div>
+            <div class="slash-item-label">${esc(r.label)}</div>
+            <div class="slash-item-preview">${esc(preview)}</div>
+          </button>`;
+        })
+        .join("");
+  }
+
+  function refreshSlashMenu() {
+    const text = el.draft.value || "";
+    const caret = el.draft.selectionStart ?? text.length;
+    const token = detectSlashToken(text, caret);
+    if (!token) {
+      hideSlashMenu();
+      return;
+    }
+    slashRange = { start: token.start, end: token.end };
+    slashMatches = filterQuickReplies(token.query);
+    if (slashIndex >= slashMatches.length) slashIndex = Math.max(0, slashMatches.length - 1);
+    slashOpen = true;
+    renderSlashMenu();
+  }
+
+  function applyQuickReply(item) {
+    if (!item || !slashRange) return;
+    const text = el.draft.value || "";
+    const before = text.slice(0, slashRange.start);
+    const after = text.slice(slashRange.end);
+    const next = before + item.body + after;
+    el.draft.value = next;
+    const pos = before.length + item.body.length;
+    el.draft.focus();
+    el.draft.setSelectionRange(pos, pos);
+    el.draft.style.height = "auto";
+    el.draft.style.height = `${Math.min(el.draft.scrollHeight, 120)}px`;
+    hideSlashMenu();
+  }
+
+  function onDraftKeydown(e) {
+    if (slashOpen && slashMatches.length) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        slashIndex = (slashIndex + 1) % slashMatches.length;
+        renderSlashMenu();
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+        renderSlashMenu();
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        applyQuickReply(slashMatches[slashIndex]);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        applyQuickReply(slashMatches[slashIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hideSlashMenu();
+        return;
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      el.composer.requestSubmit();
     }
   }
 
@@ -725,25 +928,42 @@
 
   el.btnAttach.addEventListener("click", () => el.fileInput.click());
   el.fileInput.addEventListener("change", () => {
-    const file = el.fileInput.files?.[0];
-    if (file) setPendingFile(file);
+    const files = el.fileInput.files;
+    if (!files?.length) return;
+    for (const file of files) addPendingFile(file);
+    el.fileInput.value = "";
   });
-  el.attachClear.addEventListener("click", clearPendingFile);
+  el.attachClear.addEventListener("click", clearPendingFiles);
+  el.attachList.addEventListener("click", (e) => {
+    const btn = e.target.closest(".attach-remove");
+    if (!btn) return;
+    removePendingAt(Number(btn.dataset.idx));
+  });
 
   el.btnRecord.addEventListener("click", startRecording);
   el.recStop.addEventListener("click", () => stopRecording(false));
   el.recCancel.addEventListener("click", () => stopRecording(true));
 
-  el.draft.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      el.composer.requestSubmit();
-    }
-  });
+  el.draft.addEventListener("keydown", onDraftKeydown);
   el.draft.addEventListener("input", () => {
     el.draft.style.height = "auto";
     el.draft.style.height = `${Math.min(el.draft.scrollHeight, 120)}px`;
+    refreshSlashMenu();
   });
+  el.draft.addEventListener("click", refreshSlashMenu);
+  el.draft.addEventListener("keyup", (e) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) refreshSlashMenu();
+  });
+  if (el.slashMenu) {
+    el.slashMenu.addEventListener("mousedown", (e) => {
+      // Evita que el textarea pierda el caret antes del click.
+      e.preventDefault();
+      const btn = e.target.closest(".slash-item");
+      if (!btn) return;
+      const idx = Number(btn.dataset.idx);
+      applyQuickReply(slashMatches[idx]);
+    });
+  }
 
   el.search.addEventListener("input", () => {
     query = el.search.value.trim();

@@ -110,14 +110,10 @@
             <button type="button" class="btn btn-secondary" id="btn-ai-banner">Devolver a Regalito</button>
           </div>
 
-          <!-- Adjunto elegido, aún sin enviar -->
+          <!-- Adjuntos elegidos, aún sin enviar (varios permitidos) -->
           <div class="attach-preview" id="attach-preview" hidden>
-            <div class="attach-icon" id="attach-icon"></div>
-            <div class="attach-meta">
-              <div class="attach-name" id="attach-name"></div>
-              <div class="attach-size" id="attach-size"></div>
-            </div>
-            <button type="button" class="icon-btn" id="attach-clear" aria-label="Quitar adjunto">
+            <div class="attach-list" id="attach-list"></div>
+            <button type="button" class="icon-btn" id="attach-clear" aria-label="Quitar todos los adjuntos" title="Quitar todos">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -133,8 +129,11 @@
             <button type="button" class="btn btn-primary" id="rec-stop">Listo</button>
           </div>
 
+          <!-- Mensajes rápidos: escribir / en el draft -->
+          <div class="slash-menu" id="slash-menu" hidden role="listbox" aria-label="Mensajes rápidos"></div>
+
           <form class="composer" id="composer">
-            <input type="file" id="file-input" hidden
+            <input type="file" id="file-input" hidden multiple
                    accept="image/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip" />
 
             <button type="button" class="icon-btn icon-btn-outline" id="btn-attach" title="Adjuntar archivo" aria-label="Adjuntar archivo">
@@ -151,7 +150,7 @@
               </svg>
             </button>
 
-            <textarea class="input" id="draft" rows="1" placeholder="Escribe como asesor…"></textarea>
+            <textarea class="input" id="draft" rows="1" placeholder="Escribe como asesor… ( / mensajes rápidos )"></textarea>
 
             <button type="submit" class="btn btn-primary btn-round" id="btn-send" aria-label="Enviar">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

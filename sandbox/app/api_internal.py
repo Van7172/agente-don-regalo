@@ -49,8 +49,17 @@ async def outbox_send(
                 filename=body.filename,
                 caption=body.content,
             )
-            # El texto de un documento es su nombre; en imagen/audio, el pie de foto.
-            stored_content = body.content or (body.filename if body.type == "document" else "")
+            # CRM exige content no vacío al persistir; placeholders los oculta el inbox.
+            stored_content = (body.content or "").strip()
+            if not stored_content:
+                if body.type == "document":
+                    stored_content = body.filename or "[document]"
+                elif body.type == "image":
+                    stored_content = "[image]"
+                elif body.type == "audio":
+                    stored_content = "[audio]"
+                else:
+                    stored_content = "[media]"
         else:
             if not body.content.strip():
                 raise ValueError("mensaje vacío")

@@ -190,17 +190,23 @@ try {
                 Http::jsonError('Conversation not found', 404);
             }
             $body = Http::readJson();
-            if (empty($body['content'])) {
-                Http::jsonError('content required');
+            $content = (string) ($body['content'] ?? '');
+            $mediaUrl = $body['media_url'] ?? null;
+            // Una foto/audio/doc puede ir sin pie de texto; el marcador lo usa el inbox.
+            if (trim($content) === '' && empty($mediaUrl)) {
+                Http::jsonError('content or media_url required');
+            }
+            if (trim($content) === '' && !empty($mediaUrl)) {
+                $content = '[media]';
             }
             $messageId = Repository::addMessage([
                 'conversationId' => $id,
                 'direction' => $body['direction'] ?? 'outbound',
                 'senderType' => $body['sender_type'] ?? 'bot',
                 'role' => $body['role'] ?? 'assistant',
-                'content' => (string) $body['content'],
+                'content' => $content,
                 'waMessageId' => $body['wa_message_id'] ?? null,
-                'mediaUrl' => $body['media_url'] ?? null,
+                'mediaUrl' => $mediaUrl,
             ]);
             Http::jsonOk(['ok' => true, 'message_id' => $messageId]);
         }
