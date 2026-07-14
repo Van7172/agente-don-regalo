@@ -188,6 +188,9 @@ EXCLUIDOS de las búsquedas; solo se incluyen en contexto de luto/condolencias.
 - Pedido el **mismo día** con coordinación previa por WhatsApp o teléfono
 - **Desayunos sorpresa**: solicitar con **1 día de anticipación**
 - Notificación al cliente por email y WhatsApp al realizar la entrega
+- **Sede / punto de despacho:** Calle La Habana 595, San Isidro, Lima.
+  Si preguntan dónde estamos, nuestra dirección o de dónde salen los pedidos, usa este dato.
+  No lo confundas con la dirección de entrega del cliente.
 
 ## RANGOS HORARIOS DE ENTREGA
 Al coordinar un pedido, el cliente puede elegir uno de estos rangos de llegada:
@@ -233,6 +236,7 @@ Al coordinar un pedido, el cliente puede elegir uno de estos rangos de llegada:
 - 📞 Llamadas de voz (atención / asesores): (+51) 977174485
 - 📧 Email: ventas@donregalo.pe
 - 🌐 donregalo.pe
+- 📍 **Sede despacho:** Calle La Habana 595, San Isidro, Lima
 - Si el cliente pregunta si puede **llamar** / quiere hablar por teléfono:
   - Indícale llamar al **977174485**.
   - Si prefiere seguir por escrito con una persona en este mismo chat → `escalar_a_humano`.
