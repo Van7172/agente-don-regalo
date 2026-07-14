@@ -175,8 +175,13 @@ def _items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def products_payload(payload: Any, rate: float) -> Any:
-    """Normaliza un payload de productos dejando siempre `data` como lista plana."""
+def products_payload(payload: Any, rate: float, *, default_slug: str = "") -> Any:
+    """Normaliza un payload de productos dejando siempre `data` como lista plana.
+
+    `default_slug`: los productos de `/categorias/{slug}/productos` llegan SIN su
+    categoría (está en el sobre, no en cada item). Sin estamparla, el filtro de
+    categoría los descartaría a todos por "no poder demostrar" que pertenecen.
+    """
     if not isinstance(payload, dict):
         return payload
 
@@ -198,10 +203,25 @@ def products_payload(payload: Any, rate: float) -> Any:
         return payload
 
     productos = [p for p in (product(raw, rate) for raw in items) if p]
-    out = {**payload, "data": productos, "total": len(productos)}
 
-    if isinstance(data, dict) and isinstance(data.get("categoria"), dict):
-        out["categoria"] = data["categoria"]
+    sobre = data.get("categoria") if isinstance(data, dict) else None
+    slug_sobre = ""
+    nombre_sobre = ""
+    if isinstance(sobre, dict):
+        slug_sobre = str(sobre.get("url") or sobre.get("categoria_url") or "")
+        nombre_sobre = str(sobre.get("nombre") or "")
+
+    slug = default_slug or slug_sobre
+    if slug:
+        for p in productos:
+            if not p.get("categoria_slug"):
+                p["categoria_slug"] = slug
+            if not p.get("categoria") and nombre_sobre:
+                p["categoria"] = nombre_sobre
+
+    out = {**payload, "data": productos, "total": len(productos)}
+    if isinstance(sobre, dict):
+        out["categoria"] = sobre
 
     return out
 

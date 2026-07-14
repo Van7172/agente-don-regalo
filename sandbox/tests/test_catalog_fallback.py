@@ -107,24 +107,57 @@ async def test_catalogo_terrarios_vacio_cae_a_semantico(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_semantico_con_categoria_sin_hits_amplia(monkeypatch):
-    calls = []
+async def test_semantico_sin_hits_pregunta_a_la_api_antes_que_ampliar(monkeypatch):
+    """Si Qdrant no encuentra en la categoría, manda la API — no se amplía a ciegas.
 
+    Antes se soltaba el filtro de categoría y se rellenaba con lo que fuera: así es
+    como un arreglo floral acabó en una lista de desayunos.
+    """
     async def fake_sem(client, args):
-        calls.append(dict(args))
-        if args.get("categoria_slug") == "terrarios":
+        return {"data": [], "total": 0, "fuente": "semantico"}
+
+    async def fake_cat(client, args):
+        return {
+            "data": [
+                {"id_producto": 7, "nombre": "Terrario Mágico", "categoria_slug": "terrarios"}
+            ],
+            "total": 1,
+        }
+
+    monkeypatch.setattr(ex.search, "buscar_semantico", fake_sem)
+    monkeypatch.setattr(ex.catalog, "catalogo_categoria", fake_cat)
+
+    data = json.loads(
+        await ex.execute_tool("buscar_semantico", {"q": "terrarios", "categoria_slug": "terrarios"})
+    )
+
+    assert data["total"] == 1
+    assert data["data"][0]["categoria_slug"] == "terrarios"
+    assert not data.get("aproximado"), "es de la categoría pedida: no es una alternativa"
+
+
+@pytest.mark.asyncio
+async def test_si_ni_la_api_tiene_la_categoria_los_parecidos_van_marcados(monkeypatch):
+    """Recién ahí entra el vectorial, y el cliente debe saber que son alternativas."""
+    async def fake_sem(client, args):
+        if args.get("categoria_slug"):
             return {"data": [], "total": 0, "fuente": "semantico"}
         return {
-            "data": [{"id_producto": 7, "nombre": "Terrario de piedras Mágicas"}],
+            "data": [{"id_producto": 9, "nombre": "Cesta Criolla", "categoria_slug": "cestas"}],
             "total": 1,
             "fuente": "semantico",
         }
 
+    async def fake_cat(client, args):
+        return {"data": [], "total": 0}
+
     monkeypatch.setattr(ex.search, "buscar_semantico", fake_sem)
-    raw = await ex.execute_tool(
-        "buscar_semantico",
-        {"q": "terrarios", "categoria_slug": "terrarios"},
+    monkeypatch.setattr(ex.catalog, "catalogo_categoria", fake_cat)
+
+    data = json.loads(
+        await ex.execute_tool("buscar_semantico", {"q": "chocolates", "categoria_slug": "chocolates"})
     )
-    data = json.loads(raw)
+
     assert data["total"] == 1
-    assert any(not c.get("categoria_slug") for c in calls)
+    assert data["aproximado"] is True
+    assert data["categoria_pedida"] == "chocolates"

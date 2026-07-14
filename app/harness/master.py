@@ -133,8 +133,15 @@ async def run_master(
     return result.user_facing
 
 
-def is_first_contact(messages: list) -> bool:
-    """Nadie de nuestro lado ha escrito todavía en esta conversación."""
+def is_first_contact(state: ConversationState, messages: list) -> bool:
+    """¿Hay que presentarse?
+
+    Manda el estado (`presented`), no el historial: la ventana de historial se
+    recorta a las últimas N horas, así que en un chat que ya existía el bot nunca
+    llegaba a presentarse — soltaba un "¡Hola! ¿En qué te ayudo?" genérico.
+    """
+    if state.presented:
+        return False
     return not any(m.get("role") == "assistant" for m in messages)
 
 
@@ -142,8 +149,8 @@ async def _handle(intent: str, turn: Turn, state: ConversationState, **ctx) -> A
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
 
     # ── Primer saludo: presentación determinista ──────────────────
-    if intent == "greet" and is_first_contact(turn.messages):
-        return AgentResult(user_facing=WELCOME)
+    if intent == "greet" and is_first_contact(state, turn.messages):
+        return AgentResult(user_facing=WELCOME, state_patch={"presented": True})
 
     # ── Cobertura: determinista, sin LLM ──────────────────────────
     if intent == "coverage":

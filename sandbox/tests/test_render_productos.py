@@ -8,6 +8,7 @@ un LLM que los formatee.
 import pytest
 
 from app.harness.contracts import Product
+from app.harness.state import ConversationState
 from app.harness.master import compose_product_reply, is_first_contact
 from app.prompts.playbooks import WELCOME
 from app.services.messenger import split_reply
@@ -72,7 +73,8 @@ def test_un_producto_sin_imagen_no_rompe_el_listado():
 # ── Saludo de presentación ────────────────────────────────────────────
 
 def test_el_primer_saludo_es_una_presentacion():
-    assert is_first_contact([{"role": "user", "content": "hola"}]) is True
+    nuevo = ConversationState()
+    assert is_first_contact(nuevo, [{"role": "user", "content": "hola"}]) is True
     assert "Regalito" in WELCOME
     assert "Don Regalo" in WELCOME
     assert "¿en qué puedo ayudarte hoy?" in WELCOME.casefold()
@@ -85,7 +87,17 @@ def test_si_ya_hablamos_no_es_primer_contacto():
         {"role": "assistant", "content": "¡Hola! 😊"},
         {"role": "user", "content": "hola de nuevo"},
     ]
-    assert is_first_contact(historial) is False
+    assert is_first_contact(ConversationState(), historial) is False
+
+
+def test_ya_presentados_manda_el_estado_aunque_el_historial_se_haya_recortado():
+    """La ventana de historial se recorta; el estado no.
+
+    Al revés también: en un chat que ya existía pero al que nunca nos presentamos,
+    el bot soltaba un "¡Hola! ¿En qué te ayudo?" genérico en vez de presentarse.
+    """
+    ya = ConversationState(presented=True)
+    assert is_first_contact(ya, [{"role": "user", "content": "hola"}]) is False
 
 
 @pytest.mark.asyncio

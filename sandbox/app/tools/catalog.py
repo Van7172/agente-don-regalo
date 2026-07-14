@@ -43,10 +43,16 @@ async def get(client: httpx.AsyncClient, url: str, params: dict | None = None):
 # USD. Aquí salen ya canónicos y en ambas monedas.
 
 
-async def _productos(client: httpx.AsyncClient, url: str, params: dict | None = None):
+async def _productos(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict | None = None,
+    *,
+    default_slug: str = "",
+):
     payload = await get(client, url, params)
     rate = await adapters.usd_pen_rate(client)
-    return adapters.products_payload(payload, rate)
+    return adapters.products_payload(payload, rate, default_slug=default_slug)
 
 
 async def listar_categorias(client: httpx.AsyncClient, _args: dict):
@@ -72,6 +78,8 @@ async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
         client,
         f"{settings.donregalo_api_base}/categorias/{slug}/productos",
         {"per_page": DEFAULT_PER_PAGE},
+        # Estos productos SON de esta categoría: la API no lo repite en cada item.
+        default_slug=slug,
     )
 
 

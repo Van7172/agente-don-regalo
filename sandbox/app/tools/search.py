@@ -185,6 +185,10 @@ def _hit_to_producto(h) -> dict:
         "nombre":            p.get("nombre"),
         "precio":            p.get("precio"),
         "categoria":         p.get("categoria"),
+        # El slug estaba en el payload de Qdrant y se tiraba aquí. Sin él, nadie
+        # podía comprobar que un resultado fuera de verdad de la categoría pedida:
+        # así es como un arreglo floral acabó en una lista de desayunos.
+        "categoria_slug":    p.get("categoria_slug"),
         "descripcion_corta": p.get("descripcion_corta"),
         "imagen_url":        p.get("imagen_url"),
         "url":               p.get("url"),

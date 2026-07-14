@@ -38,6 +38,10 @@ class ConversationState:
     # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
     # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".
     recent_products: list[dict] = field(default_factory=list)
+    # ¿Ya nos presentamos con este cliente? Vive en el estado, no en el historial:
+    # la ventana de historial se recorta y el bot volvía a saludar en genérico en
+    # vez de presentarse.
+    presented: bool = False
     campaign_slug: str = ""
     handoff_reason: str = ""
     keep_human: bool = False

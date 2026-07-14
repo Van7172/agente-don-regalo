@@ -121,6 +121,53 @@ def result_product_count(result: object) -> int:
     return 0
 
 
+def enforce_category(result: object, slug: str) -> object:
+    """Descarta lo que NO es de la categoría pedida.
+
+    El cliente pidió desayunos y recibió un arreglo floral. La causa: cuando la
+    búsqueda semántica traía pocos resultados, el sistema soltaba el filtro de
+    categoría **en silencio** y rellenaba con lo que fuera. Si el cliente nombra
+    una categoría, esa categoría es un límite duro, no una sugerencia.
+    """
+    if not slug or not isinstance(result, dict):
+        return result
+
+    data = result.get("data")
+    if not isinstance(data, list):
+        return result
+
+    objetivo = _norm_text(slug)
+    filtrados = [
+        p for p in data
+        if isinstance(p, dict) and _matches_category(p, objetivo)
+    ]
+
+    descartados = len(data) - len(filtrados)
+    if descartados:
+        log.info(
+            "[tool] categoria=%s: %d resultado(s) descartado(s) por no pertenecer",
+            slug, descartados,
+        )
+    return {**result, "data": filtrados, "total": len(filtrados)}
+
+
+def _matches_category(producto: dict, objetivo: str) -> bool:
+    slug = _norm_text(producto.get("categoria_slug"))
+    nombre = _norm_text(producto.get("categoria"))
+    if not slug and not nombre:
+        # Sin categoría no podemos afirmar que pertenezca: fuera. Preferimos
+        # mostrar menos que colar un ramo en una lista de desayunos.
+        return False
+    # `desayunos` cubre `desayunos-criollos`; `plantas` cubre `terrarios` sólo si
+    # el slug lo dice, no lo adivinamos.
+    return (
+        slug == objetivo
+        or slug.startswith(objetivo)
+        or objetivo.startswith(slug) and bool(slug)
+        or objetivo.replace("-", " ") in nombre
+    )
+
+
 async def _semantic_fallback(
     client: httpx.AsyncClient,
     q: str,
@@ -174,19 +221,29 @@ async def execute_tool(name: str, args: dict) -> str:
 
             elif name == "catalogo_categoria":
                 args = dict(args or {})
-                result = await catalog.catalogo_categoria(client, args)
-                if result_product_count(result) == 0:
-                    slug = (args.get("slug") or "").strip("/")
-                    q = slug.replace("-", " ") or slug
-                    if q:
-                        sem = await _semantic_fallback(
-                            client,
-                            q,
-                            drop_category=True,
-                            reason="catalogo_categoria_vacia",
-                        )
-                        if result_product_count(sem) > 0:
-                            result = sem
+                slug = (args.get("slug") or "").strip("/")
+                try:
+                    result = await catalog.catalogo_categoria(client, args)
+                except httpx.HTTPStatusError as err:
+                    # Un slug que no existe devuelve 404. Para el cliente eso es lo
+                    # mismo que "no tenemos eso": seguimos y le ofrecemos parecidos.
+                    if err.response.status_code != 404:
+                        raise
+                    log.info("[tool] categoria %r no existe (404)", slug)
+                    result = {"data": [], "total": 0}
+
+                # La API manda: si tiene productos de la categoría, son ESOS.
+                if result_product_count(result) == 0 and slug:
+                    q = slug.replace("-", " ")
+                    sem = await _semantic_fallback(
+                        client, q, drop_category=True, reason="catalogo_categoria_vacia",
+                    )
+                    if result_product_count(sem) > 0:
+                        # No son de la categoría pedida: van marcados como alternativas
+                        # para que el bot no los presente como si lo fueran.
+                        sem["aproximado"] = True
+                        sem["categoria_pedida"] = slug
+                        result = sem
 
             elif name in _CATALOG_TOOLS:
                 result = await _CATALOG_TOOLS[name](client, args or {})
@@ -225,22 +282,42 @@ async def execute_tool(name: str, args: dict) -> str:
                                 "[tool] buscar_semantico: inyectado categoria_slug=%s",
                                 inferred,
                             )
+
+                    slug = args.get("categoria_slug")
                     result = await search.buscar_semantico(client, args)
-                    # Filtro de categoría demasiado estrecho → ampliar en Qdrant.
-                    if (
-                        result_product_count(result) < _MIN_RESULTS_OK
-                        and args.get("categoria_slug")
-                        and not _is_free_campaign_search({**args, "categoria_slug": None})
-                    ):
-                        broad = await _semantic_fallback(
-                            client,
-                            str(q),
-                            base_args=args,
-                            drop_category=True,
-                            reason="categoria_sin_hits",
-                        )
-                        if result_product_count(broad) > result_product_count(result):
-                            result = broad
+
+                    if slug:
+                        # La categoría es un límite duro. Antes, si venían pocos
+                        # resultados, se soltaba el filtro y se rellenaba con
+                        # cualquier cosa: así llegó un arreglo floral a una lista
+                        # de desayunos.
+                        result = enforce_category(result, slug)
+
+                        if result_product_count(result) < _MIN_RESULTS_OK:
+                            # La API es la fuente de verdad de la categoría.
+                            api = await catalog.catalogo_categoria(client, {"slug": slug})
+                            api = enforce_category(api, slug)
+                            if result_product_count(api) > result_product_count(result):
+                                log.info("[tool] categoria %s resuelta por la API", slug)
+                                result = api
+
+                        if result_product_count(result) == 0:
+                            # Ni semántica ni API: recién ahora ofrecemos parecidos,
+                            # y van MARCADOS como alternativas.
+                            similares = await _semantic_fallback(
+                                client,
+                                str(q),
+                                base_args={
+                                    k: args[k] for k in ("excluir_ids", "precio_max", "preferencias")
+                                    if k in args
+                                },
+                                drop_category=True,
+                                reason="sin_stock_en_la_categoria",
+                            )
+                            if result_product_count(similares) > 0:
+                                similares["aproximado"] = True
+                                similares["categoria_pedida"] = slug
+                                result = similares
 
             elif name == "productos_similares":
                 result = await search.productos_similares(client, args or {})
