@@ -54,6 +54,34 @@ def _summarize_payload(payload: dict) -> str:
     return "; ".join(bits) or "empty"
 
 
+def _log_delivery_statuses(payload: dict) -> None:
+    """Meta confirma delivered/read/failed aparte del 200 del POST de envío."""
+    for entry in payload.get("entry") or []:
+        for change in entry.get("changes") or []:
+            value = change.get("value") or {}
+            meta = value.get("metadata") or {}
+            phone_id = meta.get("phone_number_id")
+            for st in value.get("statuses") or []:
+                errors = st.get("errors") or []
+                err_txt = ""
+                if errors:
+                    parts = []
+                    for e in errors:
+                        parts.append(
+                            f"{e.get('code')}:{e.get('title') or e.get('message') or e}"
+                        )
+                    err_txt = "; ".join(parts)
+                level = log.warning if st.get("status") == "failed" else log.info
+                level(
+                    "[WA-STATUS] id=%s status=%s to=%s phone_number_id=%s errors=%s",
+                    st.get("id"),
+                    st.get("status"),
+                    st.get("recipient_id"),
+                    phone_id,
+                    err_txt or "-",
+                )
+
+
 async def _process_inbound(messages: list[InboundMessage]) -> None:
     """Procesa fuera del request HTTP para devolver 200 a Meta al instante."""
     for msg in messages:
@@ -83,6 +111,7 @@ async def receive_webhook(request: Request):
 
     summary = _summarize_payload(payload)
     log.info("[WA-POST] %s bytes=%s", summary, len(raw))
+    _log_delivery_statuses(payload)
 
     messages = parse_webhook_payload(payload)
     if not messages:
