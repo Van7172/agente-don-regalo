@@ -13,6 +13,7 @@ Dos reglas que lo definen:
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,10 +27,12 @@ from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
 from app.harness.policies import dedupe_artifacts, latest_user_text
 from app.harness.registry import spec_for
+from app.harness.render import render_product_list
 from app.harness.router import classify
 from app.harness.state import ConversationState, load_state, save_state
 from app.harness.trace import Trace
 from app.prompts.compose import build_system
+from app.prompts.playbooks import WELCOME
 from app.services.agent import HANDOFF_DONE, run_specialist
 
 log = logging.getLogger(__name__)
@@ -130,8 +133,17 @@ async def run_master(
     return result.user_facing
 
 
+def is_first_contact(messages: list) -> bool:
+    """Nadie de nuestro lado ha escrito todavía en esta conversación."""
+    return not any(m.get("role") == "assistant" for m in messages)
+
+
 async def _handle(intent: str, turn: Turn, state: ConversationState, **ctx) -> AgentResult:
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
+
+    # ── Primer saludo: presentación determinista ──────────────────
+    if intent == "greet" and is_first_contact(turn.messages):
+        return AgentResult(user_facing=WELCOME)
 
     # ── Cobertura: determinista, sin LLM ──────────────────────────
     if intent == "coverage":
@@ -237,4 +249,49 @@ async def _run_specialty(
     if spec.name == "catalog":
         result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
 
+    if spec.name in ("catalog", "detail") and result.artifacts:
+        result.user_facing = compose_product_reply(result.user_facing, result.artifacts)
+
     return result
+
+
+# Una línea que lleva una URL de imagen, la escriba el modelo como la escriba.
+_IMG_LINE = re.compile(r"https?://\S+\.(?:jpe?g|png|webp|gif)", re.I)
+# Viñeta de producto: "• 🎁 *Nombre* — S/149.60 ($44.00)".
+_BULLET_LINE = re.compile(r"^\s*[•\-\*]|—\s*S\s*/|^\s*\d+[.)]\s+\S.*S\s*/", re.I)
+_CLOSING_LINE = re.compile(r"^\s*¿.*detalle", re.I)
+
+
+def compose_product_reply(model_text: str | None, artifacts: list) -> str:
+    """El listado de productos lo arma el código, no el modelo.
+
+    Durante semanas el formato de los productos vivió en el prompt: "la URL va sola
+    en su línea, luego la viñeta". Cuando el modelo se desviaba —y se desviaba— el
+    cliente recibía un muro de enlaces en vez de fotos, porque el emisor solo
+    convierte en imagen una línea que reconoce como URL.
+
+    Los productos ya vienen tipados en `artifacts` (id, nombre, precios, imagen),
+    así que no hay ninguna razón para pedirle al modelo que los formatee. Nos
+    quedamos con su intro (que aporta el tono) y el resto lo renderizamos.
+    """
+    intro_lines: list[str] = []
+    for line in (model_text or "").split("\n"):
+        if _IMG_LINE.search(line) or _BULLET_LINE.search(line) or _CLOSING_LINE.match(line):
+            continue
+        intro_lines.append(line)
+
+    intro = "\n".join(intro_lines).strip()
+    listado = render_product_list([_as_dict(p) for p in artifacts])
+
+    return f"{intro}\n\n{listado}" if intro else listado
+
+
+def _as_dict(product) -> dict:
+    return {
+        "id_producto": product.id_producto,
+        "nombre": product.nombre,
+        "precio_sol": product.precio_sol,
+        "precio_usd": product.precio_usd,
+        "imagen_url": product.imagen_url,
+        "descripcion_corta": product.descripcion,
+    }

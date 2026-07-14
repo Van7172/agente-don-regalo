@@ -141,9 +141,11 @@ async def test_un_producto_ya_mostrado_no_se_repite(harness, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_un_saludo_lo_atiende_el_concierge_sin_tools(harness, monkeypatch):
-    """El orquestador no responde él: delega, incluso un 'hola'."""
-    _mock_llm(monkeypatch, harness, [_final("¡Hola! 😊 ¿En qué te ayudo hoy?")])
+async def test_el_primer_saludo_es_la_presentacion_sin_llm(harness, monkeypatch):
+    """El primer contacto se presenta. Es plantilla: no gasta una llamada al LLM."""
+    from app.prompts.playbooks import WELCOME
+
+    _mock_llm(monkeypatch, harness, [])
 
     reply = await master_mod.run_master(
         [{"role": "user", "content": "hola"}],
@@ -151,7 +153,27 @@ async def test_un_saludo_lo_atiende_el_concierge_sin_tools(harness, monkeypatch)
         conversation_id=1,
     )
 
-    assert reply == "¡Hola! 😊 ¿En qué te ayudo hoy?"
+    assert reply == WELCOME
+    assert harness["systems"] == [], "el saludo inicial no llama al LLM"
+    assert harness["tool_args"] == []
+
+
+@pytest.mark.asyncio
+async def test_un_saludo_posterior_lo_atiende_el_concierge_sin_tools(harness, monkeypatch):
+    """Ya nos presentamos: el orquestador delega en el concierge y no repite."""
+    _mock_llm(monkeypatch, harness, [_final("¡Aquí estoy! ¿Qué buscas? 😊")])
+
+    reply = await master_mod.run_master(
+        [
+            {"role": "user", "content": "hola"},
+            {"role": "assistant", "content": "👋 ¡Hola! Soy Regalito…"},
+            {"role": "user", "content": "hola de nuevo"},
+        ],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert reply == "¡Aquí estoy! ¿Qué buscas? 😊"
     assert harness["tool_args"] == [], "el concierge no debe consultar nada"
     assert "ESPECIALISTA: RECEPCIÓN" in harness["systems"][0]
     assert SAFETY_MARKER in harness["systems"][0]

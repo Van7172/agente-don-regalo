@@ -109,6 +109,25 @@ Cobertura y cierre **no llaman al LLM**: son `harness/coverage.py` y
 productos no repetir, si un precio salió de una tool) son funciones puras en
 `harness/policies.py` — se testean sin red y en milisegundos.
 
+## El listado de productos lo compone el código
+
+Durante semanas el formato de los productos vivió en el prompt: *"la URL va sola en
+su línea, luego la viñeta"*. El emisor de WhatsApp solo convierte en foto una línea
+que reconoce como URL, así que **cada vez que el modelo se desviaba, el cliente
+recibía un muro de enlaces en vez de fotos**. Se parcheó el prompt tres veces.
+
+Los productos ya vienen tipados en `AgentResult.artifacts` (id, nombre, precios,
+imagen), así que no hay ninguna razón para pedirle a un LLM que los formatee.
+`master.compose_product_reply()` se queda con la intro del modelo (que aporta el
+tono) y **renderiza el listado en código**. El playbook ahora le prohíbe
+explícitamente escribir URLs, viñetas y precios: si lo hace, se descartan.
+
+Efecto secundario que importa: el modelo ya no escribe precios, así que **no puede
+inventarlos**.
+
+El **saludo de primer contacto** es igual de plantillable, así que también es
+determinista (`playbooks.WELCOME`): se presenta, y no gasta una llamada al LLM.
+
 ## Evals: la red de regresión
 
 Cada turno del orquestador emite un `Trace` (intención, agente, tools, ids de

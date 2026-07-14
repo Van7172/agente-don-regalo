@@ -97,11 +97,15 @@ def test_quien_habla_de_pagos_sabe_que_no_hay_contraentrega(name):
     assert "Yape / Plin" in system
 
 
-def test_el_catalogo_sabe_como_se_pinta_una_imagen():
-    """Una URL pegada al texto llega al cliente como link, no como foto."""
+def test_al_catalogo_se_le_prohibe_formatear_el_listado():
+    """El listado lo arma el código (`master.compose_product_reply`).
+
+    Mientras el formato vivió en el prompt, cada desvío del modelo le llegaba al
+    cliente como un muro de enlaces en vez de fotos.
+    """
     system = build_system(AGENTS["catalog"], ConversationState())
-    assert "sola en su línea" in system
-    assert "FORMATO AL LISTAR PRODUCTOS" in system
+    assert "NO escribas URLs" in system
+    assert "El sistema arma la lista de productos por ti" in system
 
 
 def test_el_estado_llega_al_system_del_especialista():
