@@ -146,6 +146,35 @@ def test_confirmacion_no_secuestra_charla_sin_contexto_de_producto(text, last):
     assert got.intent != "catalog_search"
 
 
+def test_imagen_sin_texto_va_a_catalogo_no_a_small_talk():
+    """Regresión (bluetab, 15-07): el cliente mandó la captura de un producto
+    ("Lágrima Fúnebre Blanco") y el turno caía en small_talk → concierge, que no
+    tiene tools para identificarlo. Una imagen es, por defecto, un producto: va a
+    catálogo (visión + búsqueda)."""
+    got = classify_rules("", ConversationState(), has_media=True)
+    assert got.intent == "catalog_search"
+    assert got.source == "rules"
+
+
+@pytest.mark.parametrize("caption", ["quisiera", "esto", "cuánto cuesta"])
+def test_imagen_con_caption_neutro_va_a_catalogo(caption):
+    got = classify_rules(caption, ConversationState(), has_media=True)
+    assert got.intent == "catalog_search"
+
+
+@pytest.mark.parametrize(
+    "caption,intent",
+    [
+        ("ya pagué, aquí el comprobante", "escalate"),  # foto de un pago
+        ("quiero hablar con un asesor", "escalate"),
+    ],
+)
+def test_imagen_con_caption_fuerte_respeta_la_intencion(caption, intent):
+    """Una foto de comprobante/pago no debe tratarse como catálogo."""
+    got = classify_rules(caption, ConversationState(), has_media=True)
+    assert got.intent == intent
+
+
 @pytest.mark.parametrize("text", ["si", "Sí", "dale", "ok", "va", "muéstrame"])
 def test_confirmacion_en_derivacion_en_curso_sigue_en_escalate(text):
     """Regresión (Sonia, 15-07): el "sí / dale" a "¿te paso con un asesor ahora?"

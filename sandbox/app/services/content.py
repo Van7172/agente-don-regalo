@@ -78,7 +78,11 @@ async def inbound_to_parts(
         data, mime = await _media()
         b64 = base64.b64encode(data).decode()
         mime = mime or "image/jpeg"
-        text = msg.caption or "El usuario envió una imagen. Descríbela y responde apropiadamente."
+        text = msg.caption or (
+            "El usuario envió una imagen. Si muestra un producto (nombre, precio o "
+            "una foto del arreglo/regalo), identifícalo y búscalo en el catálogo "
+            "para ofrecérselo; no preguntes qué quiere si la imagen ya lo muestra."
+        )
         return [
             {"type": "text", "text": text},
             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},

@@ -42,10 +42,33 @@ from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
 log = logging.getLogger(__name__)
 
 
+def _caption_of(messages: list) -> str | None:
+    """Texto que acompaña a una imagen (`latest_user_text` lo descarta a propósito).
+
+    Sirve para enrutar: un "ya pagué" pegado a una foto debe seguir escalando, y un
+    "quisiera" pegado a la captura de un producto no debe perderse.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            texts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            return "\n".join(t for t in texts if t).strip() or None
+        return None
+    return None
+
+
 def perceive(messages: list) -> Turn:
     """Qué nos llega del cliente en este turno."""
     text = latest_user_text(messages)
-    return Turn(text=text or "", has_media=text is None, messages=messages)
+    has_media = text is None
+    # Con imagen, `text` viene None; conservamos el caption para poder enrutar.
+    return Turn(text=(text if not has_media else _caption_of(messages)) or "", has_media=has_media, messages=messages)
 
 
 def _reduce(state: ConversationState, result: AgentResult) -> ConversationState:
@@ -87,7 +110,7 @@ async def run_master(
         else ConversationState()
     )
 
-    classification = await classify(turn.text, state)
+    classification = await classify(turn.text, state, has_media=turn.has_media)
     intent = classification.intent
     prev_intent = state.intent_last  # antes de sobrescribir: ¿venía de una derivación?
     state.intent_last = intent

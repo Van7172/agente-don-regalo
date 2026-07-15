@@ -233,6 +233,30 @@ async def test_una_referencia_ambigua_pregunta_en_vez_de_adivinar(harness, monke
 
 
 @pytest.mark.asyncio
+async def test_imagen_de_producto_la_atiende_el_catalogo(harness, monkeypatch):
+    """El cliente manda la captura de un producto: el turno va al catálogo (con
+    visión + búsqueda), no al concierge, para poder identificarlo."""
+    _mock_llm(monkeypatch, harness, [
+        _tool_call("buscar_semantico", {"q": "Lágrima Fúnebre Blanco"}),
+        _final("¿Te refieres a *Lágrima Fúnebre Blanco*? 😊"),
+    ])
+
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "quisiera"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+        ],
+    }
+    reply = await master_mod.run_master([msg], wa_id="51999", conversation_id=1)
+
+    assert reply is not None
+    state = await load_state(1)
+    assert state.intent_last == "catalog_search"
+    assert "ESPECIALISTA: CATÁLOGO" in harness["systems"][0]
+
+
+@pytest.mark.asyncio
 async def test_pedir_asesor_cede_el_control_sin_llm(harness, monkeypatch):
     """El cliente pide un asesor: el handoff se ejecuta en código (mensaje de
     espera + HANDOFF_DONE), sin gastar una llamada al LLM ni entrar en el bucle

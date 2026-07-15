@@ -102,7 +102,9 @@ def classify_intent(text: str, state: ConversationState | None = None) -> Intent
     return classify_rules(text, state).intent
 
 
-def classify_rules(text: str, state: ConversationState | None = None) -> Classification:
+def classify_rules(
+    text: str, state: ConversationState | None = None, *, has_media: bool = False
+) -> Classification:
     """Reglas: rápidas y precisas cuando aciertan, mudas cuando no.
 
     Devuelven confianza para que el orquestador sepa si puede fiarse. El caso por
@@ -111,6 +113,12 @@ def classify_rules(text: str, state: ConversationState | None = None) -> Classif
     """
     raw = (text or "").strip()
     if not raw:
+        # Una imagen sin texto es, casi siempre, un producto que el cliente quiere
+        # mostrarnos ("quisiera esto"). Va a catálogo, que tiene visión + búsqueda
+        # para identificarlo; antes caía en small_talk → concierge (sin tools) y el
+        # producto de la foto se perdía.
+        if has_media:
+            return Classification("catalog_search", 0.8, "rules")
         return Classification("small_talk", 0.9, "rules")
 
     state = state or ConversationState()
@@ -180,6 +188,12 @@ def classify_rules(text: str, state: ConversationState | None = None) -> Classif
     if _GREET_RE.match(norm) and len(raw) < 40:
         return Classification("greet", 0.95, "rules")
 
+    # Imagen con un caption que no pedía nada claro (asesor, cobertura, pago…, ya
+    # resueltos arriba): sigue siendo un producto que el cliente nos muestra. A
+    # catálogo, no a small_talk: el "quisiera" pegado a la foto no debe perderse.
+    if has_media:
+        return Classification("catalog_search", 0.8, "rules")
+
     # Misma definición de cortesía que usa la política de handoff. Antes el router
     # tenía la suya, más pobre: "Todo en orden hoy" no le sonaba a charla y acababa
     # en el catálogo, buscando productos para alguien que no pedía nada.
@@ -214,13 +228,15 @@ VALID_INTENTS = frozenset(
 )
 
 
-async def classify(text: str, state: ConversationState | None = None) -> Classification:
+async def classify(
+    text: str, state: ConversationState | None = None, *, has_media: bool = False
+) -> Classification:
     """Reglas primero; el LLM solo cuando las reglas no saben.
 
     Las reglas resuelven la inmensa mayoría de los turnos sin coste ni latencia.
     El LLM entra únicamente en el hueco que antes se tragaba el catálogo.
     """
-    rules = classify_rules(text, state)
+    rules = classify_rules(text, state, has_media=has_media)
     if rules.confidence >= CONFIDENCE_FLOOR:
         return rules
 
