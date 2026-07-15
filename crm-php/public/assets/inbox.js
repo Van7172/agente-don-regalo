@@ -82,7 +82,9 @@
   let listSig = "";
   let threadSig = "";
   let pendingFiles = []; // [{ blob, name, kind }]
-  let sending = false;
+  // Envíos en curso POR conversación: un bloque de imágenes hacia A no debe
+  // bloquear el composer de B. El asesor puede dejar A cargando y seguir en B.
+  const sendingConvs = new Set();
 
   // Mensajes rápidos fijos (editar aquí / redeploy CRM). Slash: /
   const QUICK_REPLIES = [
@@ -700,6 +702,7 @@
     root.dataset.mobileChat = "true";
     clearPendingFiles();
     hideSlashMenu();
+    updateComposerBusy(); // el chat nuevo puede tener (o no) un envío en curso
     renderList();
     loadThread();
   }
@@ -829,27 +832,39 @@
     }
   }
 
-  function setSending(on) {
-    sending = on;
-    el.btnSend.disabled = on;
-    el.btnAttach.disabled = on;
-    el.btnRecord.disabled = on;
+  /** El composer solo se bloquea si la conversación A LA VISTA está enviando. */
+  function updateComposerBusy() {
+    const busy = selectedId != null && sendingConvs.has(selectedId);
+    el.btnSend.disabled = busy;
+    el.btnAttach.disabled = busy;
+    el.btnRecord.disabled = busy;
+  }
+
+  function setSending(convId, on) {
+    if (on) sendingConvs.add(convId);
+    else sendingConvs.delete(convId);
+    updateComposerBusy();
   }
 
   async function send(event) {
     event.preventDefault();
-    if (selectedId == null || sending) return;
+    if (selectedId == null || sendingConvs.has(selectedId)) return;
 
+    // Fijamos la conversación de ESTE envío. Un bloque de imágenes se sube una a
+    // una (await uploadMedia/await api entre cada una); si el asesor cambia de
+    // chat mientras tanto, `selectedId` ya apunta a otro cliente y las imágenes
+    // restantes se irían a ese otro chat. `convId` las mantiene en su destino.
+    const convId = selectedId;
     const content = (el.draft.value || "").trim();
     const attachments = pendingFiles.slice();
     if (!content && !attachments.length) return;
 
-    setSending(true);
+    setSending(convId, true);
     try {
       if (!attachments.length) {
         const json = await api("/outbox", {
           method: "POST",
-          body: JSON.stringify({ conversation_id: selectedId, content }),
+          body: JSON.stringify({ conversation_id: convId, content }),
         });
         if (json.queued && json.pushed === false) {
           showError(json.warning || "Mensaje en cola hacia WhatsApp…");
@@ -863,7 +878,7 @@
           const json = await api("/outbox", {
             method: "POST",
             body: JSON.stringify({
-              conversation_id: selectedId,
+              conversation_id: convId,
               content: i === 0 ? content : "",
               media_path: up.key,
               filename: file.name,
@@ -875,9 +890,14 @@
         }
       }
 
-      el.draft.value = "";
-      el.draft.style.height = "auto";
-      clearPendingFiles();
+      // Limpiamos borrador y adjuntos SOLO si el asesor sigue en la misma
+      // conversación. Si ya se cambió a otro chat mientras se enviaba, no le
+      // borramos el borrador ni los adjuntos que esté preparando para ESE chat.
+      if (selectedId === convId) {
+        el.draft.value = "";
+        el.draft.style.height = "auto";
+        clearPendingFiles();
+      }
       listSig = "";
       await Promise.all([loadThread(), loadList()]);
       showError("");
@@ -885,7 +905,7 @@
       // No se limpia el borrador: el asesor no debe perder lo que escribió.
       showError(err.message || String(err));
     } finally {
-      setSending(false);
+      setSending(convId, false);
     }
   }
 
@@ -1093,6 +1113,33 @@
   el.draft.addEventListener("click", refreshSlashMenu);
   el.draft.addEventListener("keyup", (e) => {
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) refreshSlashMenu();
+  });
+
+  // Pegar (Ctrl/⌘+V) una imagen copiada de fuera —una captura o una imagen de una
+  // web— la detecta y la deja lista para enviar, sin pasar por el botón de
+  // adjuntar. Solo intercepta imágenes: pegar texto normal sigue igual.
+  el.draft.addEventListener("paste", (e) => {
+    const dt = e.clipboardData;
+    if (!dt) return;
+    const blobs = [];
+    for (const item of dt.items || []) {
+      if (item.kind === "file" && (item.type || "").startsWith("image/")) {
+        const blob = item.getAsFile();
+        if (blob) blobs.push(blob);
+      }
+    }
+    if (!blobs.length) return; // no hay imagen en el portapapeles: pegado normal
+    // Evita que el navegador pegue además la ruta/alt de la imagen como texto.
+    e.preventDefault();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    blobs.forEach((blob, i) => {
+      const ext = ((blob.type.split("/")[1] || "png").split("+")[0]) || "png";
+      const name =
+        blob.name && blob.name.toLowerCase() !== "image.png"
+          ? blob.name
+          : `pegada-${stamp}-${i + 1}.${ext}`;
+      addPendingFile(blob, name);
+    });
   });
   if (el.slashMenu) {
     el.slashMenu.addEventListener("mousedown", (e) => {
