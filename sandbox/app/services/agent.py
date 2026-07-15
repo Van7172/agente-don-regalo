@@ -246,8 +246,11 @@ async def run_specialist(
                     payload["tools"] = all_tools
                     payload["tool_choice"] = "auto"
                     payload["parallel_tool_calls"] = True
-                else:
-                    payload["tool_choice"] = "none"
+                # Sin tools NO se manda `tool_choice`: OpenAI rechaza con 400
+                # ("tool_choice is only allowed when tools are specified") y el
+                # agente devolvía None → el bot se quedaba mudo. Un agente sin
+                # tools (concierge) solo tiene que redactar texto, que es justo lo
+                # que hace omitir el campo.
                 data = await _chat_completion(client, payload)
                 msg = data["choices"][0]["message"]
                 tool_calls = msg.get("tool_calls")

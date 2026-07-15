@@ -111,3 +111,36 @@ def test_el_catch_all_sale_con_confianza_baja():
 
     assert got.source == "fallback"
     assert got.confidence < CONFIDENCE_FLOOR
+
+
+def _con_intent(last: str) -> ConversationState:
+    s = ConversationState()
+    s.intent_last = last
+    return s
+
+
+@pytest.mark.parametrize("text", ["Si", "Sí", "dale", "muéstramelos", "claro", "sí quiero", "a ver"])
+def test_confirmacion_tras_oferta_de_producto_continua_en_catalogo(text):
+    """Regresión (Stepha, 15-07): el cliente respondió "Si" a "¿quieres que te
+    muestre los arreglos?" y el turno cayó en small_talk → concierge (sin tools
+    de catálogo), que inventó un menú de productos y terminó escalando una venta
+    sana. Una confirmación afirmativa cuando el turno previo fue de producto debe
+    seguir en catálogo, que busca y muestra productos reales con foto.
+    """
+    got = classify_rules(text, _con_intent("catalog_search"))
+    assert got.intent == "catalog_search"
+    assert got.source == "rules"
+
+
+@pytest.mark.parametrize(
+    "text,last",
+    [
+        ("no", "catalog_search"),          # negativa: no es "muéstrame"
+        ("gracias", "catalog_search"),     # cierre de cortesía
+        ("Si", "small_talk"),              # sin oferta de producto detrás
+        ("Si", ""),                        # primer turno, sin contexto
+    ],
+)
+def test_confirmacion_no_secuestra_charla_sin_contexto_de_producto(text, last):
+    got = classify_rules(text, _con_intent(last))
+    assert got.intent != "catalog_search"

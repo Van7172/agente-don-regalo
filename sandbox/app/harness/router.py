@@ -67,6 +67,17 @@ _SMALL_RE = re.compile(
     r"^(ok|okay|gracias|gale|dale|jaja|jeje|perfecto|listo|👍|😊|🙏)[\s!.]*$",
     re.I,
 )
+# Confirmación afirmativa "sí, muéstramelos" tal cual la escribe el cliente.
+# Anclada a todo el mensaje (^…$): solo dispara con una confirmación pelada, no
+# con una frase larga que empiece por "sí" y siga con otra intención. Se compara
+# contra el texto SIN tildes (`norm`).
+_CONFIRM_SHOW_RE = re.compile(
+    r"^\s*(si+|sip+|claro( que si)?|dale|de una|va|vale|bueno|obvio|"
+    r"muestrame(los|las)?|muestra(los|las|melos|melas)?|ensena(melos|melas)?|"
+    r"a ver|ver(los|las)?|quiero ver(los|las)?|si (quiero|porfa|por favor|dale)"
+    r")[\s!.,]*$",
+    re.I,
+)
 
 
 def _strip_accents(text: str) -> str:
@@ -128,6 +139,14 @@ def classify_rules(text: str, state: ConversationState | None = None) -> Classif
 
     if wants_checkout(norm) or norm.casefold() in ("ese", "esa", "este", "esta"):
         return Classification("checkout", 0.9, "rules")
+
+    # Confirmación afirmativa cuando el turno anterior fue de producto: el cliente
+    # responde "sí / dale / muéstramelos" a un ofrecimiento de mostrar productos.
+    # El router ve el mensaje aislado, así que sin esto un "Si" tras "¿quieres que
+    # te muestre?" caía en small_talk → concierge, que no tiene tools de catálogo:
+    # el modelo inventaba un menú de productos falso o escalaba una venta sana.
+    if state.intent_last in ("catalog_search", "product_detail") and _CONFIRM_SHOW_RE.match(norm):
+        return Classification("catalog_search", 0.85, "rules")
 
     # "quiero el panditas" nombra un producto que YA se mostró: es una compra, no
     # una búsqueda nueva. Exigimos referencia explícita (nombre u ordinal): con un
