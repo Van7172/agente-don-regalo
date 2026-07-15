@@ -230,3 +230,52 @@ async def test_una_referencia_ambigua_pregunta_en_vez_de_adivinar(harness, monke
     state = await load_state(1)
     assert state.chosen_product_id is None
     assert state.checkout_step == "idle", "no se arranca un cierre a ciegas"
+
+
+@pytest.mark.asyncio
+async def test_pedir_asesor_cede_el_control_sin_llm(harness, monkeypatch):
+    """El cliente pide un asesor: el handoff se ejecuta en código (mensaje de
+    espera + HANDOFF_DONE), sin gastar una llamada al LLM ni entrar en el bucle
+    de pedir el nombre."""
+    async def fake_notify(*a, **kw):
+        return None
+
+    monkeypatch.setattr(agent_mod, "notify_team", fake_notify)
+    _mock_llm(monkeypatch, harness, [])  # si llamara al LLM, reventaría por lista vacía
+
+    reply = await master_mod.run_master(
+        [{"role": "user", "content": "quiero hablar con un asesor"}],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert reply == agent_mod.HANDOFF_DONE
+    assert harness["systems"] == [], "la derivación no llama al LLM"
+    assert any("asesor" in t.lower() for t in harness["enviados"])
+
+
+@pytest.mark.asyncio
+async def test_confirmar_derivacion_en_curso_cede_el_control(harness, monkeypatch):
+    """Regresión (Sonia, 15-07): el bot decía "te paso con un asesor, un momento"
+    y NO cedía el control porque el "sí" caía en concierge (sin la tool). Una
+    confirmación dentro de una derivación en curso ejecuta el handoff de verdad.
+    """
+    await state_mod.save_state(1, ConversationState(intent_last="escalate", presented=True))
+
+    async def fake_notify(*a, **kw):
+        return None
+
+    monkeypatch.setattr(agent_mod, "notify_team", fake_notify)
+    _mock_llm(monkeypatch, harness, [])
+
+    reply = await master_mod.run_master(
+        [
+            {"role": "assistant", "content": "¿Quieres que te pase con un asesor ahora? 😊"},
+            {"role": "user", "content": "si"},
+        ],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert reply == agent_mod.HANDOFF_DONE
+    assert harness["systems"] == [], "la continuación de la derivación no llama al LLM"

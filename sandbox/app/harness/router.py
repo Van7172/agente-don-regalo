@@ -72,7 +72,7 @@ _SMALL_RE = re.compile(
 # con una frase larga que empiece por "sí" y siga con otra intención. Se compara
 # contra el texto SIN tildes (`norm`).
 _CONFIRM_SHOW_RE = re.compile(
-    r"^\s*(si+|sip+|claro( que si)?|dale|de una|va|vale|bueno|obvio|"
+    r"^\s*(si+|sip+|claro( que si)?|dale|de una|va|vale|bueno|obvio|ok(ay|is|i)?|"
     r"muestrame(los|las)?|muestra(los|las|melos|melas)?|ensena(melos|melas)?|"
     r"a ver|ver(los|las)?|quiero ver(los|las)?|si (quiero|porfa|por favor|dale)"
     r")[\s!.,]*$",
@@ -122,6 +122,13 @@ def classify_rules(text: str, state: ConversationState | None = None) -> Classif
 
     if _ESCALATE_RE.search(norm):
         return Classification("escalate", 0.95, "rules")
+
+    # Continuación de una derivación ya iniciada: un "sí / dale / ok" tras "¿te paso
+    # con un asesor ahora?" debe seguir en escalate (que ejecuta el handoff en
+    # código), no caer en small_talk → concierge, que no tiene esa tool y dejaba el
+    # handoff a medias ("te paso con un asesor, un momento" sin ceder el control).
+    if state.intent_last == "escalate" and _CONFIRM_SHOW_RE.match(norm):
+        return Classification("escalate", 0.9, "rules")
 
     if _TRACK_RE.search(norm):
         return Classification("track_order", 0.95, "rules")

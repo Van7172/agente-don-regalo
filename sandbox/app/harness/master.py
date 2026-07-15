@@ -27,7 +27,7 @@ from app.harness.contracts import AgentResult, EscalateReason, Turn
 from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
 from app.harness.orders import create_from_state as create_temporal_order
-from app.harness.policies import dedupe_artifacts, latest_user_text
+from app.harness.policies import dedupe_artifacts, handoff_policy, latest_user_text
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
@@ -37,7 +37,7 @@ from app.harness.stock import is_available, unavailable_message
 from app.harness.trace import Trace
 from app.prompts.compose import build_system
 from app.prompts.playbooks import WELCOME
-from app.services.agent import HANDOFF_DONE, run_specialist
+from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ async def run_master(
 
     classification = await classify(turn.text, state)
     intent = classification.intent
+    prev_intent = state.intent_last  # antes de sobrescribir: ¿venía de una derivación?
     state.intent_last = intent
 
     trace = Trace(
@@ -105,6 +106,7 @@ async def run_master(
         intent,
         turn,
         state,
+        prev_intent=prev_intent,
         wa_id=wa_id,
         contact_id=contact_id,
         conversation_id=conversation_id,
@@ -149,12 +151,22 @@ def is_first_contact(state: ConversationState, messages: list) -> bool:
     return not any(m.get("role") == "assistant" for m in messages)
 
 
-async def _handle(intent: str, turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+async def _handle(
+    intent: str, turn: Turn, state: ConversationState, *, prev_intent: str = "", **ctx
+) -> AgentResult:
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
 
     # ── Primer saludo: presentación determinista ──────────────────
     if intent == "greet" and is_first_contact(state, turn.messages):
         return AgentResult(user_facing=WELCOME, state_patch={"presented": True})
+
+    # ── Derivación: determinista, sin LLM ─────────────────────────
+    # El bot decía "te paso con un asesor, un momento" y no cedía el control: la
+    # frase la escribía un modelo que nunca llamaba `escalar_a_humano`, o el turno
+    # caía en `concierge` (sin esa tool). La derivación no es una frase, es un
+    # cambio de estado, así que la ejecuta el código, no el modelo.
+    if intent == "escalate":
+        return await _handle_escalate(turn, state, prev_intent=prev_intent, **ctx)
 
     # ── Cobertura: determinista, sin LLM ──────────────────────────
     if intent == "coverage":
@@ -172,6 +184,42 @@ async def _handle(intent: str, turn: Turn, state: ConversationState, **ctx) -> A
 
     # ── Resto: especialista LLM con toolset acotado ───────────────
     return await _run_specialty(intent, turn, state, **ctx)
+
+
+async def _handle_escalate(
+    turn: Turn, state: ConversationState, *, prev_intent: str = "", **ctx
+) -> AgentResult:
+    """Cede el control a un humano en código, no de palabra.
+
+    Antes esto lo hacía el LLM del especialista `escalate`: a veces entraba en un
+    bucle pidiendo el nombre ("¿me confirmas tu nombre para derivarte?") y nunca
+    llamaba `escalar_a_humano`, o el turno de confirmación ("sí, pásame ahora")
+    caía en `concierge`, que no tiene esa tool. El bot decía "te paso con un asesor,
+    un momento" y jamás cedía el control.
+    """
+    # Red de seguridad contra un falso positivo del router LLM: si esto es charla
+    # trivial y NO viene de una derivación en curso, no derivamos — que responda
+    # concierge. Una confirmación dentro de una derivación ya iniciada
+    # (prev_intent=escalate) es continuación, no charla: no se re-juzga.
+    if prev_intent != "escalate":
+        decision = handoff_policy(turn.messages)
+        if not decision.allow:
+            return await _run_specialty("small_talk", turn, state, **ctx)
+
+    motivo = (
+        state.handoff_reason
+        or (turn.text or "").strip()
+        or "cliente solicitó atención humana"
+    )
+    escalate = await perform_handoff(
+        wa_id=ctx.get("wa_id"),
+        conversation_id=ctx.get("conversation_id"),
+        motivo=motivo,
+        use_external_crm=ctx.get("use_external_crm", False),
+        session=ctx.get("session"),
+        persist=ctx.get("persist"),
+    )
+    return AgentResult(user_facing=None, escalate=escalate)
 
 
 async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> AgentResult:

@@ -144,3 +144,14 @@ def test_confirmacion_tras_oferta_de_producto_continua_en_catalogo(text):
 def test_confirmacion_no_secuestra_charla_sin_contexto_de_producto(text, last):
     got = classify_rules(text, _con_intent(last))
     assert got.intent != "catalog_search"
+
+
+@pytest.mark.parametrize("text", ["si", "Sí", "dale", "ok", "va", "muéstrame"])
+def test_confirmacion_en_derivacion_en_curso_sigue_en_escalate(text):
+    """Regresión (Sonia, 15-07): el "sí / dale" a "¿te paso con un asesor ahora?"
+    caía en small_talk → concierge (sin la tool de handoff), así que el bot decía
+    "te paso, un momento" y nunca cedía el control. Debe seguir en escalate.
+    """
+    got = classify_rules(text, _con_intent("escalate"))
+    assert got.intent == "escalate"
+    assert got.source == "rules"

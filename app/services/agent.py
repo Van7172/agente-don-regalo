@@ -134,6 +134,51 @@ async def _say(wa_id: str, text: str, persist) -> str | None:
     return wa_mid
 
 
+async def perform_handoff(
+    *,
+    wa_id: str,
+    conversation_id: int | None,
+    motivo: str,
+    use_external_crm: bool = False,
+    session: AsyncSession | None = None,
+    persist=None,
+) -> EscalateReason:
+    """Cede el control a un humano DE VERDAD, no solo de palabra.
+
+    El bot llegó a decir "te paso con un asesor, un momento" sin ejecutar nada: la
+    conversación seguía en modo IA y el bot seguía respondiendo. La derivación no
+    es una frase, es un cambio de estado: aviso de espera al cliente, la
+    conversación pasa a HUMAN en el CRM (deja de contestar el bot) y se avisa al
+    equipo. Se ejecuta en código para no depender de que el modelo llame la tool.
+    """
+    await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
+    if use_external_crm and conversation_id:
+        from app.crm import http_client as crm_http
+
+        await crm_http.set_mode(conversation_id, "HUMAN")
+    elif session and conversation_id:
+        await repo.set_human_support(session, conversation_id, True)
+        await session.commit()
+    await notify_team(
+        f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
+    )
+    # El releaser exime los handoff de pago del retorno HUMAN→AI: un asesor
+    # cobrando puede tardar horas en contestar.
+    is_payment = is_payment_reason(motivo)
+    if conversation_id is not None:
+        try:
+            from app.harness.state import load_state, save_state
+
+            st = await load_state(conversation_id, wa_id=wa_id or "")
+            st.handoff_reason = motivo or st.handoff_reason
+            if is_payment:
+                st.checkout_step = "payment"
+            await save_state(conversation_id, st, wa_id=wa_id or "")
+        except Exception as err:
+            log.warning("[harness] no se guardó handoff_reason: %s", err)
+    return EscalateReason(motivo=motivo, is_payment=is_payment)
+
+
 async def run_agent(
     messages: list,
     *,
@@ -319,36 +364,19 @@ async def run_specialist(
                             continue
 
                         log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, motivo)
-                        await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
-                        if use_external_crm and conversation_id:
-                            from app.crm import http_client as crm_http
-
-                            await crm_http.set_mode(conversation_id, "HUMAN")
-                        elif session and conversation_id:
-                            await repo.set_human_support(session, conversation_id, True)
-                            await session.commit()
-                        await notify_team(
-                            f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
+                        escalate = await perform_handoff(
+                            wa_id=wa_id,
+                            conversation_id=conversation_id,
+                            motivo=motivo,
+                            use_external_crm=use_external_crm,
+                            session=session,
+                            persist=persist,
                         )
-                        # El releaser exime los handoff de pago del retorno HUMAN→AI:
-                        # un asesor cobrando puede tardar horas en contestar.
-                        is_payment = is_payment_reason(motivo)
-                        if conversation_id is not None:
-                            try:
-                                from app.harness.state import load_state, save_state
-
-                                st = await load_state(conversation_id, wa_id=wa_id or "")
-                                st.handoff_reason = motivo or st.handoff_reason
-                                if is_payment:
-                                    st.checkout_step = "payment"
-                                await save_state(conversation_id, st, wa_id=wa_id or "")
-                            except Exception as err:
-                                log.warning("[harness] no se guardó handoff_reason: %s", err)
                         return AgentResult(
                             user_facing=None,
                             artifacts=artifacts,
                             tools_used=[*tools_used, "escalar_a_humano"],
-                            escalate=EscalateReason(motivo=motivo, is_payment=is_payment),
+                            escalate=escalate,
                         )
 
                     if fn == "guardar_datos_cliente":
