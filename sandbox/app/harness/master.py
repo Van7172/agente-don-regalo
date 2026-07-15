@@ -17,6 +17,7 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.harness.checkout import (
     advance_checkout,
     resolve_chosen_product,
@@ -25,6 +26,7 @@ from app.harness.checkout import (
 from app.harness.contracts import AgentResult, EscalateReason, Turn
 from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
+from app.harness.orders import create_from_state as create_temporal_order
 from app.harness.policies import dedupe_artifacts, latest_user_text
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
@@ -216,10 +218,20 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     if not meta.get("escalate"):
         return AgentResult(user_facing=reply)
 
-    # Resumen confirmado: el bot cerró la venta. Se lo dejamos anotado al vendedor
-    # (el CRM pinta ese chat en verde) ANTES de escalar, para que cuando entre ya
-    # tenga el pedido delante en vez de reconstruirlo leyendo el hilo.
+    # Resumen confirmado: el bot cerró la venta. Antes de escalar dejamos dos
+    # rastros del pedido:
+    #   1. El pedido temporal en el panel de donregalo (best-effort). Así ventas
+    #      lo convierte con un clic en vez de recapturar los datos a mano.
+    #   2. La venta en el CRM (chat en verde), para que el asesor entre sabiendo
+    #      qué se vendió en vez de reconstruirlo leyendo el hilo.
     conversation_id = ctx.get("conversation_id")
+    if meta.get("create_order") and settings.pedido_temporal_enabled:
+        data = await create_temporal_order(state, ctx.get("wa_id") or "")
+        if data and data.get("id_pedido_temporal"):
+            try:
+                state.pedido_temporal_id = int(data["id_pedido_temporal"])
+            except (TypeError, ValueError):
+                pass
     if conversation_id is not None:
         await announce_sale(conversation_id, state)
 

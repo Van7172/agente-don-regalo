@@ -19,6 +19,7 @@ _BY_NAME = {t["function"]["name"]: t for t in TOOLS}
 # multiplicaba él mismo los precios — aritmética de dinero a cargo de un LLM, en
 # un prompt que a la vez le prohíbe inventar precios.
 CATALOG_TOOLS = (
+    "explorar_catalogo",
     "buscar_semantico",
     "productos_similares",
     "listar_categorias",

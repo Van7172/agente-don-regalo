@@ -34,6 +34,9 @@ def build_sale(state: ConversationState) -> dict[str, Any]:
         "envio_sol": state.shipping_fee_sol,
         "fecha": state.date or "",
         "horario": state.time_slot or "",
+        # id del pedido ya creado en el panel (si se pudo): el asesor lo abre y
+        # convierte, sin recapturar nada.
+        "pedido_temporal_id": state.pedido_temporal_id,
         "cerrada_en": int(time.time()),
         "motivo": state.handoff_reason or "cliente listo para pagar",
     }
@@ -93,12 +96,19 @@ def summary(sale: dict[str, Any], conversation_id: int) -> str:
     envio = (
         f"S/{float(sale['envio_sol']):.2f}" if sale.get("envio_sol") is not None else "—"
     )
+    pedido = ""
+    if sale.get("pedido_temporal_id"):
+        pedido = (
+            f"· Pedido temporal #{sale['pedido_temporal_id']} ya en el panel "
+            "(solo conviértelo)\n"
+        )
     return (
         "💚 *VENTA CERRADA POR REGALITO* — solo falta cobrar\n"
         f"Conversación #{conversation_id}\n"
         f"· Producto: {sale.get('producto') or '—'}\n"
         f"· Distrito: {sale.get('distrito') or '—'} (envío {envio})\n"
         f"· Fecha: {sale.get('fecha') or '—'}\n"
-        f"· Horario: {sale.get('horario') or '—'}\n\n"
+        f"· Horario: {sale.get('horario') or '—'}\n"
+        f"{pedido}\n"
         "Entra al chat en el CRM (está en verde) y coordina el pago."
     )

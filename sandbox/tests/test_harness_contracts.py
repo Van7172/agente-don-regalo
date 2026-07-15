@@ -65,10 +65,18 @@ def test_el_resumen_del_pedido_nombra_el_producto_real():
         district="Surco",
         date="viernes",
         time_slot="09:00 AM a 11:00 AM",
-        checkout_step="card",
+        dedicatoria="Sin dedicatoria",
+        nombre_destinatario="Ana",
+        apellidos_destinatario="Pérez",
+        telefono_destinatario="999888777",
+        direccion="Av. Primavera 123",
+        tipo=0,
+        checkout_step="contact",
     )
-    _, reply, _ = advance_checkout(state, "no")
+    # Al completar los datos del comprador se muestra el resumen final.
+    _, reply, _ = advance_checkout(state, "Luis Gómez luis@mail.com")
 
+    assert state.checkout_step == "summary"
     assert "Terrario Familia Panditas" in reply
     assert "Producto elegido" not in reply
 

@@ -12,8 +12,12 @@ from app.harness.state import ConversationState
 __all__ = [
     "SCHEDULE_OPTIONS",
     "advance_checkout",
+    "parse_address",
+    "parse_contact",
+    "parse_recipient",
     "parse_schedule",
     "resolve_chosen_product",
+    "split_name",
     "start_checkout",
     "wants_checkout",
 ]
@@ -58,10 +62,29 @@ def parse_schedule(text: str) -> str | None:
     return None
 
 
+_ASK_RECIPIENT = (
+    "¿Para quién es el regalo? 🎁 Escríbeme el *nombre y apellido* del "
+    "destinatario y un *teléfono* de contacto por si el motorizado lo necesita."
+)
+_ASK_ADDRESS = (
+    "¿A qué *dirección* lo llevamos? 🏠 Incluye referencias y dime si es una "
+    "*casa* o una *oficina*."
+)
+_ASK_CONTACT = (
+    "¡Casi listo! ✨ ¿A nombre de quién va el pedido y a qué *correo* te "
+    "enviamos la confirmación? (el teléfono lo tomo de este WhatsApp)"
+)
+
+
 def advance_checkout(state: ConversationState, user_text: str) -> tuple[ConversationState, str, dict[str, Any]]:
     """
     Avanza un paso del cierre. Devuelve (state, reply, meta).
     meta puede incluir escalate=True en payment tras confirmación.
+
+    Tras el horario se recogen los datos que exige `POST /pedidos/temporales`:
+    dedicatoria (paso `card`/`card_text`), destinatario, dirección y datos del
+    comprador. Recién con todo eso se muestra el resumen y, al confirmarlo, el
+    orquestador crea el pedido temporal y escala al pago.
     """
     step = state.checkout_step or "idle"
     text = (user_text or "").strip()
@@ -107,14 +130,52 @@ def advance_checkout(state: ConversationState, user_text: str) -> tuple[Conversa
         return state, "¿Quieres incluir una tarjeta con mensaje? 💌", meta
 
     if step == "card":
-        # Cualquier respuesta avanza; "sí" implica que pedirán el texto en el mismo flujo simple.
         low = text.casefold()
         if low.startswith("s") and "no" not in low[:4]:
-            state.checkout_step = "summary"
-            # Pedir texto y aún así preparar resumen en el siguiente turno sería ideal;
-            # aquí pedimos el mensaje y guardamos flag liviano.
-            return state, "¡Genial! ¿Qué texto quieres en la tarjeta?", {**meta, "await_card_text": True}
+            state.checkout_step = "card_text"
+            return state, "¡Genial! ✍️ ¿Qué texto quieres en la tarjeta?", meta
+        # Sin tarjeta: la API exige dedicatoria, mandamos un valor explícito.
+        state.dedicatoria = "Sin dedicatoria"
+        state.checkout_step = "recipient"
+        return state, _ASK_RECIPIENT, meta
 
+    if step == "card_text":
+        state.dedicatoria = text or "Sin dedicatoria"
+        state.checkout_step = "recipient"
+        return state, _ASK_RECIPIENT, meta
+
+    if step == "recipient":
+        nombre, apellidos, telefono = parse_recipient(text)
+        # Sin al menos un nombre no podemos avanzar con algo útil: repreguntamos.
+        if not nombre:
+            return state, _ASK_RECIPIENT, meta
+        state.nombre_destinatario = nombre
+        state.apellidos_destinatario = apellidos
+        state.telefono_destinatario = telefono
+        state.checkout_step = "address"
+        return state, _ASK_ADDRESS, meta
+
+    if step == "address":
+        direccion, tipo = parse_address(text)
+        if not direccion:
+            return state, _ASK_ADDRESS, meta
+        state.direccion = direccion
+        state.tipo = tipo
+        state.checkout_step = "contact"
+        return state, _ASK_CONTACT, meta
+
+    if step == "contact":
+        nombre, apellidos, email = parse_contact(text)
+        if not email:
+            return (
+                state,
+                "Necesito un *correo* válido para enviarte la confirmación. "
+                "¿Me lo compartes? ✉️",
+                meta,
+            )
+        state.nombre_cliente = nombre
+        state.apellidos_cliente = apellidos
+        state.email_cliente = email
         state.checkout_step = "summary"
         return state, _summary_message(state) + "\n¿Todo correcto? 😊", meta
 
@@ -124,6 +185,7 @@ def advance_checkout(state: ConversationState, user_text: str) -> tuple[Conversa
             state.checkout_step = "payment"
             state.handoff_reason = "cliente listo para pagar / coordinar comprobante"
             meta["escalate"] = True
+            meta["create_order"] = True
             return (
                 state,
                 "Perfecto 🙌 Un asesor te comparte el link o las cuentas para pagar.",
@@ -146,14 +208,86 @@ def _summary_message(state: ConversationState) -> str:
     fee = ""
     if state.shipping_fee_sol is not None:
         fee = f" — envío S/{state.shipping_fee_sol:.2f}"
-    return (
-        "📋 *Resumen del pedido:*\n"
-        f"· Producto: {product}\n"
-        f"· Distrito: {distrito}{fee}\n"
-        f"· Fecha: {state.date or '—'}\n"
-        f"· Horario: {state.time_slot or '—'}\n"
-        "¿Todo correcto? 😊"
-    )
+    destinatario = " ".join(
+        p for p in (state.nombre_destinatario, state.apellidos_destinatario) if p
+    ) or "—"
+    tipo_txt = ""
+    if state.tipo is not None:
+        tipo_txt = " (oficina)" if state.tipo == 1 else " (casa)"
+    lines = [
+        "📋 *Resumen del pedido:*",
+        f"· Producto: {product}",
+        f"· Distrito: {distrito}{fee}",
+        f"· Fecha: {state.date or '—'}",
+        f"· Horario: {state.time_slot or '—'}",
+        f"· Para: {destinatario}",
+        f"· Dirección: {state.direccion or '—'}{tipo_txt}",
+    ]
+    if state.dedicatoria and state.dedicatoria != "Sin dedicatoria":
+        lines.append(f"· Tarjeta: {state.dedicatoria}")
+    return "\n".join(lines)
+
+
+_PHONE_RE = re.compile(r"(\+?\d[\d\s().\-]{5,}\d)")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_OFFICE_RE = re.compile(r"\boficina\b|\btrabajo\b|\bempresa\b|\bof\.\b", re.I)
+# Muletillas que la gente antepone al dar nombre/teléfono; se limpian antes de
+# separar nombre y apellidos, para no acabar con nombre="telefono".
+_NAME_NOISE_RE = re.compile(
+    r"\b(tel[eé]fono|telf|cel(?:ular)?|n[uú]mero|numero|contacto|"
+    r"nombre|se\s+llama|es|para|mi|el|la|su|de)\b",
+    re.I,
+)
+
+
+def split_name(full: str) -> tuple[str, str]:
+    """Parte un nombre completo en (nombre, apellidos). Heurística simple."""
+    parts = [p for p in re.split(r"\s+", (full or "").strip()) if p]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+def parse_phone(text: str) -> str:
+    """Extrae un teléfono del texto (solo dígitos y un posible '+')."""
+    m = _PHONE_RE.search(text or "")
+    if not m:
+        return ""
+    return re.sub(r"[^\d+]", "", m.group(1))
+
+
+def _clean_name(text: str) -> str:
+    text = _NAME_NOISE_RE.sub(" ", text or "")
+    text = re.sub(r"[,;:_/\\\-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_recipient(text: str) -> tuple[str, str, str]:
+    """(nombre, apellidos, teléfono) del destinatario, a partir de texto libre."""
+    telefono = parse_phone(text)
+    resto = _PHONE_RE.sub(" ", text or "") if telefono else (text or "")
+    nombre, apellidos = split_name(_clean_name(resto))
+    return nombre, apellidos, telefono
+
+
+def parse_address(text: str) -> tuple[str, int]:
+    """(dirección, tipo) donde tipo = 1 si menciona oficina, si no 0 (casa)."""
+    direccion = (text or "").strip()
+    tipo = 1 if _OFFICE_RE.search(direccion) else 0
+    return direccion, tipo
+
+
+def parse_contact(text: str) -> tuple[str, str, str]:
+    """(nombre, apellidos, email) del comprador, a partir de texto libre."""
+    email = ""
+    m = _EMAIL_RE.search(text or "")
+    if m:
+        email = m.group(0)
+    resto = _EMAIL_RE.sub(" ", text or "") if email else (text or "")
+    nombre, apellidos = split_name(_clean_name(resto))
+    return nombre, apellidos, email
 
 
 def start_checkout(state: ConversationState, product_name: str = "", product_id: int | None = None) -> ConversationState:

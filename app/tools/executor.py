@@ -12,6 +12,7 @@ from app.tools import catalog, search
 log = logging.getLogger(__name__)
 
 _CATALOG_TOOLS = {
+    "explorar_catalogo":   catalog.explorar_catalogo,
     "listar_categorias":   catalog.listar_categorias,
     "listar_ocasiones":    catalog.listar_ocasiones,
     "buscar_productos":    catalog.buscar_productos,

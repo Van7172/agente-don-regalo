@@ -83,10 +83,23 @@ def test_checkout_fsm_happy_path():
     st, reply, _ = advance_checkout(st, "2")
     assert st.time_slot
     assert st.checkout_step == "card"
+    # Sin tarjeta → se piden los datos que exige el pedido temporal.
     st, reply, _ = advance_checkout(st, "no")
+    assert st.checkout_step == "recipient"
+    assert st.dedicatoria == "Sin dedicatoria"
+    st, reply, _ = advance_checkout(st, "Ana Pérez 999888777")
+    assert st.checkout_step == "address"
+    assert st.nombre_destinatario == "Ana"
+    assert st.telefono_destinatario == "999888777"
+    st, reply, _ = advance_checkout(st, "Av. Primavera 123, oficina 5")
+    assert st.checkout_step == "contact"
+    assert st.tipo == 1
+    st, reply, _ = advance_checkout(st, "Luis Gómez luis@mail.com")
     assert st.checkout_step == "summary"
+    assert st.email_cliente == "luis@mail.com"
     st, reply, meta = advance_checkout(st, "sí")
     assert meta.get("escalate")
+    assert meta.get("create_order")
     assert st.checkout_step == "payment"
 
 

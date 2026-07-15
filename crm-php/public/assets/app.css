@@ -538,6 +538,14 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   margin-bottom: 2px; font-weight: 700;
 }
 .bubble .txt { white-space: pre-wrap; }
+.bubble .txt .msg-link {
+  color: inherit; font-weight: 600;
+  text-decoration: underline; text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.bubble .txt .msg-link:hover { opacity: 0.85; }
+/* En la burbuja del contacto (fondo claro) el enlace toma el color de marca. */
+.bubble.from-contact .txt .msg-link { color: var(--color-accent-600, #b45309); }
 .bubble .at { font-size: 10px; opacity: 0.6; margin-top: 3px; text-align: right; }
 .bubble.has-media { max-width: min(340px, 78%); }
 

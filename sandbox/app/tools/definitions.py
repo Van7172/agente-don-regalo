@@ -7,6 +7,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "explorar_catalogo",
+            "description": (
+                "TAXONOMÍA REAL de la tienda: categorías, subcategorías, filtros, "
+                "ocasiones y landings tal como existen en la web. Úsala como PRIMER "
+                "paso ANTES de ofrecerle al cliente 'tipos' o 'categorías' de "
+                "producto, para NO inventar opciones (ej. no existe 'desayuno dulce "
+                "vs salado' salvo que aparezca aquí). Ofrece SOLO nombres que "
+                "aparezcan en su respuesta, y usa esos slugs (categoria, filtro, "
+                "landing, ocasion) al buscar productos."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "incluir_temporales": {
+                        "type": "boolean",
+                        "description": "Por defecto false. Ponlo en true para incluir campañas de temporada (Día del Padre, Navidad, etc.) en la taxonomía.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "listar_categorias",
             "description": "Lista todas las categorías y subcategorías de la tienda. Úsala cuando el cliente quiera ver qué productos hay disponibles o pida ver el catálogo.",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -107,18 +132,31 @@ TOOLS = [
         "function": {
             "name": "buscar_productos",
             "description": (
-                "Búsqueda por coincidencia de texto exacta (nombre o característica). "
-                "Úsala como respaldo cuando buscar_semantico no encuentre lo que el "
-                "cliente menciona, o cuando el cliente dé un nombre/término muy puntual. "
-                "Si conoces la ocasión, pasa `id_ocasion`. "
-                "Por defecto NO devuelve arreglos fúnebres."
+                "Búsqueda estructurada en el catálogo real por slug de "
+                "categoría/filtro/landing (los que da `explorar_catalogo`), y/o por "
+                "texto exacto. Úsala cuando el cliente elija una opción de la "
+                "taxonomía real o dé un término puntual. Los slugs (`categoria`, "
+                "`filtro`, `landing`, `id_ocasion`) DEBEN salir de `explorar_catalogo`: "
+                "no los inventes. Por defecto NO devuelve arreglos fúnebres."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "q": {
                         "type": "string",
-                        "description": "Término de búsqueda del producto que el cliente mencionó (ej: rosas, peluche, desayuno)",
+                        "description": "Opcional. Término de búsqueda por texto (ej: rosas, peluche, desayuno). Puede ir solo o junto a un slug.",
+                    },
+                    "categoria": {
+                        "type": "string",
+                        "description": "Opcional. Slug de categoría (`url_categoria`) de `explorar_catalogo`, ej: desayunos, peluches. Si es padre, incluye sus subcategorías.",
+                    },
+                    "filtro": {
+                        "type": "string",
+                        "description": "Opcional. Slug de filtro (`url_filtro`) de `explorar_catalogo`, ej: para-hombre, girasoles.",
+                    },
+                    "landing": {
+                        "type": "string",
+                        "description": "Opcional. Slug de landing (`url_categoria_filtro`) de `explorar_catalogo`, un cruce curado categoría×filtro, ej: desayunos-de-cumpleanos. Si lo usas, no repitas categoria+filtro.",
                     },
                     "id_ocasion": {
                         "type": "integer",
@@ -130,7 +168,7 @@ TOOLS = [
                         "description": "Orden por precio: asc (menor a mayor) o desc (mayor a menor). Por defecto asc.",
                     },
                 },
-                "required": ["q"],
+                "required": [],
             },
         },
     },

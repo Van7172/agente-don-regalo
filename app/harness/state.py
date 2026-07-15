@@ -11,12 +11,18 @@ from app.crm import http_client as crm_http
 log = logging.getLogger(__name__)
 
 # Pasos de cierre (alineados a system.py CIERRE DE PEDIDO).
+# Tras `card` se recogen los datos que exige `POST /pedidos/temporales`
+# (destinatario, dirección y datos del comprador) antes del resumen.
 CHECKOUT_STEPS = (
     "idle",
     "district",
     "date",
     "schedule",
     "card",
+    "card_text",
+    "recipient",
+    "address",
+    "contact",
     "summary",
     "payment",
     "done",
@@ -30,10 +36,25 @@ class ConversationState:
     chosen_product_id: Optional[int] = None
     chosen_product_name: str = ""
     district: str = ""
+    # id del distrito en la API de donregalo. Lo exige `POST /pedidos/temporales`;
+    # `coverage` lo resuelve al confirmar el distrito y aquí lo conservamos.
+    id_distrito: Optional[int] = None
     shipping_fee_sol: Optional[float] = None
     shipping_fee_usd: Optional[float] = None
     date: str = ""
     time_slot: str = ""
+    # Datos que recoge el cierre para crear el pedido temporal en el panel.
+    dedicatoria: str = ""
+    nombre_destinatario: str = ""
+    apellidos_destinatario: str = ""
+    telefono_destinatario: str = ""
+    direccion: str = ""
+    tipo: Optional[int] = None  # 0 = casa, 1 = oficina
+    nombre_cliente: str = ""
+    apellidos_cliente: str = ""
+    email_cliente: str = ""
+    # id del pedido temporal ya creado en la API (para no duplicarlo y para el aviso).
+    pedido_temporal_id: Optional[int] = None
     shown_product_ids: list[int] = field(default_factory=list)
     # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
     # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".

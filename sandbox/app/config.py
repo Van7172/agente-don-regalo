@@ -81,6 +81,11 @@ class Settings:
         self.donregalo_api_base: str = os.getenv(
             "DONREGALO_API_BASE", "https://donregalo.pe/clienteApiApp/api"
         )
+        # Al cerrar una venta, crear el pedido temporal en el panel de donregalo
+        # (`POST /pedidos/temporales`). Se puede apagar sin tocar código.
+        self.pedido_temporal_enabled: bool = (
+            os.getenv("PEDIDO_TEMPORAL_ENABLED", "1") == "1"
+        )
 
 
 settings = Settings()

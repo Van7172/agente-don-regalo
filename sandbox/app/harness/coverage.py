@@ -217,6 +217,13 @@ async def resolve_coverage(
         "shipping_fee_usd": fee_usd_f,
         "intent_last": "coverage",
     }
+    # `id_distrito` lo exige `POST /pedidos/temporales`; lo guardamos aquí para no
+    # tener que resolver el nombre otra vez al cerrar.
+    if matched.get("id_distrito") is not None:
+        try:
+            patch["id_distrito"] = int(matched["id_distrito"])
+        except (TypeError, ValueError):
+            pass
     if state.checkout_step in ("idle", "district"):
         patch["checkout_step"] = "date" if state.chosen_product_id else "idle"
 

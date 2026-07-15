@@ -121,6 +121,22 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
 
+  // URLs http/https dentro del texto de un mensaje. El bot manda enlaces
+  // (formulario de pedido, ficha de producto, rastreo…) y en el CRM llegaban
+  // como texto plano: el asesor tenía que copiarlos a mano.
+  const URL_RE = /\bhttps?:\/\/[^\s<]+[^\s<.,;:!?)\]}'"]/gi;
+
+  /**
+   * Escapa el texto (anti-XSS) y CONVIERTE las URLs en enlaces clickeables.
+   * Primero escapa —nunca insertamos HTML del cliente sin escapar— y recién
+   * sobre el texto ya seguro reemplaza las URLs por <a>.
+   */
+  const linkify = (s) =>
+    esc(s).replace(URL_RE, (url) => {
+      const safe = url.replace(/"/g, "&quot;");
+      return `<a class="msg-link" href="${safe}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
+
   function initials(name, fallback = "?") {
     const parts = String(name ?? "").trim().split(/\s+/).filter(Boolean);
     if (!parts.length) return fallback;
@@ -383,7 +399,7 @@
       <div class="bubble from-${sender}${media ? " has-media" : ""}">
         <div class="who">${esc(label)}</div>
         ${media}
-        ${showText ? `<div class="txt">${esc(m.content)}</div>` : ""}
+        ${showText ? `<div class="txt">${linkify(m.content)}</div>` : ""}
         <div class="at">${esc(timeLabel(m.created_at))}</div>
       </div>`;
     return row;

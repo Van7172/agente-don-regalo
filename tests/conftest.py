@@ -12,9 +12,20 @@ que se quiere probar ES la integración.
 """
 import pytest
 
+from app.config import settings as app_settings
 from app.crm import http_client as crm_http
 from app.harness import master as master_mod
 from app.harness import state as state_mod
+
+
+@pytest.fixture(autouse=True)
+def sin_pedido_temporal(monkeypatch):
+    """El cierre no llama a `POST /pedidos/temporales` en los tests.
+
+    Un test de cierre no debería crear pedidos en el panel real. Los tests que sí
+    prueban esa integración lo activan y mockean el HTTP a mano.
+    """
+    monkeypatch.setattr(app_settings, "pedido_temporal_enabled", False, raising=False)
 
 
 @pytest.fixture(autouse=True)

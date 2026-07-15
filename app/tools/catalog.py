@@ -55,6 +55,20 @@ async def _productos(
     return adapters.products_payload(payload, rate, default_slug=default_slug)
 
 
+async def explorar_catalogo(client: httpx.AsyncClient, args: dict):
+    """Taxonomía real del sitio (categorías, filtros, ocasiones, landings).
+
+    Es el "paso 0" del catálogo: el bot ofrece SOLO lo que aparece aquí, así no
+    inventa tipos que no existen. La taxonomía cambia poco, así que se cachea.
+    """
+    incluir = bool((args or {}).get("incluir_temporales"))
+    url = f"{settings.donregalo_api_base}/catalogo/navegacion"
+    if incluir:
+        # Con temporales la respuesta difiere: no compartimos caché con la base.
+        return await get(client, url, {"incluir_temporales": "true"})
+    return await _cached_get(client, url)
+
+
 async def listar_categorias(client: httpx.AsyncClient, _args: dict):
     return await get(client, f"{settings.donregalo_api_base}/categorias")
 
@@ -64,12 +78,27 @@ async def listar_ocasiones(client: httpx.AsyncClient, _args: dict):
 
 
 async def buscar_productos(client: httpx.AsyncClient, args: dict):
-    params: dict = {"q": args.get("q", ""), "per_page": DEFAULT_PER_PAGE}
+    params: dict = {"per_page": DEFAULT_PER_PAGE}
+    if args.get("q"):
+        params["q"] = args["q"]
+    # Slugs de la taxonomía real (`explorar_catalogo`): filtran en el servidor.
+    for key in ("categoria", "filtro", "landing"):
+        value = (args.get(key) or "").strip("/")
+        if value:
+            params[key] = value
     if args.get("orden") in ("asc", "desc"):
         params["orden"] = args["orden"]
     if args.get("id_ocasion"):
         params["ocasion"] = int(args["id_ocasion"])
-    return await _productos(client, f"{settings.donregalo_api_base}/productos/buscar", params)
+    # Cuando el cliente eligió una categoría de la taxonomía, esos productos SON
+    # de esa categoría aunque el item no lo repita: se lo estampamos al adapter.
+    default_slug = params.get("categoria", "") if not params.get("landing") else ""
+    return await _productos(
+        client,
+        f"{settings.donregalo_api_base}/productos/buscar",
+        params,
+        default_slug=default_slug,
+    )
 
 
 async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
