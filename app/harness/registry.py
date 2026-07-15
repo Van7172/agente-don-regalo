@@ -18,12 +18,14 @@ _BY_NAME = {t["function"]["name"]: t for t in TOOLS}
 # monedas desde `tools/adapters.py`. Antes el modelo pedía el tipo de cambio y
 # multiplicaba él mismo los precios — aritmética de dinero a cargo de un LLM, en
 # un prompt que a la vez le prohíbe inventar precios.
+# `explorar_catalogo` es la ÚNICA puerta a la taxonomía. Se quitaron
+# `listar_categorias` y `listar_ocasiones`: devolvían una taxonomía parcial (sin
+# filtros ni landings) y competían con `explorar_catalogo` — el modelo veía dos
+# tools "para ver el catálogo" y podía elegir la incompleta, luego inventar el resto.
 CATALOG_TOOLS = (
     "explorar_catalogo",
     "buscar_semantico",
     "productos_similares",
-    "listar_categorias",
-    "listar_ocasiones",
     "buscar_productos",
     "catalogo_categoria",
     "productos_destacados",

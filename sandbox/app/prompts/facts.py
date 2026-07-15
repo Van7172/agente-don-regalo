@@ -8,26 +8,16 @@ from __future__ import annotations
 
 from app.delivery_windows import SCHEDULE_OPTIONS
 
-CATALOG_TAXONOMY = """## CATEGORÍAS REALES (slugs para `catalogo_categoria`)
-Permanentes:
-- **arreglos-florales** → arreglos-florales-variados, en-canasta,
-  arreglos-florales-con-peluche, cajas, corporativos, ramos-de-flores, floreros
-- **desayunos** → desayunos-criollos, desayunos-de-amor, desayunos-light,
-  desayunos-tematicos
-- **peluches**
-- **arreglos-funebres** → cruces-funebres, lagrimas-funebres,
-  coronas-para-difuntos, mantos-funebres
-- **regalo-para-bebe**
-- **cestas**
-- **plantas** → terrarios, orquideas, suculentas
-
-Las categorías de campaña (Día del Padre, Navidad, San Valentín…) rotan durante
-el año y NO se listan aquí: `listar_categorias` marca cada campaña vigente con
-`es_temporal: true`.
-
-## OCASIONES REALES (ids para `productos_por_ocasion`)
-1 Cumpleaños · 2 Aniversario · 3 Felicitación · 4 Nacimiento
-5 Agradecimiento · 6 Negocios · 7 Otros"""
+# La taxonomía NO se hardcodea aquí. Una lista estática en el prompt tiene dos
+# problemas: se desactualiza (drift), y le da al modelo un listado del que
+# EXTRAPOLAR — de "desayunos-criollos, de-amor, light" inventó "clásico, premium,
+# sorpresa". La fuente única y viva es la tool `explorar_catalogo`
+# (`GET /catalogo/navegacion`), que además trae `instrucciones_agente`. Es
+# progressive disclosure: se trae cuando se necesita, no se precarga.
+CATALOG_TAXONOMY = """## TAXONOMÍA — SIEMPRE DESDE `explorar_catalogo`
+NO tienes una lista de categorías, subtipos, filtros ni ocasiones en este prompt,
+y es a propósito. Los nombres y slugs reales salen SOLO de `explorar_catalogo`.
+Ofrecer un "tipo" de producto sin haberla llamado antes = inventar. No lo hagas."""
 
 PRICING = """## PRECIOS Y MONEDA
 - Cada producto llega ya con `precio_sol` y `precio_usd`. **Cópialos tal cual.**

@@ -32,27 +32,11 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "listar_categorias",
-            "description": "Lista todas las categorías y subcategorías de la tienda. Úsala cuando el cliente quiera ver qué productos hay disponibles o pida ver el catálogo.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "listar_ocasiones",
-            "description": "Lista todas las ocasiones disponibles: Cumpleaños, Aniversario, Nacimiento, etc. Úsala antes de buscar productos por ocasión.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "buscar_semantico",
             "description": (
                 "NO la uses como busqueda libre para campanas temporales como Dia del "
                 "Padre, Dia de la Madre, Navidad o San Valentin. En esos casos usa "
-                "listar_categorias y catalogo_categoria; si necesitas semantica dentro "
+                "explorar_catalogo y catalogo_categoria; si necesitas semantica dentro "
                 "de la campana, debes enviar categoria_slug con el slug temporal. "
                 "BÚSQUEDA PRINCIPAL de productos. Úsala SIEMPRE que el cliente describa "
                 "lo que busca con palabras (intención, estilo, sentimiento, ocasión, "

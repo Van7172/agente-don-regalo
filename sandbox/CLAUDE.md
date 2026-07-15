@@ -72,6 +72,11 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    tiene nada de esa categoría entra Qdrant, y esos productos van marcados
    `aproximado: true` para que el bot diga que son alternativas
    ([`executor.enforce_category`](app/tools/executor.py)).
+4. **La taxonomía (tipos/categorías/subtipos) NO va en el prompt.** Sale SOLO de la
+   tool `explorar_catalogo` (`GET /catalogo/navegacion`). Una lista hardcodeada en el
+   prompt se desactualiza Y le da al modelo de dónde extrapolar: inventó "desayuno
+   clásico/premium", "globos y kits". Una sola puerta a la taxonomía; nada de
+   `listar_categorias` compitiendo.
 
 ## Evals: la red de regresión
 

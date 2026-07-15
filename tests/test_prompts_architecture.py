@@ -76,12 +76,33 @@ def test_catalogo_no_puede_escalar():
 
 def test_los_facts_van_solo_a_quien_los_necesita():
     catalogo = build_system(AGENTS["catalog"], ConversationState())
-    cobertura = build_system(AGENTS["coverage"], ConversationState())
 
-    assert "OCASIONES REALES" in catalogo
-    assert "OCASIONES REALES" not in cobertura, "cobertura no necesita los ids de ocasión"
     assert "DEVOLUCIONES" not in catalogo, "catálogo no necesita la política de devoluciones"
     assert "DEVOLUCIONES" in build_system(AGENTS["policy"], ConversationState())
+
+
+def test_el_catalogo_no_lleva_taxonomia_hardcodeada():
+    """La taxonomía sale SOLO de `explorar_catalogo`, nunca de una lista en el prompt.
+
+    El bot ofreció "Desayuno clásico/premium/light" y "Globos y kits festivos":
+    categorías que no existen. La causa era una lista estática en el prompt de la que
+    el modelo extrapolaba. Una lista en el prompt es una segunda fuente de verdad que
+    se desactualiza e invita a inventar; la única fuente viva es la tool.
+    """
+    catalogo = build_system(AGENTS["catalog"], ConversationState())
+
+    # No debe haber un listado de subcategorías baked en el prompt.
+    assert "desayunos-criollos" not in catalogo
+    assert "desayunos-de-amor" not in catalogo
+    # Sí debe forzar la tool como fuente de taxonomía.
+    assert "explorar_catalogo" in catalogo
+
+    # Y la tool tiene que estar en el toolset del agente.
+    tool_names = {t["function"]["name"] for t in AGENTS["catalog"].tools()}
+    assert "explorar_catalogo" in tool_names
+    # Sin taxonomías parciales que compitan.
+    assert "listar_categorias" not in tool_names
+    assert "listar_ocasiones" not in tool_names
 
 
 @pytest.mark.parametrize("name", sorted(AGENTS))
