@@ -107,44 +107,59 @@ async def test_catalogo_terrarios_vacio_cae_a_semantico(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_categoria_escasa_se_enriquece_con_variedad(monkeypatch):
-    """Regresión: "desayunos" (categoría padre) devolvía 2 productos directos y el
-    bot mostraba solo 2 —parecía falta de surtido—. Se rellena con semántica del
-    mismo término, filtrada a la categoría: son desayunos REALES (de subcategorías),
-    no alternativas, así que NO van marcados `aproximado`. Los directos van primero.
+async def test_categoria_lista_como_el_sitio_expandiendo_hijas(monkeypatch):
+    """`/categorias/{slug}/productos` filtra por id_categoria EXACTA: para un padre
+    devolvía 2 desayunos cuando el sitio muestra 20 (el resto vive en Criollos,
+    Light, de Amor, Temáticos). Hay que listar con `/productos/buscar?categoria=`,
+    que expande a las hijas (CATALOGO.md §4.3).
     """
-    async def fake_cat(client, args):
-        return {
-            "data": [
-                {"id_producto": 1, "nombre": "Pikeo en Tabla Gourmet", "categoria_slug": "desayunos"},
-                {"id_producto": 2, "nombre": "Desayuno Dulce Rosita", "categoria_slug": "desayunos"},
-            ],
-            "total": 2,
-        }
+    from app.tools import catalog
 
-    async def fake_sem(client, args):
-        return {
-            "data": [
-                {"id_producto": 2, "nombre": "Desayuno Dulce Rosita", "categoria_slug": "desayunos"},  # dup
-                {"id_producto": 3, "nombre": "Desayuno Buen Día", "categoria_slug": "desayunos"},
-                {"id_producto": 4, "nombre": "Desayuno Cumpleañero", "categoria_slug": "desayunos"},
-                {"id_producto": 5, "nombre": "Desayuno Saludable", "categoria_slug": "desayunos"},
-                {"id_producto": 6, "nombre": "Desayuno Corazón Fit", "categoria_slug": "desayunos"},
-            ],
-            "total": 5,
-            "fuente": "semantico",
-        }
+    llamadas = []
 
-    monkeypatch.setattr(ex.catalog, "catalogo_categoria", fake_cat)
-    monkeypatch.setattr(ex.search, "buscar_semantico", fake_sem)
+    async def fake_get(client, url, params=None):
+        llamadas.append((url, dict(params or {})))
+        return {"data": [{"id_producto": 1, "nombre_producto": "Gustito Criollo",
+                          "url_categoria": "desayunos-criollos", "precio_producto": 30}]}
 
-    raw = await ex.execute_tool("catalogo_categoria", {"slug": "desayunos"})
-    data = json.loads(raw)
-    ids = [p["id_producto"] for p in data["data"]]
-    assert len(ids) >= 5, "una categoría escasa debe mostrar variedad"
-    assert ids[:2] == [1, 2], "los productos directos de la API van primero"
-    assert len(ids) == len(set(ids)), "sin repetidos"
-    assert not data.get("aproximado"), "son de la categoría: no son alternativas"
+    monkeypatch.setattr(catalog, "get", fake_get)
+    monkeypatch.setattr(catalog.adapters, "usd_pen_rate", lambda c: _rate())
+
+    await catalog.catalogo_categoria(None, {"slug": "desayunos"})
+
+    url, params = llamadas[0]
+    assert url.endswith("/productos/buscar"), "debe listar como el sitio, no por id exacta"
+    assert params.get("categoria") == "desayunos"
+
+
+async def _rate():
+    return 3.4
+
+
+@pytest.mark.asyncio
+async def test_categoria_funebre_reintenta_incluyendo_funebre(monkeypatch):
+    """`buscar` excluye los fúnebres salvo `incluir_funebre`, así que pedir la
+    categoría fúnebre devolvía 0. Pedirla explícitamente ES el permiso.
+    """
+    from app.tools import catalog
+
+    llamadas = []
+
+    async def fake_get(client, url, params=None):
+        llamadas.append(dict(params or {}))
+        if not (params or {}).get("incluir_funebre"):
+            return {"data": []}  # como responde la API sin el permiso
+        return {"data": [{"id_producto": 535, "nombre_producto": "Lágrima Fúnebre Blanco",
+                          "url_categoria": "lagrimas-funebres", "precio_producto": 35}]}
+
+    monkeypatch.setattr(catalog, "get", fake_get)
+    monkeypatch.setattr(catalog.adapters, "usd_pen_rate", lambda c: _rate())
+
+    result = await catalog.catalogo_categoria(None, {"slug": "arreglos-funebres"})
+
+    assert len(llamadas) == 2, "sin resultados debe reintentar con incluir_funebre"
+    assert llamadas[1].get("incluir_funebre") == "1"
+    assert result["data"][0]["nombre"] == "Lágrima Fúnebre Blanco"
 
 
 @pytest.mark.asyncio

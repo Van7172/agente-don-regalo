@@ -102,14 +102,29 @@ async def buscar_productos(client: httpx.AsyncClient, args: dict):
 
 
 async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
+    """Productos de una categoría, listados COMO EN EL SITIO.
+
+    Ojo con el endpoint: `/categorias/{slug}/productos` filtra por `id_categoria`
+    EXACTA, así que para una categoría padre devuelve solo lo colgado del padre y
+    no la familia — `desayunos` daba 2 productos cuando el sitio muestra 20 (el
+    resto vive en Criollos, Light, de Amor, Temáticos). `/productos/buscar?categoria=`
+    sí expande a las hijas, que es como lista la web (CATALOGO.md §4.3 y §6).
+    """
     slug = args.get("slug", "").strip("/")
-    return await _productos(
-        client,
-        f"{settings.donregalo_api_base}/categorias/{slug}/productos",
-        {"per_page": DEFAULT_PER_PAGE},
-        # Estos productos SON de esta categoría: la API no lo repite en cada item.
-        default_slug=slug,
-    )
+    url = f"{settings.donregalo_api_base}/productos/buscar"
+    params: dict = {"categoria": slug, "per_page": DEFAULT_PER_PAGE}
+    result = await _productos(client, url, params)
+
+    # `buscar` excluye los fúnebres salvo `incluir_funebre`, así que pedir la
+    # categoría fúnebre devolvía 0. Pedirla explícitamente ES el permiso: se
+    # reintenta. Para una categoría no fúnebre el reintento no añade nada (el
+    # filtro de categoría sigue mandando), así que es seguro y evita adivinar
+    # qué slugs son fúnebres — `coronas-para-difuntos` ni lo parece.
+    if slug and not (result.get("data") if isinstance(result, dict) else None):
+        params["incluir_funebre"] = "1"
+        result = await _productos(client, url, params)
+
+    return result
 
 
 async def productos_destacados(client: httpx.AsyncClient, _args: dict):
