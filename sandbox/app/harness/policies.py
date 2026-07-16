@@ -45,7 +45,8 @@ _SMALL_TALK_WORDS = frozenset(
 _HANDOFF_FORCE_RE = re.compile(
     r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
     r"comprobante|ya\s+pagu|transfer[ií]|"
-    r"descuento|cancelar|modificar\s+(el\s+)?pedido|"
+    # Con raíz: el cliente escribe "Cancelo el pedido", no "cancelar".
+    r"descuento|\bcancel\w*|\banul\w*|modificar\s+(el\s+)?pedido|"
     r"mala\s+atenci|no\s+me\s+ayud|quiero\s+hablar\s+con",
     re.IGNORECASE,
 )

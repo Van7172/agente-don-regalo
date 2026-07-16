@@ -42,6 +42,19 @@ from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
 log = logging.getLogger(__name__)
 
 
+# El bot OFRECIENDO un asesor: una pregunta que menciona a una persona del equipo
+# ("¿Quieres que consulte con un asesor?", "¿te paso con un ejecutivo?"). Si el
+# cliente dice "sí" a esto, está aceptando la derivación.
+_OFFERS_HANDOFF_RE = re.compile(
+    r"¿[^?]*\b(asesor|asesora|ejecutiv\w*|human\w*|una persona|del equipo)\b[^?]*\?",
+    re.I,
+)
+
+
+def _offers_handoff(reply: str | None) -> bool:
+    return bool(reply and _OFFERS_HANDOFF_RE.search(reply))
+
+
 def _caption_of(messages: list) -> str | None:
     """Texto que acompaña a una imagen (`latest_user_text` lo descarta a propósito).
 
@@ -146,6 +159,11 @@ async def run_master(
 
     state = _reduce(state, result)
 
+    # ¿Este turno el bot ofreció un asesor? Si el cliente responde "sí", el router
+    # sabrá que está aceptando la derivación y no una charla. Se recalcula cada
+    # turno, así que se apaga solo en cuanto el bot deja de ofrecerlo.
+    state.handoff_offered = _offers_handoff(result.user_facing)
+
     trace.tools = result.tools_used
     trace.product_ids = result.product_ids
     trace.escalated = result.escalate is not None
@@ -221,10 +239,13 @@ async def _handle_escalate(
     un momento" y jamás cedía el control.
     """
     # Red de seguridad contra un falso positivo del router LLM: si esto es charla
-    # trivial y NO viene de una derivación en curso, no derivamos — que responda
-    # concierge. Una confirmación dentro de una derivación ya iniciada
-    # (prev_intent=escalate) es continuación, no charla: no se re-juzga.
-    if prev_intent != "escalate":
+    # trivial y NO viene de una derivación, no derivamos — que responda concierge.
+    # NO se re-juzga cuando el cliente está aceptando una derivación: ni si ya
+    # estaba en curso (prev_intent=escalate), ni si el propio bot le ofreció el
+    # asesor el turno anterior (`handoff_offered`). Un "sí" ahí parece charla para
+    # `is_small_talk`, y descartarlo dejaba al cliente pidiendo un asesor que
+    # nunca llegaba.
+    if prev_intent != "escalate" and not state.handoff_offered:
         decision = handoff_policy(turn.messages)
         if not decision.allow:
             return await _run_specialty("small_talk", turn, state, **ctx)

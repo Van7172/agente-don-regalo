@@ -40,7 +40,13 @@ _DETAIL_RE = re.compile(
 )
 _ESCALATE_RE = re.compile(
     r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
-    r"comprobante|ya\s+pagu|mala\s+atenci|quiero\s+hablar\s+con",
+    r"comprobante|ya\s+pagu|mala\s+atenci|quiero\s+hablar\s+con|"
+    # Cancelar/anular un pedido NO lo hace el bot (lo dice el CORE): va a un
+    # humano. Va con raíz, no "cancelar" a secas: el cliente escribe "Cancelo el
+    # pedido gracias" — y eso acababa en el catálogo, buscando productos, así que
+    # la cancelación pasaba desapercibida y el bot seguía preguntando por la
+    # tarjeta mientras el cliente ya se había ido.
+    r"\bcancel\w*|\banul\w*",
     re.I,
 )
 _POLICY_RE = re.compile(
@@ -76,6 +82,16 @@ _CONFIRM_SHOW_RE = re.compile(
     r"muestrame(los|las)?|muestra(los|las|melos|melas)?|ensena(melos|melas)?|"
     r"a ver|ver(los|las)?|quiero ver(los|las)?|si (quiero|porfa|por favor|dale)"
     r")[\s!.,]*$",
+    re.I,
+)
+# Aceptar un asesor. Incluye "1" porque el bot suele ofrecerlo como menú
+# ("¿Quieres que un asesor te envíe las instrucciones para pagar? 1) Sí  2) No") y
+# el cliente contesta con el número. Solo se usa cuando consta que el bot ofreció
+# la derivación, así que un "1" suelto en otro contexto no dispara nada.
+_CONFIRM_HANDOFF_RE = re.compile(
+    r"^\s*(1|si+|sip+|claro( que si)?|dale|de una|va|vale|bueno|obvio|ok(ay|is|i)?|"
+    r"por favor|porfa|acepto|hazlo|si (quiero|porfa|por favor|dale)"
+    r")[\s!.,)]*$",
     re.I,
 )
 
@@ -131,12 +147,15 @@ def classify_rules(
     if _ESCALATE_RE.search(norm):
         return Classification("escalate", 0.95, "rules")
 
-    # Continuación de una derivación ya iniciada: un "sí / dale / ok" tras "¿te paso
-    # con un asesor ahora?" debe seguir en escalate (que ejecuta el handoff en
-    # código), no caer en small_talk → concierge, que no tiene esa tool y dejaba el
-    # handoff a medias ("te paso con un asesor, un momento" sin ceder el control).
-    if state.intent_last == "escalate" and _CONFIRM_SHOW_RE.match(norm):
-        return Classification("escalate", 0.9, "rules")
+    # El cliente acepta un asesor. Dos formas de llegar aquí:
+    #  a) una derivación ya iniciada (intent_last=escalate) y confirma;
+    #  b) el BOT ofreció el asesor el turno anterior ("¿quieres que consulte con un
+    #     asesor?") y el cliente dice "sí". El router solo ve ese "sí": sin la
+    #     marca del estado no sabría qué está aceptando, y el turno acababa en
+    #     catálogo/charla pidiendo teléfono y distrito en vez de derivar.
+    # En ambos casos manda `escalate`, que cede el control en código.
+    if (state.intent_last == "escalate" or state.handoff_offered) and _CONFIRM_HANDOFF_RE.match(norm):
+        return Classification("escalate", 0.95, "rules")
 
     if _TRACK_RE.search(norm):
         return Classification("track_order", 0.95, "rules")

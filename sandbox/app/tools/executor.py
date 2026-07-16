@@ -66,28 +66,6 @@ _BROAD_THEME_RE = (
 
 _MIN_RESULTS_OK = 2
 
-# Variedad mínima al mostrar una categoría. Algunas categorías padre tienen pocos
-# productos DIRECTOS (casi todo su catálogo vive en subcategorías que el endpoint
-# del padre no incluye: "desayunos" devuelve 2, el resto está en Cumpleaños,
-# Niños, Criollos…). Con menos de esto, enseñar 2 opciones parece falta de surtido.
-_MIN_VARIETY = 5
-
-
-def _merge_by_id(primary: object, extra: object, limit: int) -> object:
-    """Añade productos de `extra` a `primary` sin repetir ids, hasta `limit`."""
-    if not isinstance(primary, dict):
-        return primary
-    data = [p for p in (primary.get("data") or []) if isinstance(p, dict)]
-    seen = {p.get("id_producto") for p in data}
-    extra_data = extra.get("data") if isinstance(extra, dict) else None
-    for p in (extra_data or []):
-        if len(data) >= limit:
-            break
-        if isinstance(p, dict) and p.get("id_producto") not in seen:
-            data.append(p)
-            seen.add(p.get("id_producto"))
-    return {**primary, "data": data, "total": len(data)}
-
 
 def _norm_text(value: object) -> str:
     text = str(value or "").lower()
@@ -267,18 +245,6 @@ async def execute_tool(name: str, args: dict) -> str:
                         sem["aproximado"] = True
                         sem["categoria_pedida"] = slug
                         result = sem
-                elif 0 < result_product_count(result) < _MIN_VARIETY and slug:
-                    # Categoría con pocos productos directos: la enriquecemos con
-                    # búsqueda semántica del MISMO término, filtrada a la categoría.
-                    # Son productos REALES de la categoría (viven en subcategorías),
-                    # así que NO se marcan `aproximado`. Los directos van primero.
-                    q = slug.replace("-", " ")
-                    sem = await _semantic_fallback(
-                        client, q, base_args={"categoria_slug": slug}, reason="categoria_escasa",
-                    )
-                    sem = enforce_category(sem, slug)
-                    if result_product_count(sem) > 0:
-                        result = _merge_by_id(result, sem, catalog.DEFAULT_PER_PAGE)
 
             elif name in _CATALOG_TOOLS:
                 result = await _CATALOG_TOOLS[name](client, args or {})

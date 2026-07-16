@@ -64,6 +64,10 @@ class ConversationState:
     # vez de presentarse.
     presented: bool = False
     campaign_slug: str = ""
+    # ¿El turno anterior el bot OFRECIÓ un asesor ("¿quieres que consulte con un
+    # asesor?")? Entonces un "sí" del cliente es aceptar la derivación, no charla.
+    # El router solo ve el texto del cliente, no lo que ofreció el bot.
+    handoff_offered: bool = False
     handoff_reason: str = ""
     keep_human: bool = False
     last_human_outbound_at: Optional[float] = None  # epoch seconds

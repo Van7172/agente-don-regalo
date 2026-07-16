@@ -175,7 +175,65 @@ def test_imagen_con_caption_fuerte_respeta_la_intencion(caption, intent):
     assert got.intent == intent
 
 
-@pytest.mark.parametrize("text", ["si", "Sí", "dale", "ok", "va", "muéstrame"])
+@pytest.mark.parametrize(
+    "text",
+    ["Cancelo el pedido gracias", "quiero cancelar mi pedido", "anulo el pedido"],
+)
+def test_cancelar_un_pedido_va_a_un_humano(text):
+    """Regresión (VIHUZACA, 16-07): el cliente escribió "Cancelo el pedido gracias"
+    y el turno cayó en catalog_search — el bot ni se enteró y siguió preguntando
+    "¿Quieres incluir una tarjeta con mensaje?". El CORE es claro: el bot no
+    cancela pedidos. Vale incluso en pleno cierre.
+    """
+    s = ConversationState()
+    s.checkout_step = "card"
+    assert classify_rules(text, s).intent == "escalate"
+
+
+def test_cancelar_pasa_la_guarda_de_handoff():
+    """La guarda tenía "cancelar" pero el cliente escribe "Cancelo": no casaba."""
+    from app.harness.policies import handoff_policy
+
+    assert handoff_policy([{"role": "user", "content": "Cancelo el pedido gracias"}]).allow
+
+
+def test_un_numero_confirma_el_asesor_ofrecido_en_menu():
+    """Regresión (VIHUZACA, 16-07): el bot ofreció "¿Quieres que un asesor te envíe
+    las instrucciones para pagar? 1) Sí 2) No", el cliente puso "1" y no derivó
+    nunca — la confirmación solo reconocía "sí/dale/ok", no números.
+    """
+    s = _con_intent("checkout")
+    s.handoff_offered = True
+    assert classify_rules("1", s).intent == "escalate"
+
+
+def test_un_numero_suelto_sin_oferta_no_deriva():
+    """"1" solo confirma si consta que el bot ofreció el asesor."""
+    assert classify_rules("1", ConversationState()).intent != "escalate"
+
+
+@pytest.mark.parametrize("text", ["Si", "sí", "dale", "ok"])
+def test_aceptar_el_asesor_que_ofrecio_el_bot_deriva(text):
+    """Regresión (Mauro, 16-07): el bot ofreció "¿quieres que consulte con un
+    asesor?", el cliente dijo "Si" y, como el turno previo era de detalle (no
+    escalate), el "sí" acabó pidiendo teléfono y distrito en vez de derivar. Si el
+    bot ofreció el asesor, un "sí" ES aceptar la derivación.
+    """
+    s = _con_intent("product_detail")
+    s.handoff_offered = True
+    got = classify_rules(text, s)
+    assert got.intent == "escalate"
+    assert got.source == "rules"
+
+
+def test_sin_oferta_de_asesor_un_si_no_deriva():
+    """La marca es lo que da sentido al "sí": sin ella, no se inventa un handoff."""
+    s = _con_intent("product_detail")
+    s.handoff_offered = False
+    assert classify_rules("Si", s).intent != "escalate"
+
+
+@pytest.mark.parametrize("text", ["si", "Sí", "dale", "ok", "va", "1"])
 def test_confirmacion_en_derivacion_en_curso_sigue_en_escalate(text):
     """Regresión (Sonia, 15-07): el "sí / dale" a "¿te paso con un asesor ahora?"
     caía en small_talk → concierge (sin la tool de handoff), así que el bot decía
@@ -184,3 +242,8 @@ def test_confirmacion_en_derivacion_en_curso_sigue_en_escalate(text):
     got = classify_rules(text, _con_intent("escalate"))
     assert got.intent == "escalate"
     assert got.source == "rules"
+
+
+def test_muestrame_en_una_derivacion_no_es_aceptar_al_asesor():
+    """"Muéstrame" es "enséñame algo", no "sí, pásame con un asesor"."""
+    assert classify_rules("muéstrame", _con_intent("escalate")).intent != "escalate"
