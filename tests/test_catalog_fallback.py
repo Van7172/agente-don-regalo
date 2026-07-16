@@ -107,6 +107,47 @@ async def test_catalogo_terrarios_vacio_cae_a_semantico(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_categoria_escasa_se_enriquece_con_variedad(monkeypatch):
+    """Regresión: "desayunos" (categoría padre) devolvía 2 productos directos y el
+    bot mostraba solo 2 —parecía falta de surtido—. Se rellena con semántica del
+    mismo término, filtrada a la categoría: son desayunos REALES (de subcategorías),
+    no alternativas, así que NO van marcados `aproximado`. Los directos van primero.
+    """
+    async def fake_cat(client, args):
+        return {
+            "data": [
+                {"id_producto": 1, "nombre": "Pikeo en Tabla Gourmet", "categoria_slug": "desayunos"},
+                {"id_producto": 2, "nombre": "Desayuno Dulce Rosita", "categoria_slug": "desayunos"},
+            ],
+            "total": 2,
+        }
+
+    async def fake_sem(client, args):
+        return {
+            "data": [
+                {"id_producto": 2, "nombre": "Desayuno Dulce Rosita", "categoria_slug": "desayunos"},  # dup
+                {"id_producto": 3, "nombre": "Desayuno Buen Día", "categoria_slug": "desayunos"},
+                {"id_producto": 4, "nombre": "Desayuno Cumpleañero", "categoria_slug": "desayunos"},
+                {"id_producto": 5, "nombre": "Desayuno Saludable", "categoria_slug": "desayunos"},
+                {"id_producto": 6, "nombre": "Desayuno Corazón Fit", "categoria_slug": "desayunos"},
+            ],
+            "total": 5,
+            "fuente": "semantico",
+        }
+
+    monkeypatch.setattr(ex.catalog, "catalogo_categoria", fake_cat)
+    monkeypatch.setattr(ex.search, "buscar_semantico", fake_sem)
+
+    raw = await ex.execute_tool("catalogo_categoria", {"slug": "desayunos"})
+    data = json.loads(raw)
+    ids = [p["id_producto"] for p in data["data"]]
+    assert len(ids) >= 5, "una categoría escasa debe mostrar variedad"
+    assert ids[:2] == [1, 2], "los productos directos de la API van primero"
+    assert len(ids) == len(set(ids)), "sin repetidos"
+    assert not data.get("aproximado"), "son de la categoría: no son alternativas"
+
+
+@pytest.mark.asyncio
 async def test_semantico_sin_hits_pregunta_a_la_api_antes_que_ampliar(monkeypatch):
     """Si Qdrant no encuentra en la categoría, manda la API — no se amplía a ciegas.
 
