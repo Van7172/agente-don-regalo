@@ -56,6 +56,10 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[InboundMessage]:
                     mime = doc.get("mime_type")
                     caption = doc.get("caption") or doc.get("filename") or ""
                     text = caption
+                elif mtype == "reaction":
+                    # Reacción emoji a un mensaje. El emoji es el contenido; si
+                    # viene vacío, es que el cliente RETIRÓ la reacción.
+                    text = ((msg.get("reaction") or {}).get("emoji") or "").strip()
                 elif mtype == "button":
                     text = (msg.get("button") or {}).get("text", "")
                 elif mtype == "interactive":

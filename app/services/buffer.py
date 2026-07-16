@@ -46,9 +46,53 @@ def _use_external_crm() -> bool:
 
 async def enqueue_inbound(msg: InboundMessage) -> dict:
     """Persiste inbound, aplica gates, encola en buffer."""
+    # Una reacción (emoji) se PINTA en el CRM pero NO despierta al bot: no es un
+    # pedido. Antes llegaba como "[reaction]" (burbuja vacía) y encima el bot
+    # respondía a un pulgar arriba con "¿quieres más detalles?".
+    if msg.message_type == "reaction":
+        return await _handle_reaction(msg)
     if _use_external_crm():
         return await _enqueue_external(msg)
     return await _enqueue_local(msg)
+
+
+async def _handle_reaction(msg: InboundMessage) -> dict:
+    """Deja constancia de la reacción en el CRM, sin correr el bot."""
+    emoji = (msg.text or "").strip()
+    if not emoji:
+        # Reacción retirada (emoji vacío): no hay nada que pintar.
+        return {"status": "ignored", "reason": "reaction_removed"}
+
+    content = f"Reaccionó con {emoji}"
+    if _use_external_crm():
+        try:
+            await crm_http.upsert_inbound(
+                msg.wa_id,
+                name=msg.contact_name or "",
+                content=content,
+                wa_message_id=msg.wa_message_id,
+            )
+        except Exception as err:
+            log.warning("[REACTION] no se pudo persistir la reacción: %s", err)
+        return {"status": "reaction"}
+
+    async with SessionLocal() as session:
+        tenant = await repo.ensure_default_tenant(session)
+        contact = await repo.get_or_create_contact(
+            session, tenant.id, msg.wa_id, msg.contact_name
+        )
+        conv = await repo.get_or_create_conversation(session, tenant.id, contact.id)
+        await repo.add_message(
+            session,
+            conv.id,
+            direction="inbound",
+            sender_type="contact",
+            content=content,
+            wa_message_id=msg.wa_message_id,
+            raw=msg.raw,
+        )
+        await session.commit()
+    return {"status": "reaction"}
 
 
 async def _archive_media(msg: InboundMessage) -> tuple[str | None, tuple[bytes, str] | None]:
