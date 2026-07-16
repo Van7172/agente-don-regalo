@@ -88,6 +88,7 @@ async def upsert_inbound(
     wa_message_id: Optional[str] = None,
     media_url: Optional[str] = None,
     quoted_text: Optional[str] = None,
+    quoted_wa_id: Optional[str] = None,
 ) -> dict[str, Any]:
     return await _request(
         "POST",
@@ -99,6 +100,9 @@ async def upsert_inbound(
             "wa_message_id": wa_message_id,
             "media_url": media_url,
             "quoted_text": quoted_text,
+            # El id del mensaje citado: el CRM resuelve su texto (es quien guarda
+            # los mensajes) y lo devuelve en `quoted_text`.
+            "quoted_wa_id": quoted_wa_id,
             "direction": "inbound",
             "sender_type": "contact",
             "role": "user",

@@ -132,8 +132,13 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
         content=msg.text or msg.caption or f"[{msg.message_type}]",
         wa_message_id=msg.wa_message_id,
         media_url=media_key,
-        quoted_text=None,
+        # El CRM resuelve el texto del mensaje citado a partir de su id y lo
+        # devuelve. Antes esto iba fijo en None: la cita se perdía, y un "quiero
+        # este" respondiendo a un producto llegaba sin referencia — el bot volvía
+        # a preguntar cuál de todos.
+        quoted_wa_id=msg.quoted_wa_id,
     )
+    quoted_text = (data.get("quoted_text") or "").strip() or None
     conv = data.get("conversation") or {}
     conversation_id = int(data["conversation_id"])
     contact_id = int(data.get("contact_id") or 0)
@@ -187,6 +192,11 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
         return {"status": "ignored", "reason": "paused"}
 
     parts = await inbound_to_parts(msg, prefetched)
+    if quoted_text:
+        # Mismo prefijo que el camino local: sin él, "quiero este" no dice cuál.
+        prefix = f"[El cliente está respondiendo al mensaje: «{quoted_text}»]\n"
+        parts = [{"type": "text", "text": prefix}] + parts
+
     async with _buffers_lock:
         buf = _buffers.get(conversation_id)
         if buf and buf.get("task"):

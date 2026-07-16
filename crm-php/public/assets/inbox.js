@@ -383,6 +383,25 @@
     </a>`;
   }
 
+  /**
+   * El mensaje al que el cliente respondió, como la cita de WhatsApp. Sin esto el
+   * asesor ve un "quiero este" suelto y no sabe a qué producto se refería.
+   * Se recorta: la cita es contexto, no el mensaje.
+   */
+  function quotedMarkup(m) {
+    const quoted = String(m.quoted_text || "").trim();
+    if (!quoted) return "";
+    // La cita de un producto trae la URL de la foto delante: no aporta al asesor.
+    const clean = quoted
+      .split("\n")
+      .filter((line) => !/^\s*https?:\/\/\S+\s*$/.test(line))
+      .join(" ")
+      .trim();
+    if (!clean) return "";
+    const short = clean.length > 140 ? `${clean.slice(0, 137)}…` : clean;
+    return `<div class="quoted">${esc(short)}</div>`;
+  }
+
   function bubble(m) {
     const inbound = m.direction === "inbound";
     const sender = inbound ? "contact" : m.sender_type === "agent" ? "agent" : "bot";
@@ -400,6 +419,7 @@
     row.innerHTML = `
       <div class="bubble from-${sender}${media ? " has-media" : ""}">
         <div class="who">${esc(label)}</div>
+        ${quotedMarkup(m)}
         ${media}
         ${showText ? `<div class="txt">${linkify(m.content)}</div>` : ""}
         <div class="at">${esc(timeLabel(m.created_at))}</div>

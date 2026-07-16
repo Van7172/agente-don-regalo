@@ -141,6 +141,31 @@ final class Repository
         );
     }
 
+    /**
+     * Texto del mensaje citado, buscado por su id de WhatsApp.
+     *
+     * Cuando el cliente responde a un mensaje, WhatsApp solo manda el id del
+     * citado (context.id); el texto lo tiene el CRM, que es quien guarda los
+     * mensajes. Sin resolverlo, un "quiero este" citando un producto llegaba sin
+     * referencia y el bot volvía a preguntar cuál de todos.
+     */
+    public static function findMessageTextByWaId(string $waMessageId): ?string
+    {
+        if ($waMessageId === '') {
+            return null;
+        }
+        $row = Database::fetchOne(
+            'SELECT content_message FROM crm_messages
+             WHERE wa_message_id = :waId
+             ORDER BY id_message DESC LIMIT 1',
+            ['waId' => $waMessageId]
+        );
+        if (!$row || $row['content_message'] === null) {
+            return null;
+        }
+        return mb_substr((string) $row['content_message'], 0, 400);
+    }
+
     public static function addMessage(array $input): int
     {
         $id = Database::execute(

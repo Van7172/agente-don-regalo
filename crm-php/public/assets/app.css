@@ -537,6 +537,20 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   font-size: 9.5px; letter-spacing: 0.06em; opacity: 0.65;
   margin-bottom: 2px; font-weight: 700;
 }
+/* Cita del mensaje respondido, como en WhatsApp: barra lateral y texto atenuado.
+   Es contexto, no el mensaje, así que va más pequeño y recortado. */
+.bubble .quoted {
+  border-left: 3px solid currentColor;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0.72;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  overflow-wrap: anywhere;
+}
+
 .bubble .txt { white-space: pre-wrap; }
 .bubble .txt .msg-link {
   color: inherit; font-weight: 600;

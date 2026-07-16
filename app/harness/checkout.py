@@ -332,6 +332,17 @@ def resolve_chosen_product(
         p for p in recent
         if (name := _norm(p.get("nombre") or "")) and _name_hit(name, text)
     ]
+    # `_name_hit` acierta con UNA palabra larga, así que entre varios desayunos
+    # casan todos y quedaba ambiguo. Si el nombre COMPLETO de uno está en el texto,
+    # ese gana: es justo lo que pasa cuando el cliente RESPONDE al mensaje del
+    # producto (la cita trae el nombre entero) o lo escribe tal cual.
+    if len(matches) > 1:
+        completos = [
+            p for p in matches
+            if (name := _norm(p.get("nombre") or "")) and name in text
+        ]
+        if len(completos) == 1:
+            matches = completos
     if len(matches) == 1:
         return int(matches[0]["id_producto"]), str(matches[0].get("nombre") or "")
 

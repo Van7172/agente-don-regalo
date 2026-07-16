@@ -96,6 +96,13 @@ try {
             (string) $body['wa_id'],
             (string) ($body['name'] ?? '')
         );
+        // El cliente respondió a un mensaje: WhatsApp solo manda el id del citado.
+        // El texto lo tiene el CRM, así que lo resolvemos aquí y lo devolvemos:
+        // el agente lo necesita para saber a qué producto se refiere el "quiero este".
+        $quotedText = $body['quoted_text'] ?? null;
+        if ($quotedText === null && !empty($body['quoted_wa_id'])) {
+            $quotedText = Repository::findMessageTextByWaId((string) $body['quoted_wa_id']);
+        }
         $messageId = null;
         if (!empty($body['content'])) {
             $messageId = Repository::addMessage([
@@ -106,7 +113,7 @@ try {
                 'content' => (string) $body['content'],
                 'waMessageId' => $body['wa_message_id'] ?? null,
                 'mediaUrl' => $body['media_url'] ?? null,
-                'quotedText' => $body['quoted_text'] ?? null,
+                'quotedText' => $quotedText,
             ]);
         }
         $conv = Repository::getConversation($ids['conversationId']);
@@ -116,6 +123,7 @@ try {
             'contact_id' => $ids['contactId'],
             'conversation_id' => $ids['conversationId'],
             'message_id' => $messageId,
+            'quoted_text' => $quotedText,
             'conversation' => $conv ? [
                 'id' => (int) $conv['id_conversation'],
                 'mode' => $conv['mode_conversation'],
