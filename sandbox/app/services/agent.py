@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -171,6 +172,9 @@ async def perform_handoff(
 
             st = await load_state(conversation_id, wa_id=wa_id or "")
             st.handoff_reason = motivo or st.handoff_reason
+            # Ancla del releaser: mientras el asesor no escriba, esto es lo único
+            # que permite medir cuánto lleva el chat en sus manos.
+            st.handoff_at = time.time()
             if is_payment:
                 st.checkout_step = "payment"
             await save_state(conversation_id, st, wa_id=wa_id or "")

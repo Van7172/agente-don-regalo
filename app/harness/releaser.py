@@ -89,12 +89,16 @@ def should_release_to_ai(
     if state.keep_human:
         return False
     now = now if now is not None else time.time()
-    # Preferir timestamp en estado si es más reciente.
-    anchor = state.last_human_outbound_at or last_human_at
+    # Preferir timestamp en estado si es más reciente. Si el asesor aún no escribió,
+    # el ancla es el momento en que se le cedió el chat: así "lleva X sin contestar"
+    # se mide desde algo real.
+    anchor = state.last_human_outbound_at or last_human_at or state.handoff_at
     if anchor is None:
-        # Sin evidencia de actividad del asesor: liberar tras human_support largo
-        # solo si mode HUMAN (asesor tomó y desapareció).
-        return (mode or "").upper() == "HUMAN"
+        # Sin ancla no hay forma de medir cuánto lleva el asesor con el chat, y sin
+        # medirlo esto liberaba AL INSTANTE: el bot prometía un asesor y recuperaba
+        # la conversación con el siguiente mensaje del cliente. Un humano tiene el
+        # chat: no se le quita a ciegas (y siempre le queda "Devolver a Regalito").
+        return False
     return (now - float(anchor)) >= idle_threshold_sec(state)
 
 

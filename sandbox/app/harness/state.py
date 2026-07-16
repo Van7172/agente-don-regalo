@@ -69,6 +69,10 @@ class ConversationState:
     # El router solo ve el texto del cliente, no lo que ofreció el bot.
     handoff_offered: bool = False
     handoff_reason: str = ""
+    # Cuándo se cedió el chat (epoch). Es el ancla del releaser mientras el asesor
+    # todavía no ha escrito: sin ella no hay forma de medir "lleva X sin contestar"
+    # y el bot recuperaba el chat al instante de haber prometido un asesor.
+    handoff_at: Optional[float] = None
     keep_human: bool = False
     last_human_outbound_at: Optional[float] = None  # epoch seconds
     assignee_user_id: Optional[int] = None

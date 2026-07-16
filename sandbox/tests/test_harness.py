@@ -146,6 +146,35 @@ def test_releaser_payment_exemption():
     )
 
 
+def test_releaser_no_recupera_el_chat_recien_derivado():
+    """Regresión (16-07): el bot dijo "te conecto con un asesor" y un minuto después
+    respondía "¡Hola de nuevo! Ya estoy aquí para seguir ayudándote". Sin actividad
+    del asesor no había ancla y se liberaba AL INSTANTE. El ancla es el momento de
+    la derivación: solo se recupera tras el idle real.
+    """
+    now = time.time()
+    st = ConversationState()
+    st.handoff_at = now - 60  # derivado hace un minuto
+
+    assert not should_release_to_ai(
+        mode="HUMAN", human_support=True, state=st, last_human_at=None, now=now
+    )
+
+    st.handoff_at = now - 25 * 60  # el asesor lleva 25 min sin contestar
+    assert should_release_to_ai(
+        mode="HUMAN", human_support=True, state=st, last_human_at=None, now=now
+    )
+
+
+def test_releaser_sin_ancla_no_quita_el_chat_a_un_humano():
+    """Sin nada que medir no se libera: un humano tiene el chat y siempre le queda
+    "Devolver a Regalito". Antes esto devolvía True y el bot se metía de vuelta."""
+    st = ConversationState()
+    assert not should_release_to_ai(
+        mode="HUMAN", human_support=True, state=st, last_human_at=None, now=time.time()
+    )
+
+
 def test_releaser_keep_human_pin():
     st = ConversationState(keep_human=True)
     now = time.time()
