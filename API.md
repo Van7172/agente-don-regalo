@@ -2,6 +2,8 @@
 
 API REST JSON para agentes de atención al cliente, catálogo y seguimiento de pedidos.
 
+Guía del modelo de catálogo (categorías, filtros, landings, ocasiones) y uso correcto de las APIs: **[`CATALOGO.md`](CATALOGO.md)**.
+
 ## Base URL
 
 | Entorno     | Prefijo |

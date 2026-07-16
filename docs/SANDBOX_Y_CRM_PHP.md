@@ -1,5 +1,11 @@
 # Sandbox (agente IA) + CRM PHP — estado de producción
 
+> ⚠️ **DOCUMENTO OBSOLETO.** El agente ya NO se despliega desde `sandbox/` y el prompt
+> ya no es el monolítico `app/prompts/system.py`, sino el **harness** por capas
+> (`core.py` + `facts.py` + `playbooks.py` + `compose.py`). La referencia actual y
+> canónica está en **[`../ARQUITECTURA.md`](../ARQUITECTURA.md)** (raíz del repo).
+> Este archivo se conserva solo como historial del rework CRM PHP.
+
 Documento de referencia de lo aplicado en el rework: agente (ahora en la **raíz** del
 repo, promovido desde `sandbox/`) + panel/API CRM en PHP en el hosting del cliente.
 
