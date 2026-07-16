@@ -279,6 +279,54 @@ async def test_pedir_asesor_cede_el_control_sin_llm(harness, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_aceptar_el_asesor_ofrecido_cede_el_control(harness, monkeypatch):
+    """Regresión (Mauro, 16-07): el bot ofreció consultar con un asesor, el cliente
+    dijo "Si" y el bot se puso a pedir teléfono y distrito sin derivar nunca.
+    """
+    await state_mod.save_state(
+        1, ConversationState(intent_last="product_detail", handoff_offered=True, presented=True)
+    )
+
+    async def fake_notify(*a, **kw):
+        return None
+
+    monkeypatch.setattr(agent_mod, "notify_team", fake_notify)
+    _mock_llm(monkeypatch, harness, [])
+
+    reply = await master_mod.run_master(
+        [
+            {"role": "assistant", "content": "¿Quieres que consulte con un asesor si el peluche exacto viene? 😊"},
+            {"role": "user", "content": "Si"},
+        ],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert reply == agent_mod.HANDOFF_DONE
+    assert harness["systems"] == [], "aceptar el asesor no llama al LLM"
+
+
+@pytest.mark.asyncio
+async def test_la_marca_de_oferta_se_apaga_sola(harness, monkeypatch):
+    """Se recalcula cada turno: si el bot deja de ofrecer asesor, un "sí" posterior
+    ya no debe derivar."""
+    _mock_llm(monkeypatch, harness, [_final("¡Aquí estoy! ¿Qué buscas? 😊")])
+
+    await master_mod.run_master(
+        [
+            {"role": "user", "content": "hola"},
+            {"role": "assistant", "content": "👋 ¡Hola! Soy Regalito…"},
+            {"role": "user", "content": "hola de nuevo"},
+        ],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    state = await load_state(1)
+    assert state.handoff_offered is False
+
+
+@pytest.mark.asyncio
 async def test_confirmar_derivacion_en_curso_cede_el_control(harness, monkeypatch):
     """Regresión (Sonia, 15-07): el bot decía "te paso con un asesor, un momento"
     y NO cedía el control porque el "sí" caía en concierge (sin la tool). Una
