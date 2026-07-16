@@ -45,14 +45,37 @@ log = logging.getLogger(__name__)
 # El bot OFRECIENDO un asesor: una pregunta que menciona a una persona del equipo
 # ("¿Quieres que consulte con un asesor?", "¿te paso con un ejecutivo?"). Si el
 # cliente dice "sí" a esto, está aceptando la derivación.
-_OFFERS_HANDOFF_RE = re.compile(
-    r"¿[^?]*\b(asesor|asesora|ejecutiv\w*|human\w*|una persona|del equipo)\b[^?]*\?",
+_ADVISOR_RE = re.compile(
+    r"\b(asesor\w*|ejecutiv\w*|human[oa]s?|una persona|del equipo)\b", re.I
+)
+
+# El bot PROMETE meter a un asesor: lo AFIRMA, no lo pregunta. Regalito no puede
+# consultarle nada a nadie ni "volver con la respuesta" — lo único que puede hacer
+# con un asesor es cederle el chat. Si lo dice y no se ejecuta, el cliente espera a
+# alguien que nunca viene ("consulto con un asesor y te vuelvo", "un asesor te
+# enviará las instrucciones", "te paso con un asesor").
+_PROMISES_HANDOFF_RE = re.compile(
+    r"(consult|pregunt|verific|confirm|averigu|revis)\w*[^.?!¿]{0,60}\bcon\s+"
+    r"(un|una|el|la|mi|nuestro)?\s*(asesor|ejecutiv|compa|human|persona|equipo)"
+    r"|\b(un|una)\s+(asesor\w*|ejecutiv\w*)\s+(te|le)\s+\w+"
+    r"|\bte\s+(paso|conecto|derivo|comunico|transfiero)\s+con\s+"
+    r"(un|una|el|la)?\s*(asesor|ejecutiv|human|persona)",
     re.I,
 )
 
 
 def _offers_handoff(reply: str | None) -> bool:
-    return bool(reply and _OFFERS_HANDOFF_RE.search(reply))
+    """El bot ofrece un asesor y espera respuesta: un "sí" es aceptar la derivación.
+
+    Antes se exigía que "asesor" cayera DENTRO de los ¿…?, pero el modelo lo deja en
+    la frase anterior ("Puedo confirmarlo con un asesor. ¿Deseas que lo consulte
+    ahora?") y entonces el "Si" del cliente no derivaba.
+    """
+    return bool(reply and _ADVISOR_RE.search(reply) and "?" in reply)
+
+
+def _promises_handoff(reply: str | None) -> bool:
+    return bool(reply and _PROMISES_HANDOFF_RE.search(reply))
 
 
 def _caption_of(messages: list) -> str | None:
@@ -150,6 +173,35 @@ async def run_master(
         use_external_crm=use_external_crm,
         persist=persist,
     )
+
+    # El modelo prometió meter a un asesor. Eso no es una frase, es un cambio de
+    # estado: Regalito no puede consultarle nada a nadie ni volver con la respuesta,
+    # solo cederle el chat. Si lo dijo, se ejecuta — y si no, el cliente se queda
+    # esperando a alguien que nunca viene ("consulto con un asesor y te vuelvo").
+    if (
+        result.escalate is None
+        and conversation_id is not None
+        and _promises_handoff(result.user_facing)
+    ):
+        log.info(
+            "[HANDOFF] conversation=%s la respuesta prometía un asesor; se ejecuta de verdad",
+            conversation_id,
+        )
+        result = AgentResult(
+            user_facing=None,
+            artifacts=result.artifacts,
+            tools_used=result.tools_used,
+            state_patch=result.state_patch,
+            escalate=await perform_handoff(
+                wa_id=wa_id,
+                conversation_id=conversation_id,
+                motivo=state.handoff_reason
+                or "el bot ofreció consultar con un asesor (no puede hacerlo)",
+                use_external_crm=use_external_crm,
+                session=session,
+                persist=persist,
+            ),
+        )
 
     # Las invariantes se miden ANTES de reducir: comparan lo que trae este turno
     # contra lo que el cliente ya había visto.

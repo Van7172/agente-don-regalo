@@ -120,6 +120,34 @@ python -m pytest tests/ -q       # 281 pasan, offline
 - **CRM PHP**: hosting de Don Regalo, carpeta [`crm-php/`](crm-php/). El verde de venta
   cerrada, el sonido del handoff y los emojis viven aquí — hay que subir el CRM aparte.
 
+## Deuda conocida: que Regalito sepa QUÉ CONTIENE cada producto
+
+Un cliente citó un desayuno y preguntó *"¿Qué contiene? ¿Se puede quitar y aumentar
+otros, y qué opciones hay?"*. Regalito ofreció **"lo consulto con un asesor y te
+vuelvo"** — algo que no puede hacer: no tiene forma de preguntarle nada a nadie,
+solo de ceder el chat. Lo que hay hoy, verificado contra la API real:
+
+| Pregunta | ¿Se puede responder hoy? |
+|---|---|
+| *"¿Qué contiene?"* | **Sí.** `GET /productos/{id}` (`detalle_producto`) trae `descripcion` con la lista: *"contiene:<br> - Packaging… - Croissant de pollo…"*. El playbook de `detail` ya manda usarla; el modelo a veces no la pide. |
+| *"¿Se puede quitar/añadir items? ¿Qué opciones hay?"* | **No.** La API **no modela** personalización: no hay items, ni sustituciones, ni precios por componente. Esto **sí** es deuda del servidor y hoy es motivo legítimo de handoff. |
+
+Dos cosas pendientes:
+
+1. **El HTML se filtra al cliente.** `descripcion` y `descripcion_corta` vienen con
+   `<br>`, tabs y viñetas `-`, y **nadie los limpia** (ni `adapters.py` ni
+   `render.py`): al cliente le llega *"…el alma del Perú.\<br\>"* tal cual. Hay que
+   limpiarlo en el adapter, que es la frontera donde se normaliza todo lo demás.
+2. **Personalizar un producto no existe en la API.** Mientras no exista, "¿se puede
+   cambiar el globo / quitar el croissant?" se escala, no se improvisa.
+
+Regla que ya es determinista (no depende del prompt): si la respuesta del modelo
+**promete** meter a un asesor ("consulto con un asesor", "un asesor te enviará…"),
+`master` ejecuta el handoff de verdad y descarta esa frase. Regalito no puede
+consultar y volver; solo ceder el chat. Ver `_promises_handoff` en
+[`harness/master.py`](app/harness/master.py) y las RESTRICCIONES del
+[`CORE`](app/prompts/core.py).
+
 ## Deuda conocida (del servidor, no de este código)
 
 - ~~`GET /productos/{id}` devolvía un error fatal de PHP con status 200 para

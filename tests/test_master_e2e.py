@@ -306,6 +306,62 @@ async def test_aceptar_el_asesor_ofrecido_cede_el_control(harness, monkeypatch):
     assert harness["systems"] == [], "aceptar el asesor no llama al LLM"
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Perfecto — consulto con un asesor ahora y te vuelvo con el contenido exacto. ¿Te parece? 😊",
+        "Puedo confirmar el contenido exacto con un asesor. ¿Deseas que lo consulte ahora? 😊",
+        "Perfecto — un asesor te enviará en breve las instrucciones para pagar por Plin.",
+        "Perfecto, te paso con un asesor ahora. Un momento por favor 😊",
+    ],
+)
+@pytest.mark.asyncio
+async def test_prometer_un_asesor_ejecuta_el_handoff_de_verdad(harness, monkeypatch, reply):
+    """Regresión (José Carlos, 16-07): el bot ofreció "lo consulto con un asesor y te
+    vuelvo con el contenido exacto". No puede: no tiene forma de preguntarle nada a
+    nadie, solo de ceder el chat. Si lo promete, el handoff se ejecuta de verdad y la
+    frase se descarta — el cliente no puede quedarse esperando a alguien que no viene.
+    """
+    async def fake_notify(*a, **kw):
+        return None
+
+    async def fake_specialty(intent, turn, state, **ctx):
+        from app.harness.contracts import AgentResult
+
+        return AgentResult(user_facing=reply)
+
+    monkeypatch.setattr(agent_mod, "notify_team", fake_notify)
+    monkeypatch.setattr(master_mod, "_run_specialty", fake_specialty)
+
+    out = await master_mod.run_master(
+        [{"role": "user", "content": "¿Qué contiene?"}],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert out == agent_mod.HANDOFF_DONE
+    assert any("asesor" in t.lower() for t in harness["enviados"]), "se avisa al cliente"
+
+
+@pytest.mark.asyncio
+async def test_una_respuesta_normal_no_dispara_el_handoff(harness, monkeypatch):
+    """La red solo se activa con una promesa de asesor, no con cualquier respuesta."""
+    async def fake_specialty(intent, turn, state, **ctx):
+        from app.harness.contracts import AgentResult
+
+        return AgentResult(user_facing="Te muestro nuestras mejores opciones 🎁")
+
+    monkeypatch.setattr(master_mod, "_run_specialty", fake_specialty)
+
+    out = await master_mod.run_master(
+        [{"role": "user", "content": "busco peluches"}],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert out == "Te muestro nuestras mejores opciones 🎁"
+
+
 @pytest.mark.asyncio
 async def test_la_marca_de_oferta_se_apaga_sola(harness, monkeypatch):
     """Se recalcula cada turno: si el bot deja de ofrecer asesor, un "sí" posterior
