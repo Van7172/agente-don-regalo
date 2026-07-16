@@ -537,6 +537,18 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   font-size: 9.5px; letter-spacing: 0.06em; opacity: 0.65;
   margin-bottom: 2px; font-weight: 700;
 }
+/* — mensaje que aún viaja (relojito), como WhatsApp — */
+.bubble.is-pending { opacity: 0.72; }
+.bubble.is-pending .at {
+  display: inline-flex; align-items: center; gap: 4px;
+  justify-content: flex-end; width: 100%;
+}
+.bubble.is-pending .at svg { opacity: 0.8; }
+.bubble.is-pending .pending-attach { font-size: 12px; opacity: 0.8; }
+/* No se envió: se queda a la vista, no desaparece en silencio. */
+.bubble.is-failed { opacity: 1; border: 1px solid var(--color-accent); }
+.bubble.is-failed .at { color: var(--color-accent); font-weight: 700; opacity: 1; }
+
 /* — menú de clic derecho sobre un mensaje — */
 .msg-menu {
   position: fixed;

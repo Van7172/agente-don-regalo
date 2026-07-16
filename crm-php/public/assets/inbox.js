@@ -88,9 +88,24 @@
   let pendingFiles = []; // [{ blob, name, kind }]
   let replyTo = null; // { waId, text } del mensaje que el asesor está citando
   let menuTarget = null; // fila del hilo sobre la que se abrió el menú
-  // Envíos en curso POR conversación: un bloque de imágenes hacia A no debe
-  // bloquear el composer de B. El asesor puede dejar A cargando y seguir en B.
-  const sendingConvs = new Set();
+
+  // Envío optimista, como WhatsApp: al pulsar Enter el mensaje aparece YA en el
+  // hilo con el relojito y el input queda libre. El envío real ocurre detrás.
+  let pendingSends = []; // [{ id, convId, text, kind, failed }]
+  let pendingSeq = 0;
+  const sendQueues = new Map(); // convId → promesa encadenada (conserva el orden)
+  let lastThread = null; // último {conv, messages, lead} pintado, para repintar
+
+  /** Encadena por conversación: dos Enter seguidos llegan en orden, no a la vez. */
+  function enqueueSend(convId, task) {
+    const prev = sendQueues.get(convId) || Promise.resolve();
+    const next = prev.then(task, task); // si el anterior falló, el siguiente sigue
+    sendQueues.set(
+      convId,
+      next.catch(() => {})
+    );
+    return next;
+  }
 
   // Mensajes rápidos fijos (editar aquí / redeploy CRM). Slash: /
   const QUICK_REPLIES = [
@@ -527,7 +542,34 @@
       </div>`;
   }
 
+  /**
+   * Burbuja de un mensaje que aún viaja: se pinta al instante con el relojito, como
+   * WhatsApp. El asesor no espera al round trip para seguir escribiendo.
+   */
+  function pendingBubble(p) {
+    const row = document.createElement("div");
+    row.className = "msg-row is-out";
+    const icon = p.failed
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12" y2="16.5"></line></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>';
+    row.innerHTML = `
+      <div class="bubble from-agent is-pending${p.failed ? " is-failed" : ""}">
+        <div class="who">ASESOR</div>
+        ${p.quoted ? `<div class="quoted">${esc(p.quoted)}</div>` : ""}
+        ${p.text ? `<div class="txt">${esc(p.text)}</div>` : ""}
+        ${p.kind ? `<div class="txt pending-attach">📎 ${esc(p.kind)}</div>` : ""}
+        <div class="at">${p.failed ? "No se envió" : "Enviando"} ${icon}</div>
+      </div>`;
+    return row;
+  }
+
+  /** Repinta el hilo con lo último que trajo el API + las burbujas optimistas. */
+  function repaintThread() {
+    if (lastThread) renderThread(lastThread.conv, lastThread.messages, lastThread.lead);
+  }
+
   function renderThread(conv, messages, lead) {
+    lastThread = { conv, messages, lead };
     el.chatPlaceholder.hidden = true;
     el.chatBody.hidden = false;
 
@@ -553,10 +595,16 @@
     el.composerWrap.hidden = !isHuman;
     el.aiBanner.hidden = isHuman;
 
-    const sig = JSON.stringify(messages.map((m) => m.id));
+    // Los mensajes que aún viajan van al final, con su relojito. Entran en la firma
+    // para que aparecer/desaparecer repinte el hilo.
+    const enVuelo = pendingSends.filter((p) => p.convId === conv.id);
+    const sig = JSON.stringify([
+      messages.map((m) => m.id),
+      enVuelo.map((p) => `${p.id}:${p.failed ? 1 : 0}`),
+    ]);
     if (sig !== threadSig) {
       threadSig = sig;
-      el.thread.replaceChildren(...threadNodes(messages));
+      el.thread.replaceChildren(...threadNodes(messages), ...enVuelo.map(pendingBubble));
       el.thread.classList.remove("thread-anim");
       void el.thread.offsetWidth;
       el.thread.classList.add("thread-anim");
@@ -807,7 +855,6 @@
     clearReplyTo(); // la cita es de un mensaje de ESE chat, no del nuevo
     hideMsgMenu();
     hideSlashMenu();
-    updateComposerBusy(); // el chat nuevo puede tener (o no) un envío en curso
     renderList();
     loadThread();
   }
@@ -937,23 +984,15 @@
     }
   }
 
-  /** El composer solo se bloquea si la conversación A LA VISTA está enviando. */
-  function updateComposerBusy() {
-    const busy = selectedId != null && sendingConvs.has(selectedId);
-    el.btnSend.disabled = busy;
-    el.btnAttach.disabled = busy;
-    el.btnRecord.disabled = busy;
-  }
-
-  function setSending(convId, on) {
-    if (on) sendingConvs.add(convId);
-    else sendingConvs.delete(convId);
-    updateComposerBusy();
-  }
-
-  async function send(event) {
+  /**
+   * Enter → el mensaje sale del input AL INSTANTE y aparece en el hilo con el
+   * relojito, como WhatsApp. El envío real va detrás, encolado por conversación
+   * para que dos Enter seguidos lleguen en orden. El asesor no espera al round
+   * trip: antes el input se quedaba con el texto y los botones bloqueados.
+   */
+  function send(event) {
     event.preventDefault();
-    if (selectedId == null || sendingConvs.has(selectedId)) return;
+    if (selectedId == null) return;
 
     // Fijamos la conversación de ESTE envío. Un bloque de imágenes se sube una a
     // una (await uploadMedia/await api entre cada una); si el asesor cambia de
@@ -965,63 +1004,83 @@
     // La cita se fija igual que la conversación: si el asesor cambia de chat
     // mientras se envía, esto ya viaja con su destino.
     const replyToWaId = replyTo?.waId || null;
+    const quoted = replyTo?.text || null;
     if (!content && !attachments.length) return;
 
-    setSending(convId, true);
-    try {
-      if (!attachments.length) {
-        const json = await api("/outbox", {
-          method: "POST",
-          body: JSON.stringify({
-            conversation_id: convId,
-            content,
-            reply_to_wa_id: replyToWaId,
-          }),
-        });
-        if (json.queued && json.pushed === false) {
-          showError(json.warning || "Mensaje en cola hacia WhatsApp…");
-        }
+    // Burbuja optimista y composer libre YA. Vaciar el borrador aquí es además lo
+    // que evita el doble envío de dos Enter seguidos: el segundo sale vacío.
+    const pending = {
+      id: `p${++pendingSeq}`,
+      convId,
+      text: content,
+      quoted,
+      kind: attachments.length
+        ? attachments.map((f) => f.name).join(", ")
+        : "",
+      failed: false,
+    };
+    pendingSends.push(pending);
+    el.draft.value = "";
+    el.draft.style.height = "auto";
+    clearPendingFiles();
+    clearReplyTo();
+    hideSlashMenu();
+    repaintThread();
+
+    const settle = (ok) => {
+      if (ok) {
+        pendingSends = pendingSends.filter((p) => p.id !== pending.id);
       } else {
-        // Un outbox por archivo (WA no agrupa álbumes desde Cloud API).
-        // El texto del borrador va de pie en la primera imagen/doc.
-        for (let i = 0; i < attachments.length; i++) {
-          const file = attachments[i];
-          const up = await uploadMedia(file.blob, file.name);
+        pending.failed = true; // se queda a la vista: no se pierde en silencio
+      }
+      repaintThread();
+    };
+
+    enqueueSend(convId, async () => {
+      try {
+        if (!attachments.length) {
           const json = await api("/outbox", {
             method: "POST",
             body: JSON.stringify({
               conversation_id: convId,
-              content: i === 0 ? content : "",
-              media_path: up.key,
-              filename: file.name,
-              // La cita solo tiene sentido en el primer adjunto: es la respuesta.
-              reply_to_wa_id: i === 0 ? replyToWaId : null,
+              content,
+              reply_to_wa_id: replyToWaId,
             }),
           });
           if (json.queued && json.pushed === false) {
             showError(json.warning || "Mensaje en cola hacia WhatsApp…");
           }
+        } else {
+          // Un outbox por archivo (WA no agrupa álbumes desde Cloud API).
+          // El texto del borrador va de pie en la primera imagen/doc.
+          for (let i = 0; i < attachments.length; i++) {
+            const file = attachments[i];
+            const up = await uploadMedia(file.blob, file.name);
+            const json = await api("/outbox", {
+              method: "POST",
+              body: JSON.stringify({
+                conversation_id: convId,
+                content: i === 0 ? content : "",
+                media_path: up.key,
+                filename: file.name,
+                // La cita solo tiene sentido en el primer adjunto: es la respuesta.
+                reply_to_wa_id: i === 0 ? replyToWaId : null,
+              }),
+            });
+            if (json.queued && json.pushed === false) {
+              showError(json.warning || "Mensaje en cola hacia WhatsApp…");
+            }
+          }
         }
+        settle(true);
+        listSig = "";
+        await Promise.all([loadThread(), loadList()]);
+        showError("");
+      } catch (err) {
+        settle(false);
+        showError(err.message || String(err));
       }
-
-      // Limpiamos borrador y adjuntos SOLO si el asesor sigue en la misma
-      // conversación. Si ya se cambió a otro chat mientras se enviaba, no le
-      // borramos el borrador ni los adjuntos que esté preparando para ESE chat.
-      if (selectedId === convId) {
-        el.draft.value = "";
-        el.draft.style.height = "auto";
-        clearPendingFiles();
-        clearReplyTo();
-      }
-      listSig = "";
-      await Promise.all([loadThread(), loadList()]);
-      showError("");
-    } catch (err) {
-      // No se limpia el borrador: el asesor no debe perder lo que escribió.
-      showError(err.message || String(err));
-    } finally {
-      setSending(convId, false);
-    }
+    });
   }
 
   function toggleLeadPanel(force) {
