@@ -24,6 +24,9 @@ class OutboxSendBody(BaseModel):
     type: str = "text"
     media_path: str | None = None
     filename: str = ""
+    # El asesor respondió a un mensaje desde el inbox del CRM.
+    reply_to_wa_id: str | None = None
+    quoted_text: str | None = None
 
 
 def _check_token(token: str | None) -> None:
@@ -47,6 +50,8 @@ async def outbox_send(
             msg_type=body.type,
             media_path=body.media_path,
             filename=body.filename,
+            reply_to_wa_id=body.reply_to_wa_id,
+            quoted_text=body.quoted_text,
         )
     except Exception as err:
         log.error("[OUTBOX] push falló: %s", err)

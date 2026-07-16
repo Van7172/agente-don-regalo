@@ -156,3 +156,66 @@ def test_la_cita_desambigua_el_producto_entre_varios_desayunos():
         "«• 🎁 *Desayuno De Cumpleaños Para Ella* — S/163.20»]\nquiero este"
     )
     assert resolve_chosen_product(s, con_cita) == (102, "Desayuno De Cumpleaños Para Ella")
+
+
+# ── Responder desde el CRM (menú de clic derecho) ────────────────
+
+@pytest.mark.asyncio
+async def test_responder_del_asesor_manda_context_a_meta_y_cita_en_el_crm(monkeypatch):
+    """El asesor responde a un mensaje desde el inbox: el cliente debe ver la cita
+    en SU WhatsApp (context.message_id), y el hilo del CRM debe mostrarla también.
+    """
+    from app.services import outbox_drain as od
+
+    enviado = {}
+    guardado = {}
+
+    async def fake_send(wa_id, content, *, reply_to=None):
+        enviado["reply_to"] = reply_to
+        return "wamid.OUT"
+
+    async def fake_append(conversation_id, content, **kw):
+        guardado["quoted_text"] = kw.get("quoted_text")
+        return {}
+
+    async def fake_noop(*a, **kw):
+        return {}
+
+    monkeypatch.setattr(od, "send_message", fake_send)
+    monkeypatch.setattr(od.crm_http, "crm_enabled", lambda: True)
+    monkeypatch.setattr(od.crm_http, "append_outbound", fake_append)
+    monkeypatch.setattr(od.crm_http, "mark_outbox", fake_noop)
+    monkeypatch.setattr(od.crm_http, "set_mode", fake_noop)
+
+    await od.deliver_outbox(
+        wa_id="519",
+        content="Sí, ese trae peluche",
+        conversation_id=1,
+        outbox_id=7,
+        reply_to_wa_id="wamid.PRODUCTO",
+        quoted_text="• 🎁 *Desayuno De Cumpleaños Para Ella* — S/163.20",
+    )
+
+    assert enviado["reply_to"] == "wamid.PRODUCTO", "la cita debe llegar a la Cloud API"
+    assert "Desayuno De Cumpleaños Para Ella" in guardado["quoted_text"]
+
+
+@pytest.mark.asyncio
+async def test_un_envio_normal_no_lleva_cita(monkeypatch):
+    from app.services import outbox_drain as od
+
+    enviado = {}
+
+    async def fake_send(wa_id, content, *, reply_to=None):
+        enviado["reply_to"] = reply_to
+        return "wamid.OUT"
+
+    async def fake_noop(*a, **kw):
+        return {}
+
+    monkeypatch.setattr(od, "send_message", fake_send)
+    monkeypatch.setattr(od.crm_http, "crm_enabled", lambda: False)
+    monkeypatch.setattr(od.crm_http, "mark_outbox", fake_noop)
+
+    await od.deliver_outbox(wa_id="519", content="hola", outbox_id=8)
+    assert enviado["reply_to"] is None

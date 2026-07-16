@@ -118,6 +118,7 @@ async def append_outbound(
     role: str = "assistant",
     wa_message_id: Optional[str] = None,
     media_url: Optional[str] = None,
+    quoted_text: Optional[str] = None,
 ) -> dict[str, Any]:
     return await _request(
         "POST",
@@ -129,6 +130,8 @@ async def append_outbound(
             "role": role,
             "wa_message_id": wa_message_id,
             "media_url": media_url,
+            # El asesor respondió citando: el hilo del CRM debe mostrar la cita.
+            "quoted_text": quoted_text,
         },
     )
 

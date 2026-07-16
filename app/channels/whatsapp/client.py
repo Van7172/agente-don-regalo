@@ -27,7 +27,12 @@ class WhatsAppClient:
     def _messages_url(self) -> str:
         return f"{self.base}/{self.phone_id}/messages"
 
-    async def send_text(self, to_wa_id: str, text: str) -> dict[str, Any]:
+    async def send_text(
+        self, to_wa_id: str, text: str, *, reply_to: str | None = None
+    ) -> dict[str, Any]:
+        """`reply_to`: id del mensaje citado. Es lo que hace que el cliente vea la
+        respuesta como una cita en su WhatsApp, igual que si el asesor respondiera
+        desde su teléfono."""
         if settings.whatsapp_dry_run:
             fake_id = f"wamid.dry.{int(__import__('time').time() * 1000)}"
             log.info("[WA-DRY] text -> %s id=%s body=%r", to_wa_id, fake_id, text[:120])
@@ -41,6 +46,8 @@ class WhatsAppClient:
             "type": "text",
             "text": {"preview_url": False, "body": text},
         }
+        if reply_to:
+            body["context"] = {"message_id": reply_to}
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(self._messages_url(), headers=self._headers, json=body)
             if r.status_code >= 400:

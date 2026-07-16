@@ -220,6 +220,8 @@ try {
                 'content' => $content,
                 'waMessageId' => $body['wa_message_id'] ?? null,
                 'mediaUrl' => $mediaUrl,
+                // Si el asesor respondió citando, el hilo debe mostrar la cita.
+                'quotedText' => $body['quoted_text'] ?? null,
             ]);
             Http::jsonOk(['ok' => true, 'message_id' => $messageId]);
         }
@@ -359,12 +361,21 @@ try {
         if (!$conv) {
             Http::jsonError('Conversation not found', 404);
         }
+        // El asesor respondió a un mensaje desde el inbox: la cita viaja hasta la
+        // Cloud API para que el cliente la vea en su WhatsApp, y se guarda en el
+        // hilo del CRM para que el resto del equipo sepa a qué se respondía.
+        $replyToWaId = trim((string) ($body['reply_to_wa_id'] ?? '')) ?: null;
+        $replyQuoted = $replyToWaId !== null
+            ? Repository::findMessageTextByWaId($replyToWaId)
+            : null;
+
         $outboxId = Repository::enqueueOutbox([
             'conversationId' => $convId,
             'waId' => $conv['wa_id'],
             'content' => $content,
             'type' => $type,
             'mediaPath' => $mediaPath !== '' ? $mediaPath : null,
+            'replyToWaId' => $replyToWaId,
         ]);
         // Marca actividad del asesor para el auto-releaser HUMAN→AI del agente.
         Repository::setSetting('last_human_outbound_' . $convId, (string) time());
@@ -397,6 +408,8 @@ try {
             'type' => $type,
             'media_path' => $mediaPath !== '' ? $mediaPath : null,
             'filename' => (string) ($body['filename'] ?? ''),
+            'reply_to_wa_id' => $replyToWaId,
+            'quoted_text' => $replyQuoted,
         ], JSON_UNESCAPED_UNICODE);
 
         $ch = curl_init($agentUrl . '/internal/outbox/send');

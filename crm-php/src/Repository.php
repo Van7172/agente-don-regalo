@@ -349,14 +349,18 @@ final class Repository
     public static function enqueueOutbox(array $input): int
     {
         return Database::execute(
-            'INSERT INTO crm_outbox (id_conversation, wa_id, content_outbox, type_outbox, media_path, status_outbox)
-             VALUES (:conversationId, :waId, :content, :type, :mediaPath, \'pending\')',
+            'INSERT INTO crm_outbox
+              (id_conversation, wa_id, content_outbox, type_outbox, media_path, reply_to_wa_id, status_outbox)
+             VALUES (:conversationId, :waId, :content, :type, :mediaPath, :replyToWaId, \'pending\')',
             [
                 'conversationId' => $input['conversationId'],
                 'waId' => $input['waId'],
                 'content' => $input['content'],
                 'type' => $input['type'] ?? 'text',
                 'mediaPath' => $input['mediaPath'] ?? null,
+                // Mensaje al que responde el asesor: viaja hasta la Cloud API para
+                // que el cliente vea la cita en su WhatsApp.
+                'replyToWaId' => $input['replyToWaId'] ?? null,
             ]
         );
     }

@@ -33,8 +33,15 @@ async def deliver_outbox(
     msg_type: str = "text",
     media_path: str | None = None,
     filename: str = "",
+    reply_to_wa_id: str | None = None,
+    quoted_text: str | None = None,
 ) -> dict[str, Any]:
-    """Envía a Meta y persiste el mensaje en el CRM. Lanza si falla."""
+    """Envía a Meta y persiste el mensaje en el CRM. Lanza si falla.
+
+    `reply_to_wa_id`: el asesor respondió a un mensaje desde el inbox. Va como
+    `context` a la Cloud API para que el cliente vea la cita; `quoted_text` es el
+    texto de esa cita, solo para que el hilo del CRM la muestre.
+    """
     if settings.whatsapp_dry_run:
         log.warning(
             "[OUTBOX] WHATSAPP_DRY_RUN=1 — el mensaje NO llegará al WhatsApp real "
@@ -68,7 +75,7 @@ async def deliver_outbox(
     else:
         if not (content or "").strip():
             raise ValueError("mensaje vacío")
-        wa_mid = await send_message(wa_id, content)
+        wa_mid = await send_message(wa_id, content, reply_to=reply_to_wa_id)
         stored = content
         media_key = None
 
@@ -82,6 +89,7 @@ async def deliver_outbox(
             role="human",
             wa_message_id=wa_mid,
             media_url=media_key,
+            quoted_text=quoted_text,
         )
         await crm_http.set_mode(conversation_id, "HUMAN")
 
@@ -112,6 +120,7 @@ async def drain_pending_outbox(limit: int = 10) -> int:
         content = str(_row_field(row, "content_outbox", "content", default="") or "")
         msg_type = str(_row_field(row, "type_outbox", "type", default="text") or "text")
         media_path = _row_field(row, "media_path", "mediaPath")
+        reply_to = _row_field(row, "reply_to_wa_id", "replyToWaId")
         conversation_id = _row_field(row, "id_conversation", "conversation_id", "conversationId")
         try:
             conv_id = int(conversation_id) if conversation_id is not None else None
@@ -130,6 +139,7 @@ async def drain_pending_outbox(limit: int = 10) -> int:
                 msg_type=msg_type,
                 media_path=str(media_path) if media_path else None,
                 filename="",
+                reply_to_wa_id=str(reply_to) if reply_to else None,
             )
             done += 1
             log.info("[OUTBOX] drenado outbox_id=%s", outbox_id)

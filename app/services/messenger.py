@@ -168,10 +168,15 @@ def split_reply(reply: str) -> list[dict]:
     return segments or [{"type": "text", "text": reply}]
 
 
-async def send_message(wa_id: str, content: str) -> str | None:
-    """Envía texto por Cloud API. Devuelve wa_message_id si existe."""
+async def send_message(
+    wa_id: str, content: str, *, reply_to: str | None = None
+) -> str | None:
+    """Envía texto por Cloud API. Devuelve wa_message_id si existe.
+
+    `reply_to` cita un mensaje: el cliente lo ve como respuesta, no suelto.
+    """
     try:
-        data = await whatsapp_client.send_text(wa_id, content)
+        data = await whatsapp_client.send_text(wa_id, content, reply_to=reply_to)
         return (data.get("messages") or [{}])[0].get("id")
     except Exception as e:
         log.error("Error enviando texto a %s: %s", wa_id, e)

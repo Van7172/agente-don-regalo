@@ -58,6 +58,10 @@
     btnAttach: document.getElementById("btn-attach"),
     saleCard: document.getElementById("sale-card"),
     btnRecord: document.getElementById("btn-record"),
+    msgMenu: document.getElementById("msg-menu"),
+    replyBar: document.getElementById("reply-bar"),
+    replyBarText: document.getElementById("reply-bar-text"),
+    replyCancel: document.getElementById("reply-cancel"),
     attachPreview: document.getElementById("attach-preview"),
     attachList: document.getElementById("attach-list"),
     attachClear: document.getElementById("attach-clear"),
@@ -82,6 +86,8 @@
   let listSig = "";
   let threadSig = "";
   let pendingFiles = []; // [{ blob, name, kind }]
+  let replyTo = null; // { waId, text } del mensaje que el asesor está citando
+  let menuTarget = null; // fila del hilo sobre la que se abrió el menú
   // Envíos en curso POR conversación: un bloque de imágenes hacia A no debe
   // bloquear el composer de B. El asesor puede dejar A cargando y seguir en B.
   const sendingConvs = new Set();
@@ -410,6 +416,9 @@
 
     const row = document.createElement("div");
     row.className = `msg-row ${inbound ? "is-in" : "is-out"}`;
+    // Para el menú de clic derecho: citar exige el id que le dio WhatsApp.
+    if (m.wa_message_id) row.dataset.waId = m.wa_message_id;
+    row.dataset.text = m.content || "";
 
     const media = mediaMarkup(m);
     // En un documento el texto ES el nombre del archivo: ya va dentro del propio enlace.
@@ -555,6 +564,80 @@
     }
 
     renderLead(conv, lead);
+  }
+
+  // ── responder / copiar (clic derecho sobre un mensaje) ──────
+  //
+  // El vendedor pidió las acciones que WhatsApp da al pulsar un mensaje. NO hay
+  // "Eliminar": la Cloud API no permite revocar un mensaje ya enviado, así que
+  // solo se borraría del CRM y el cliente lo seguiría viendo en su teléfono — un
+  // botón que miente es peor que no tenerlo.
+
+  /** Texto legible de un mensaje para la cita: sin URLs de foto ni relleno. */
+  function quotePreview(text) {
+    const clean = String(text || "")
+      .split("\n")
+      .filter((line) => !/^\s*https?:\/\/\S+\s*$/.test(line))
+      .join(" ")
+      .trim();
+    return clean.length > 120 ? `${clean.slice(0, 117)}…` : clean;
+  }
+
+  function setReplyTo(waId, text) {
+    if (!waId) return;
+    replyTo = { waId, text: quotePreview(text) || "Mensaje" };
+    el.replyBarText.textContent = replyTo.text;
+    el.replyBar.hidden = false;
+    el.draft.focus();
+  }
+
+  function clearReplyTo() {
+    replyTo = null;
+    el.replyBar.hidden = true;
+    el.replyBarText.textContent = "";
+  }
+
+  function hideMsgMenu() {
+    menuTarget = null;
+    el.msgMenu.hidden = true;
+  }
+
+  function openMsgMenu(row, x, y) {
+    menuTarget = row;
+    // Responder necesita el id de WhatsApp; un mensaje que aún no lo tiene
+    // (en cola) se puede copiar pero no citar.
+    const replyBtn = el.msgMenu.querySelector('[data-action="reply"]');
+    replyBtn.hidden = !row.dataset.waId;
+
+    el.msgMenu.hidden = false;
+    // Se posiciona tras mostrarlo para poder medirlo y no salirse de pantalla.
+    const menu = el.msgMenu.getBoundingClientRect();
+    const left = Math.min(x, window.innerWidth - menu.width - 8);
+    const top = Math.min(y, window.innerHeight - menu.height - 8);
+    el.msgMenu.style.left = `${Math.max(8, left)}px`;
+    el.msgMenu.style.top = `${Math.max(8, top)}px`;
+  }
+
+  async function copyText(text) {
+    const value = String(text || "");
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      // Sin permiso de portapapeles (o http sin TLS): copia por textarea oculto.
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        showError("Tu navegador no permitió copiar. Selecciona el texto a mano.");
+      }
+      ta.remove();
+    }
   }
 
   // ── adjuntos ────────────────────────────────────────────────
@@ -721,6 +804,8 @@
     threadSig = "";
     root.dataset.mobileChat = "true";
     clearPendingFiles();
+    clearReplyTo(); // la cita es de un mensaje de ESE chat, no del nuevo
+    hideMsgMenu();
     hideSlashMenu();
     updateComposerBusy(); // el chat nuevo puede tener (o no) un envío en curso
     renderList();
@@ -877,6 +962,9 @@
     const convId = selectedId;
     const content = (el.draft.value || "").trim();
     const attachments = pendingFiles.slice();
+    // La cita se fija igual que la conversación: si el asesor cambia de chat
+    // mientras se envía, esto ya viaja con su destino.
+    const replyToWaId = replyTo?.waId || null;
     if (!content && !attachments.length) return;
 
     setSending(convId, true);
@@ -884,7 +972,11 @@
       if (!attachments.length) {
         const json = await api("/outbox", {
           method: "POST",
-          body: JSON.stringify({ conversation_id: convId, content }),
+          body: JSON.stringify({
+            conversation_id: convId,
+            content,
+            reply_to_wa_id: replyToWaId,
+          }),
         });
         if (json.queued && json.pushed === false) {
           showError(json.warning || "Mensaje en cola hacia WhatsApp…");
@@ -902,6 +994,8 @@
               content: i === 0 ? content : "",
               media_path: up.key,
               filename: file.name,
+              // La cita solo tiene sentido en el primer adjunto: es la respuesta.
+              reply_to_wa_id: i === 0 ? replyToWaId : null,
             }),
           });
           if (json.queued && json.pushed === false) {
@@ -917,6 +1011,7 @@
         el.draft.value = "";
         el.draft.style.height = "auto";
         clearPendingFiles();
+        clearReplyTo();
       }
       listSig = "";
       await Promise.all([loadThread(), loadList()]);
@@ -1123,6 +1218,35 @@
   el.btnRecord.addEventListener("click", startRecording);
   el.recStop.addEventListener("click", () => stopRecording(false));
   el.recCancel.addEventListener("click", () => stopRecording(true));
+
+  // Clic derecho sobre un mensaje → menú propio (Responder / Copiar).
+  el.thread.addEventListener("contextmenu", (e) => {
+    const row = e.target.closest(".msg-row");
+    if (!row) return; // fuera de una burbuja: menú normal del navegador
+    e.preventDefault();
+    openMsgMenu(row, e.clientX, e.clientY);
+  });
+
+  el.msgMenu.addEventListener("click", (e) => {
+    const btn = e.target.closest(".msg-menu-item");
+    if (!btn || !menuTarget) return;
+    const { waId, text } = menuTarget.dataset;
+    if (btn.dataset.action === "reply") setReplyTo(waId, text);
+    if (btn.dataset.action === "copy") copyText(text);
+    hideMsgMenu();
+  });
+
+  el.replyCancel.addEventListener("click", clearReplyTo);
+  // Cerrar el menú con un clic fuera, Escape o al hacer scroll del hilo.
+  document.addEventListener("click", (e) => {
+    if (!el.msgMenu.hidden && !e.target.closest("#msg-menu")) hideMsgMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!el.msgMenu.hidden) hideMsgMenu();
+    else if (replyTo) clearReplyTo();
+  });
+  el.thread.addEventListener("scroll", hideMsgMenu, { passive: true });
 
   el.draft.addEventListener("keydown", onDraftKeydown);
   el.draft.addEventListener("input", () => {
