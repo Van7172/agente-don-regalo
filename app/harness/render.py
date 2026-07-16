@@ -7,7 +7,7 @@ from typing import Any
 def render_product_list(
     products: list[dict[str, Any]],
     *,
-    closing: str = "¿Quieres más detalles de alguno? 😊",
+    closing: str = "¿Quieres más detalles de alguno, o prefieres que busque más opciones? 😊",
 ) -> str:
     """Arma el paquete WhatsApp: URL + viñeta por producto, sin duplicados."""
     blocks: list[str] = []

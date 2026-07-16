@@ -46,7 +46,8 @@ def test_se_conserva_la_intro_del_modelo():
     reply = compose_product_reply("Te muestro las opciones más cercanas 😊", PRODUCTOS)
 
     assert reply.startswith("Te muestro las opciones más cercanas 😊")
-    assert "¿Quieres más detalles de alguno?" in reply
+    assert "¿Quieres más detalles de alguno" in reply
+    assert "busque más opciones" in reply
 
 
 def test_sin_intro_tambien_funciona():
