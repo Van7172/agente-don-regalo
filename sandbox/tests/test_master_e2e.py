@@ -233,6 +233,83 @@ async def test_una_referencia_ambigua_pregunta_en_vez_de_adivinar(harness, monke
 
 
 @pytest.mark.asyncio
+async def test_elegir_via_detalle_persiste_el_producto(harness, monkeypatch):
+    """Regresión (Roberto, 17-07): el cliente eligió un producto ("4") y lo atendió
+    el especialista `detail`, no el FSM. La elección se quedaba solo en la prosa del
+    modelo, así que al turno siguiente el cierre y la cobertura —que exigen
+    `chosen_product_*`— volvían a preguntar "¿cuál te llevas?" / "¿qué regalo quieres
+    enviar?" sobre algo ya decidido.
+    """
+    await state_mod.save_state(
+        1,
+        ConversationState(
+            presented=True,
+            intent_last="catalog_search",
+            shown_product_ids=[11, 22],
+            recent_products=[
+                {"id_producto": 11, "nombre": "Terrario Familia Panditas"},
+                {"id_producto": 22, "nombre": "Ramo de Girasoles"},
+            ],
+        ),
+    )
+
+    # `detail` responde de contexto (sin volver a llamar la tool): 0 artifacts.
+    _mock_llm(monkeypatch, harness, [
+        _final("El Ramo de Girasoles trae 12 girasoles frescos 🌻"),
+    ])
+
+    # "¿qué contiene el segundo?" → product_detail por reglas (sin LLM de router).
+    reply = await master_mod.run_master(
+        [{"role": "user", "content": "¿qué contiene el segundo?"}],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert reply is not None
+    state = await load_state(1)
+    assert state.intent_last == "product_detail"
+    # La elección quedó fijada desde la lista que el cliente ya vio.
+    assert state.chosen_product_id == 22
+    assert state.chosen_product_name == "Ramo de Girasoles"
+    # Elegir no abre el cierre por sí solo: eso lo dispara el cliente al querer comprar.
+    assert state.checkout_step == "idle"
+
+
+@pytest.mark.asyncio
+async def test_el_cierre_no_repregunta_el_producto_ya_elegido(harness, monkeypatch):
+    """Con el producto ya comprometido, el FSM sigue el cierre en vez de volver a
+    listar opciones (la otra cara del bug de Roberto)."""
+    await state_mod.save_state(
+        1,
+        ConversationState(
+            presented=True,
+            chosen_product_id=22,
+            chosen_product_name="Ramo de Girasoles",
+            recent_products=[
+                {"id_producto": 11, "nombre": "Terrario Familia Panditas"},
+                {"id_producto": 22, "nombre": "Ramo de Girasoles"},
+            ],
+        ),
+    )
+
+    _mock_llm(monkeypatch, harness, [])  # el cierre es determinista
+
+    reply = await master_mod.run_master(
+        [{"role": "user", "content": "lo quiero"}],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    # No re-pregunta "¿cuál de estos te llevas?": avanza a pedir el distrito.
+    assert "cuál de estos" not in (reply or "").casefold()
+    assert "distrito" in (reply or "").casefold()
+    state = await load_state(1)
+    assert state.chosen_product_id == 22
+    assert state.checkout_step == "district"
+    assert harness["systems"] == [], "el cierre no llama al LLM"
+
+
+@pytest.mark.asyncio
 async def test_imagen_de_producto_la_atiende_el_catalogo(harness, monkeypatch):
     """El cliente manda la captura de un producto: el turno va al catálogo (con
     visión + búsqueda), no al concierge, para poder identificarlo."""

@@ -343,9 +343,11 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
             # "idle", que además NO consume este texto: "quiero el panditas" es la
             # elección del producto, no el distrito.
             state.chosen_product_id, state.chosen_product_name = chosen
-        elif state.recent_products:
-            # Varias opciones a la vista y una referencia ambigua ("ese"):
-            # preguntar es mejor que cerrar el pedido del producto equivocado.
+        elif not state.chosen_product_id and state.recent_products:
+            # Varias opciones a la vista y una referencia ambigua ("ese"): preguntar
+            # es mejor que cerrar el pedido del producto equivocado. Pero si el
+            # producto YA estaba elegido (lo fijó un especialista LLM el turno
+            # anterior, ver `_capture_choice`), no lo re-preguntamos: seguimos.
             names = ", ".join(
                 p["nombre"] for p in state.recent_products[:5] if p.get("nombre")
             )
@@ -441,7 +443,51 @@ async def _run_specialty(
     if spec.name in ("catalog", "detail") and result.artifacts:
         result.user_facing = compose_product_reply(result.user_facing, result.artifacts)
 
+    _capture_choice(spec.name, turn, state, result)
+
     return result
+
+
+def _capture_choice(
+    spec_name: str, turn: Turn, state: ConversationState, result: AgentResult
+) -> None:
+    """Fija el producto elegido cuando la elección la resuelve un especialista LLM.
+
+    El bug (Roberto, 17-07): el cliente eligió un producto ("4") y lo atendió el
+    especialista `detail`, no el FSM de cierre. Los especialistas LLM NUNCA
+    escribían `chosen_product_*`, así que la elección se quedaba solo en la prosa
+    del modelo. En cuanto el turno siguiente pasaba a cierre o cobertura —los dos
+    exigen ese campo— volvían a preguntar "¿cuál te llevas?" / "¿qué regalo
+    quieres enviar?" sobre algo ya decidido.
+
+    Se persiste desde la fuente autoritativa (el `artifact` que devolvió la tool,
+    no la prosa) o, si el modelo respondió de contexto sin volver a llamarla,
+    desde la lista que el cliente YA vio, con la misma resolución que usa el FSM.
+    """
+    if spec_name not in ("catalog", "detail"):
+        return
+    # Dentro del cierre el producto ya está fijo y un "2" es un horario, no una
+    # elección de producto: no lo tocamos.
+    if state.checkout_step not in ("idle", ""):
+        return
+
+    chosen: tuple[int, str] | None = None
+    # 1. Autoritativo: el detalle de UN solo producto es el que el cliente mira.
+    if spec_name == "detail" and len(result.artifacts) == 1:
+        art = result.artifacts[0]
+        chosen = (art.id_producto, art.nombre)
+    else:
+        # 2. Elección explícita ("el segundo", "4", por nombre) que el modelo
+        #    respondió de contexto. `allow_implicit=False` no fija nada ante un
+        #    "ese" vago ni una búsqueda nueva: preferimos no adivinar.
+        chosen = resolve_chosen_product(state, turn.text, allow_implicit=False)
+
+    if chosen is not None:
+        result.state_patch = {
+            **result.state_patch,
+            "chosen_product_id": chosen[0],
+            "chosen_product_name": chosen[1],
+        }
 
 
 # Una línea que lleva una URL de imagen, la escriba el modelo como la escriba.
