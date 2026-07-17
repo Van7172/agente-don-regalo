@@ -91,6 +91,10 @@
 
   // Envío optimista, como WhatsApp: al pulsar Enter el mensaje aparece YA en el
   // hilo con el relojito y el input queda libre. El envío real ocurre detrás.
+  // ¿La ficha de la venta va plegada? Preferencia del asesor, no del chat: si la
+  // plegó, es que prefiere el hilo. Plegada sigue mostrando el producto.
+  let saleCollapsed = false;
+
   let pendingSends = []; // [{ id, convId, text, kind, failed }]
   let pendingSeq = 0;
   const sendQueues = new Map(); // convId → promesa encadenada (conserva el orden)
@@ -524,22 +528,100 @@
    * tiene que reconstruir producto, distrito, fecha y horario leyendo veinte
    * mensajes hacia arriba.
    */
+  /**
+   * Ficha de la venta que cerró el agente. Se puede plegar: ocupaba media pantalla
+   * sobre el hilo y no había forma de quitarla de en medio. Plegada NO desaparece
+   * —deja el producto a la vista—, porque el verde existe justo para que el asesor
+   * sepa que entra a cobrar algo ya cerrado.
+   */
   function saleCard(sale) {
     if (!sale) return "";
     const fila = (etiqueta, valor) =>
       valor ? `<div class="sale-row"><span>${etiqueta}</span><b>${esc(String(valor))}</b></div>` : "";
     const envio =
       sale.envio_sol != null ? `S/${Number(sale.envio_sol).toFixed(2)}` : "";
+    // El pedido ya está creado en el panel: el asesor solo lo convierte, sin
+    // recapturar nada. Sin este número tiene que buscarlo a mano.
+    const pedido = sale.pedido_temporal_id
+      ? `<div class="sale-row"><span>Pedido temporal</span><b>#${esc(String(sale.pedido_temporal_id))} — ya en el panel, solo conviértelo</b></div>`
+      : "";
 
     return `
-      <div class="sale-card">
-        <div class="sale-head">💚 Venta cerrada por Regalito — solo falta cobrar</div>
-        ${fila("Producto", sale.producto)}
-        ${fila("Distrito", sale.distrito)}
-        ${fila("Envío", envio)}
-        ${fila("Fecha", sale.fecha)}
-        ${fila("Horario", sale.horario)}
+      <div class="sale-card${saleCollapsed ? " is-collapsed" : ""}">
+        <button type="button" class="sale-head" id="sale-toggle"
+                aria-expanded="${saleCollapsed ? "false" : "true"}"
+                title="${saleCollapsed ? "Ver el pedido" : "Plegar el pedido"}">
+          <span class="sale-head-text">
+            💚 Venta cerrada por Regalito — solo falta cobrar${
+              saleCollapsed && sale.producto ? `: ${esc(String(sale.producto))}` : ""
+            }
+          </span>
+          <svg class="sale-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+        <div class="sale-body">
+          ${fila("Producto", sale.producto)}
+          ${fila("Distrito", sale.distrito)}
+          ${fila("Envío", envio)}
+          ${fila("Fecha", sale.fecha)}
+          ${fila("Horario", sale.horario)}
+          ${pedido}
+          <div class="sale-actions">
+            <button type="button" class="sale-delivered" id="sale-delivered">
+              ✓ Marcar como entregado
+            </button>
+          </div>
+        </div>
       </div>`;
+  }
+
+  function toggleSaleCard() {
+    saleCollapsed = !saleCollapsed;
+    try {
+      localStorage.setItem("dr.saleCollapsed", saleCollapsed ? "1" : "0");
+    } catch {
+      /* sin localStorage: no recuerda el pliegue, pero pliega igual */
+    }
+    repaintSaleCard();
+  }
+
+  function repaintSaleCard() {
+    if (lastThread) {
+      el.saleCard.innerHTML = saleCard(lastThread.conv.sale);
+      el.saleCard.hidden = !lastThread.conv.sale;
+    }
+  }
+
+  async function markSaleDelivered() {
+    if (selectedId == null || !lastThread?.conv?.sale) return;
+    const confirmed = window.confirm(
+      "¿Confirmas que este pedido fue entregado? " +
+        "La ficha desaparecerá del chat y quedará disponible en Historial."
+    );
+    if (!confirmed) return;
+
+    const button = el.saleCard.querySelector("#sale-delivered");
+    if (button) button.disabled = true;
+    try {
+      await api(`/conversations/${selectedId}/sale/delivered`, {
+        method: "PATCH",
+        body: JSON.stringify({}),
+      });
+      lastThread.conv.sale = null;
+      const listed = conversations.find((conversation) => conversation.id === selectedId);
+      if (listed) listed.sale = null;
+      el.chatBody.classList.remove("is-sold");
+      listSig = "";
+      repaintSaleCard();
+      renderList();
+      showError("");
+    } catch (error) {
+      showError(error.message || String(error));
+      if (button) button.disabled = false;
+    }
   }
 
   /**
@@ -1295,6 +1377,15 @@
     hideMsgMenu();
   });
 
+  // La ficha se repinta entera en cada render, así que el listener va delegado.
+  el.saleCard.addEventListener("click", (e) => {
+    if (e.target.closest("#sale-delivered")) {
+      markSaleDelivered();
+      return;
+    }
+    if (e.target.closest("#sale-toggle")) toggleSaleCard();
+  });
+
   el.replyCancel.addEventListener("click", clearReplyTo);
   // Cerrar el menú con un clic fuera, Escape o al hacer scroll del hilo.
   document.addEventListener("click", (e) => {
@@ -1362,6 +1453,7 @@
 
   try {
     if (localStorage.getItem("dr.leadPanelCollapsed") === "1") toggleLeadPanel(true);
+    saleCollapsed = localStorage.getItem("dr.saleCollapsed") === "1";
   } catch {
     /* sin localStorage: panel abierto por defecto */
   }

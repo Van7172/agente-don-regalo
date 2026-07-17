@@ -346,6 +346,251 @@ final class Repository
         );
     }
 
+    public static function deleteSetting(string $key): void
+    {
+        $tenantId = self::ensureTenantId();
+        Database::exec(
+            'DELETE FROM crm_settings WHERE id_tenant = :tenantId AND llave_setting = :key',
+            ['tenantId' => $tenantId, 'key' => $key]
+        );
+    }
+
+    /** Conserva una venta anunciada por Regalito sin duplicar sus reintentos. */
+    public static function archiveSale(int $conversationId, array $sale): array
+    {
+        $tenantId = self::ensureTenantId();
+        $conversation = Database::fetchOne(
+            'SELECT c.id_conversation, c.id_contact, ct.wa_id, ct.nombre_contact
+             FROM crm_conversations c
+             JOIN crm_contacts ct ON ct.id_contact = c.id_contact
+             WHERE c.id_tenant = :tenantId AND c.id_conversation = :conversationId
+             LIMIT 1',
+            ['tenantId' => $tenantId, 'conversationId' => $conversationId]
+        );
+        if (!$conversation) {
+            throw new RuntimeException('Conversation not found');
+        }
+
+        $closedAt = isset($sale['cerrada_en']) ? (int) $sale['cerrada_en'] : time();
+        if ($closedAt <= 0) {
+            $closedAt = time();
+        }
+        $snapshot = json_encode(
+            $sale,
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        );
+        if ($snapshot === false) {
+            throw new RuntimeException('Invalid sale snapshot');
+        }
+
+        Database::exec(
+            'INSERT INTO crm_ventas_historiales (
+               id_tenant, id_conversation, id_contact,
+               wa_id_venta_historial, nombre_contacto_venta_historial,
+               producto_venta_historial, distrito_venta_historial,
+               envio_sol_venta_historial, fecha_entrega_venta_historial,
+               horario_venta_historial, id_pedido_temporal,
+               motivo_venta_historial, marca_cierre_venta_historial,
+               fecha_cierre_venta_historial, estado_venta_historial,
+               snapshot_venta_historial
+             ) VALUES (
+               :tenantId, :conversationId, :contactId,
+               :waId, :contactName, :product, :district, :shipping,
+               :deliveryDate, :schedule, :temporaryOrderId, :reason,
+               :closedMark, FROM_UNIXTIME(:closedAt), \'pendiente\', :snapshot
+             )
+             ON DUPLICATE KEY UPDATE
+               producto_venta_historial = VALUES(producto_venta_historial),
+               distrito_venta_historial = VALUES(distrito_venta_historial),
+               envio_sol_venta_historial = VALUES(envio_sol_venta_historial),
+               fecha_entrega_venta_historial = VALUES(fecha_entrega_venta_historial),
+               horario_venta_historial = VALUES(horario_venta_historial),
+               id_pedido_temporal = VALUES(id_pedido_temporal),
+               motivo_venta_historial = VALUES(motivo_venta_historial),
+               snapshot_venta_historial = VALUES(snapshot_venta_historial)',
+            [
+                'tenantId' => $tenantId,
+                'conversationId' => $conversationId,
+                'contactId' => (int) $conversation['id_contact'],
+                'waId' => (string) $conversation['wa_id'],
+                'contactName' => $conversation['nombre_contact'],
+                'product' => (string) ($sale['producto'] ?? ''),
+                'district' => $sale['distrito'] ?? null,
+                'shipping' => $sale['envio_sol'] ?? null,
+                'deliveryDate' => $sale['fecha'] ?? null,
+                'schedule' => $sale['horario'] ?? null,
+                'temporaryOrderId' => $sale['pedido_temporal_id'] ?? null,
+                'reason' => $sale['motivo'] ?? null,
+                'closedMark' => $closedAt,
+                'closedAt' => $closedAt,
+                'snapshot' => $snapshot,
+            ]
+        );
+
+        return Database::fetchOne(
+            'SELECT * FROM crm_ventas_historiales
+             WHERE id_tenant = :tenantId
+               AND id_conversation = :conversationId
+               AND marca_cierre_venta_historial = :closedMark
+             LIMIT 1',
+            [
+                'tenantId' => $tenantId,
+                'conversationId' => $conversationId,
+                'closedMark' => $closedAt,
+            ]
+        ) ?? [];
+    }
+
+    /** Guarda historial y ficha activa en una sola transacción. */
+    public static function storeActiveSale(int $conversationId, array $sale): array
+    {
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $archived = self::archiveSale($conversationId, $sale);
+            $key = 'sale_' . $conversationId;
+            if (($archived['estado_venta_historial'] ?? '') === 'entregado') {
+                self::deleteSetting($key);
+            } else {
+                $snapshot = json_encode(
+                    $sale,
+                    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                );
+                if ($snapshot === false) {
+                    throw new RuntimeException('Invalid sale snapshot');
+                }
+                self::setSetting($key, $snapshot);
+            }
+            $pdo->commit();
+            return $archived;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    /** Marca la ficha activa como entregada y solo entonces la retira del chat. */
+    public static function markSaleDelivered(int $conversationId, int $userId): array
+    {
+        $tenantId = self::ensureTenantId();
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $raw = self::getSetting('sale_' . $conversationId);
+            $sale = $raw !== null ? json_decode($raw, true) : null;
+            if (is_array($sale)) {
+                self::archiveSale($conversationId, $sale);
+            }
+
+            $row = Database::fetchOne(
+                'SELECT * FROM crm_ventas_historiales
+                 WHERE id_tenant = :tenantId
+                   AND id_conversation = :conversationId
+                 ORDER BY marca_cierre_venta_historial DESC
+                 LIMIT 1 FOR UPDATE',
+                ['tenantId' => $tenantId, 'conversationId' => $conversationId]
+            );
+            if (!$row) {
+                throw new RuntimeException('Sale not found');
+            }
+
+            $userName = '';
+            try {
+                $user = Database::fetchOne(
+                    'SELECT nombre_usuario, apellidos_usuario
+                     FROM usuarios WHERE id_usuario = :userId LIMIT 1',
+                    ['userId' => $userId]
+                );
+                if ($user) {
+                    $userName = trim(
+                        (string) ($user['nombre_usuario'] ?? '') . ' ' .
+                        (string) ($user['apellidos_usuario'] ?? '')
+                    );
+                }
+            } catch (Throwable $ignored) {
+                // La identidad numérica sigue auditada si la tabla legacy difiere.
+            }
+
+            Database::exec(
+                'UPDATE crm_ventas_historiales
+                 SET estado_venta_historial = \'entregado\',
+                     fecha_confirmacion_entrega = COALESCE(fecha_confirmacion_entrega, NOW()),
+                     id_usuario = COALESCE(id_usuario, :userId),
+                     nombre_usuario_confirmacion =
+                       COALESCE(nombre_usuario_confirmacion, :userName)
+                 WHERE id_venta_historial = :saleId',
+                [
+                    'userId' => $userId,
+                    'userName' => $userName,
+                    'saleId' => (int) $row['id_venta_historial'],
+                ]
+            );
+
+            self::deleteSetting('sale_' . $conversationId);
+            $updated = Database::fetchOne(
+                'SELECT * FROM crm_ventas_historiales
+                 WHERE id_venta_historial = :saleId LIMIT 1',
+                ['saleId' => (int) $row['id_venta_historial']]
+            ) ?? [];
+            $pdo->commit();
+            return $updated;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    /** Listado del módulo de historial, siempre aislado por tenant. */
+    public static function listSalesHistory(
+        ?string $from,
+        ?string $to,
+        string $status = '',
+        string $query = ''
+    ): array {
+        $tenantId = self::ensureTenantId();
+        $from = $from ?: date('Y-m-d', strtotime('-30 days'));
+        $to = $to ?: date('Y-m-d');
+        $where = [
+            'id_tenant = :tenantId',
+            'fecha_cierre_venta_historial >= :fromDate',
+            'fecha_cierre_venta_historial < DATE_ADD(:toDate, INTERVAL 1 DAY)',
+        ];
+        $params = [
+            'tenantId' => $tenantId,
+            'fromDate' => $from,
+            'toDate' => $to,
+        ];
+
+        if (in_array($status, ['pendiente', 'entregado'], true)) {
+            $where[] = 'estado_venta_historial = :status';
+            $params['status'] = $status;
+        }
+        $query = trim($query);
+        if ($query !== '') {
+            $where[] = '(nombre_contacto_venta_historial LIKE :queryContact
+                         OR wa_id_venta_historial LIKE :queryWhatsapp
+                         OR producto_venta_historial LIKE :queryProduct
+                         OR CAST(id_pedido_temporal AS CHAR) LIKE :queryOrder)';
+            $needle = '%' . $query . '%';
+            $params['queryContact'] = $needle;
+            $params['queryWhatsapp'] = $needle;
+            $params['queryProduct'] = $needle;
+            $params['queryOrder'] = $needle;
+        }
+
+        return Database::fetchAll(
+            'SELECT * FROM crm_ventas_historiales
+             WHERE ' . implode(' AND ', $where) . '
+             ORDER BY fecha_cierre_venta_historial DESC
+             LIMIT 500',
+            $params
+        );
+    }
+
     public static function enqueueOutbox(array $input): int
     {
         return Database::execute(

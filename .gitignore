@@ -25,6 +25,7 @@ build/
 
 # Dumps SQL (no versionar volcados de BD)
 *.sql
+!crm-php/sql/004_sales_history.sql
 
 # Artefactos locales de tests
 test_sandbox.db

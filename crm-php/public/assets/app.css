@@ -925,11 +925,42 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   font-size: 14px;
 }
 
+/* Cabecera plegable: es un botón, así que va con teclado y lector de pantalla. */
 .sale-head {
-  font-weight: 700;
-  color: #14713d;
-  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 0; margin-bottom: 8px;
+  border: 0; background: transparent;
+  font: inherit; font-weight: 700; color: #14713d;
+  text-align: left; cursor: pointer;
 }
+.sale-head-text { flex: 1; min-width: 0; }
+.sale-chevron { flex: none; transition: transform 0.15s ease; }
+
+/* Plegada: el chevron mira a la derecha y el detalle se va, pero la cabecera
+   (con el producto) se queda: el asesor no puede perder de vista que va a cobrar. */
+.sale-card.is-collapsed .sale-head { margin-bottom: 0; }
+.sale-card.is-collapsed .sale-chevron { transform: rotate(-90deg); }
+.sale-card.is-collapsed .sale-body { display: none; }
+
+.sale-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(34, 160, 90, 0.25);
+}
+.sale-delivered {
+  border: 1px solid #17834a;
+  border-radius: 8px;
+  padding: 7px 11px;
+  background: #17834a;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sale-delivered:hover { background: #116b3b; }
+.sale-delivered:disabled { cursor: wait; opacity: 0.65; }
 
 .sale-row {
   display: flex;
@@ -939,6 +970,56 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 }
 .sale-row span { color: #4a5a50; }
 .sale-row b { text-align: right; }
+
+/* ── Historial de ventas ─────────────────────────────────────────── */
+.sales-history { padding: 28px; overflow: auto; }
+.sales-history-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
+  margin-bottom: 20px;
+}
+.sales-history-head h2 { margin: 0 0 5px; }
+.sales-history-head .lead { margin: 0; color: var(--color-neutral-600); }
+.history-count {
+  flex: none; padding: 7px 10px; border-radius: 999px;
+  background: var(--color-neutral-200); color: var(--color-neutral-600); font-size: 13px; font-weight: 700;
+}
+.history-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 180px)) minmax(240px, 1fr) auto;
+  align-items: end; gap: 12px;
+  margin-bottom: 18px; padding: 16px;
+  border: 1px solid var(--color-divider); border-radius: 12px; background: var(--color-neutral-100);
+}
+.history-filters label { display: grid; gap: 5px; }
+.history-filters label > span { color: var(--color-neutral-600); font-size: 12px; font-weight: 700; }
+.history-table-wrap {
+  overflow-x: auto; border: 1px solid var(--color-divider); border-radius: 12px;
+  background: var(--color-neutral-100);
+}
+.history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.history-table th,
+.history-table td {
+  padding: 12px 14px; border-bottom: 1px solid var(--color-divider);
+  text-align: left; vertical-align: top; white-space: nowrap;
+}
+.history-table th { background: var(--color-neutral-200); color: var(--color-neutral-600); font-size: 12px; }
+.history-table tbody tr:last-child td { border-bottom: 0; }
+.history-table td strong,
+.history-table td small { display: block; }
+.history-table td small { margin-top: 3px; color: var(--color-neutral-600); }
+.history-status {
+  display: inline-flex; padding: 5px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 800;
+}
+.history-status.is-pendiente { background: #fff1cc; color: #8a5a00; }
+.history-status.is-entregado { background: #d9f5e5; color: #126b3b; }
+.history-empty { padding: 36px !important; color: var(--color-neutral-600); text-align: center !important; }
+
+@media (max-width: 900px) {
+  .sales-history { padding: 18px; }
+  .history-filters { grid-template-columns: 1fr 1fr; }
+  .history-search { grid-column: 1 / -1; }
+}
 
 /* Emoji sueltos en una burbuja: que se vean grandes, como en WhatsApp. */
 .bubble { font-family: var(--font-body); }

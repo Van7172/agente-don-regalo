@@ -50,6 +50,9 @@ try {
     if ($method === 'PATCH' && preg_match('#^/conversations/\d+/mode$#', $path)) {
         $needsToken = false;
     }
+    if ($method === 'PATCH' && preg_match('#^/conversations/\d+/sale/delivered$#', $path)) {
+        $needsToken = false;
+    }
     if ($method === 'GET' && strpos($path, '/reports') === 0) {
         $needsToken = false;
     }
@@ -258,6 +261,20 @@ try {
         ]);
     }
 
+    // PATCH /conversations/{id}/sale/delivered — acción manual del asesor.
+    if (preg_match('#^/conversations/(\d+)/sale/delivered$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        try {
+            $sale = Repository::markSaleDelivered((int) $m[1], (int) $user['id']);
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
     // Memory
     if (preg_match('#^/memory/([^/]+)$#', $path, $m)) {
         $waId = preg_replace('/\D/', '', $m[1]) ?: $m[1];
@@ -309,7 +326,20 @@ try {
         $body = Http::readJson();
         foreach ($body as $key => $value) {
             $stored = is_bool($value) ? ($value ? '1' : '0') : (string) $value;
-            Repository::setSetting((string) $key, $stored);
+            $key = (string) $key;
+            if (preg_match('/^sale_(\d+)$/', $key, $saleMatch)) {
+                $sale = json_decode($stored, true);
+                if (
+                    !is_array($sale) ||
+                    empty($sale['producto']) ||
+                    empty($sale['cerrada_en'])
+                ) {
+                    Http::jsonError('Invalid sale payload', 422);
+                }
+                Repository::storeActiveSale((int) $saleMatch[1], $sale);
+                continue;
+            }
+            Repository::setSetting($key, $stored);
         }
         Http::jsonOk(['ok' => true]);
     }

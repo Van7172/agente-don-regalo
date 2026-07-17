@@ -72,6 +72,16 @@ ALTER TABLE crm_outbox
   NOT NULL DEFAULT 'text';
 ```
 
+Antes de publicar **Historial de ventas**, ejecutar en phpMyAdmin:
+
+```text
+crm-php/sql/004_sales_history.sql
+```
+
+La migración crea `crm_ventas_historiales` y copia como pendientes las fichas
+`sale_*` que ya estén activas. Es repetible: usa `CREATE TABLE IF NOT EXISTS` e
+`INSERT IGNORE`.
+
 ## 4. Apache
 
 `public/.htaccess` requiere `mod_rewrite`. En Nginx, reescribe `/api/*` a `api/index.php`.
