@@ -7,6 +7,8 @@ de alcance. Nadie lo notó porque no había un test que lo mirara. Este archivo 
 ese test.
 """
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -142,3 +144,22 @@ def test_el_estado_llega_al_system_del_especialista():
     assert "11" in system and "22" in system
     assert "Surco" in system
     assert "excluir_ids" in system
+
+
+def test_todo_agente_de_cara_al_cliente_conoce_fecha_y_hora_de_lima():
+    now = datetime(2026, 7, 17, 10, 30, tzinfo=ZoneInfo("America/Lima"))
+
+    for spec in AGENTS.values():
+        system = build_system(spec, ConversationState(), now=now)
+        assert "America/Lima" in system
+        assert "17/07/2026" in system
+        assert "10:30" in system
+
+    assert "America/Lima" not in build_system(ORCHESTRATOR, now=now)
+
+
+def test_los_facts_de_delivery_excluyen_temprano_si_la_entrega_es_viernes():
+    system = build_system(AGENTS["policy"], ConversationState())
+
+    assert "Si la entrega cae viernes" in system
+    assert "NO ofrezcas 07:00 AM a 09:00 AM" in system

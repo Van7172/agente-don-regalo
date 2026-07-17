@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date
 from typing import Any
 
-from app.delivery_windows import SCHEDULE_MAP as _SCHEDULE_MAP
 from app.delivery_windows import SCHEDULE_OPTIONS
+from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
+from app.harness.orders import display_fecha, lima_today, normalize_fecha
 from app.harness.state import ConversationState
 
 __all__ = [
@@ -34,31 +36,39 @@ def wants_checkout(text: str) -> bool:
     return bool(_BUY_RE.search(text or ""))
 
 
-def parse_schedule(text: str) -> str | None:
+def parse_schedule(
+    text: str, delivery_date: date | str | None = None
+) -> str | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    if raw[0] in _SCHEDULE_MAP and (len(raw) == 1 or not raw[1].isdigit()):
-        return _SCHEDULE_MAP[raw[0]]
+    schedule_map = schedule_map_for(delivery_date)
+    if raw[0] in schedule_map and (len(raw) == 1 or not raw[1].isdigit()):
+        return schedule_map[raw[0]]
+
+    available = {window.label: window.display for window in windows_for(delivery_date)}
+
+    def by_label(label: str) -> str | None:
+        return available.get(label)
+
     m = re.search(r"(\d{1,2})\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)", raw, re.I)
     if m:
-        # Heurística: "09 AM a 11" → opción 2
         hour = int(m.group(1))
         if 7 <= hour < 9:
-            return _SCHEDULE_MAP["1"]
+            return by_label("Mañana temprano")
         if 9 <= hour < 11:
-            return _SCHEDULE_MAP["2"]
+            return by_label("Mañana")
         if 11 <= hour < 14:
-            return _SCHEDULE_MAP["3"]
+            return by_label("Mediodía")
         if 14 <= hour < 17:
-            return _SCHEDULE_MAP["4"]
+            return by_label("Tarde")
         if 16 <= hour <= 19:
-            return _SCHEDULE_MAP["5"]
+            return by_label("Tarde-noche")
     low = raw.casefold()
     if "11:00" in low or "09" in low or "9 am" in low:
-        return _SCHEDULE_MAP["2"]
+        return by_label("Mañana")
     if "mediod" in low:
-        return _SCHEDULE_MAP["3"]
+        return by_label("Mediodía")
     return None
 
 
@@ -76,7 +86,12 @@ _ASK_CONTACT = (
 )
 
 
-def advance_checkout(state: ConversationState, user_text: str) -> tuple[ConversationState, str, dict[str, Any]]:
+def advance_checkout(
+    state: ConversationState,
+    user_text: str,
+    *,
+    today: date | None = None,
+) -> tuple[ConversationState, str, dict[str, Any]]:
     """
     Avanza un paso del cierre. Devuelve (state, reply, meta).
     meta puede incluir escalate=True en payment tras confirmación.
@@ -113,18 +128,35 @@ def advance_checkout(state: ConversationState, user_text: str) -> tuple[Conversa
         return state, "¿Para qué fecha lo necesitas? 📅", meta
 
     if step == "date":
-        if text:
-            state.date = text
+        normalized = normalize_fecha(text, today=today)
+        effective_today = today or lima_today()
+        if normalized is None or normalized < effective_today.isoformat():
+            return (
+                state,
+                "No pude confirmar esa fecha 📅 ¿Me indicas una fecha futura, "
+                "por ejemplo 20/07 o mañana?",
+                meta,
+            )
+        state.date = normalized
         state.checkout_step = "schedule"
         return (
             state,
-            f"¿En qué horario prefieres que llegue? 🕐\n{SCHEDULE_OPTIONS}\n"
+            f"¿En qué horario prefieres que llegue? 🕐\n"
+            f"{schedule_options_for(state.date)}\n"
             "Responde con el número que prefieras.",
             meta,
         )
 
     if step == "schedule":
-        slot = parse_schedule(text) or text
+        slot = parse_schedule(text, state.date)
+        if slot is None:
+            return (
+                state,
+                f"Elige uno de estos horarios 🕐\n"
+                f"{schedule_options_for(state.date)}\n"
+                "Responde con el número que prefieras.",
+                meta,
+            )
         state.time_slot = slot
         state.checkout_step = "card"
         return state, "¿Quieres incluir una tarjeta con mensaje? 💌", meta
@@ -218,7 +250,7 @@ def _summary_message(state: ConversationState) -> str:
         "📋 *Resumen del pedido:*",
         f"· Producto: {product}",
         f"· Distrito: {distrito}{fee}",
-        f"· Fecha: {state.date or '—'}",
+        f"· Fecha: {display_fecha(state.date) if state.date else '—'}",
         f"· Horario: {state.time_slot or '—'}",
         f"· Para: {destinatario}",
         f"· Dirección: {state.direccion or '—'}{tipo_txt}",

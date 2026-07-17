@@ -97,6 +97,9 @@ async def test_buscar_productos_estampa_categoria_como_default_slug(monkeypatch)
 
     monkeypatch.setattr(catalog, "get", fake_get)
     monkeypatch.setattr(catalog.adapters, "usd_pen_rate", fake_rate)
+    async def fake_valid(_client, products, *, limit):
+        return products[:limit]
+    monkeypatch.setattr(catalog, "valid_products", fake_valid)
 
     out = await catalog.buscar_productos(None, {"categoria": "desayunos"})
     assert out["data"][0]["categoria_slug"] == "desayunos"

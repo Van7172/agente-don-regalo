@@ -17,6 +17,7 @@ from typing import Any
 
 from app.crm import http_client as crm_http
 from app.harness.state import ConversationState
+from app.harness.orders import display_fecha
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def build_sale(state: ConversationState) -> dict[str, Any]:
         "id_producto": state.chosen_product_id,
         "distrito": state.district or "",
         "envio_sol": state.shipping_fee_sol,
-        "fecha": state.date or "",
+        "fecha": display_fecha(state.date),
         "horario": state.time_slot or "",
         # id del pedido ya creado en el panel (si se pudo): el asesor lo abre y
         # convierte, sin recapturar nada.

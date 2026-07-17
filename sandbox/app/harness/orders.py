@@ -20,7 +20,8 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -39,6 +40,11 @@ _DIAS = {
     "lunes": 0, "martes": 1, "miercoles": 2, "jueves": 3,
     "viernes": 4, "sabado": 5, "domingo": 6,
 }
+_LIMA = ZoneInfo("America/Lima")
+
+
+def lima_today() -> date:
+    return datetime.now(_LIMA).date()
 
 
 def _norm(text: str) -> str:
@@ -66,9 +72,30 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
     interpreta lo común. Ante la duda devuelve `None`: preferimos no crear el
     pedido a mandar una fecha inventada.
     """
-    today = today or date.today()
+    today = today or lima_today()
     t = _norm(text)
     if not t:
+        return None
+
+    date_mentions = re.findall(
+        r"\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b"
+        r"|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b"
+        r"|\b\d{1,2}\s*(?:de\s+)?(?:"
+        + "|".join(_MESES)
+        + r")(?:\s+(?:de\s+)?20\d{2})?\b",
+        t,
+    )
+    relative_text = t
+    relative_mentions = 0
+    if "pasado manana" in relative_text:
+        relative_mentions += 1
+        relative_text = relative_text.replace("pasado manana", " ")
+    relative_mentions += int(bool(re.search(r"\bmanana\b", relative_text)))
+    relative_mentions += int(bool(re.search(r"\bhoy\b", relative_text)))
+    weekday_mentions = sum(
+        1 for name in _DIAS if re.search(rf"\b{name}\b", t)
+    )
+    if len(date_mentions) + relative_mentions + weekday_mentions > 1:
         return None
 
     m = re.search(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})", t)
@@ -89,10 +116,7 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
     if m:
         d, mo = int(m.group(1)), _MESES[m.group(2)]
         y = int(m.group(3)) if m.group(3) else today.year
-        res = _fmt(y, mo, d)
-        if res and m.group(3) is None and res < today.isoformat():
-            res = _fmt(y + 1, mo, d)  # "20 de enero" en diciembre → el próximo
-        return res
+        return _fmt(y, mo, d)
 
     m = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b", t)
     if m:
@@ -102,10 +126,7 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
             y = y + 2000 if y < 100 else y
         else:
             y = today.year
-        res = _fmt(y, mo, d)
-        if res and not m.group(3) and res < today.isoformat():
-            res = _fmt(y + 1, mo, d)
-        return res
+        return _fmt(y, mo, d)
 
     for name, idx in _DIAS.items():
         if name in t:
@@ -113,6 +134,14 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
             return (today + timedelta(days=delta)).isoformat()
 
     return None
+
+
+def display_fecha(value: str) -> str:
+    """ISO interno → fecha breve para cliente y asesor."""
+    try:
+        return date.fromisoformat(value).strftime("%d/%m/%y")
+    except (TypeError, ValueError):
+        return value or ""
 
 
 def build_body(

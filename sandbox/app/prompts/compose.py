@@ -6,7 +6,9 @@ garantizar —y testear— que el bloque de seguridad va SIEMPRE.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from app.prompts.core import core_system
 from app.prompts.facts import render_facts
@@ -14,6 +16,29 @@ from app.prompts.facts import render_facts
 if TYPE_CHECKING:  # evita el ciclo registry → prompts → registry
     from app.harness.registry import AgentSpec
     from app.harness.state import ConversationState
+
+_LIMA = ZoneInfo("America/Lima")
+_WEEKDAYS = (
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+)
+
+
+def render_current_time(now: datetime | None = None) -> str:
+    current = now.astimezone(_LIMA) if now and now.tzinfo else now
+    current = current or datetime.now(_LIMA)
+    return (
+        "## FECHA Y HORA ACTUAL\n"
+        "Zona: America/Lima\n"
+        f"Ahora: {_WEEKDAYS[current.weekday()]} "
+        f"{current.strftime('%d/%m/%Y, %H:%M')}.\n"
+        "Interpreta hoy, mañana y los días de la semana desde esta fecha."
+    )
 
 
 def render_state(state: "ConversationState") -> str:
@@ -42,6 +67,7 @@ def build_system(
     state: "ConversationState | None" = None,
     *,
     extra: str = "",
+    now: datetime | None = None,
 ) -> str:
     """System message completo de un agente.
 
@@ -52,6 +78,7 @@ def build_system(
 
     if spec.customer_facing:
         blocks.append(core_system())
+        blocks.append(render_current_time(now))
 
     facts = render_facts(spec.facts)
     if facts:

@@ -124,6 +124,11 @@ async def test_categoria_lista_como_el_sitio_expandiendo_hijas(monkeypatch):
 
     monkeypatch.setattr(catalog, "get", fake_get)
     monkeypatch.setattr(catalog.adapters, "usd_pen_rate", lambda c: _rate())
+    monkeypatch.setattr(
+        catalog,
+        "valid_products",
+        lambda client, products, limit: _valid(products, limit),
+    )
 
     await catalog.catalogo_categoria(None, {"slug": "desayunos"})
 
@@ -134,6 +139,10 @@ async def test_categoria_lista_como_el_sitio_expandiendo_hijas(monkeypatch):
 
 async def _rate():
     return 3.4
+
+
+async def _valid(products, limit):
+    return products[:limit]
 
 
 @pytest.mark.asyncio
@@ -154,6 +163,11 @@ async def test_categoria_funebre_reintenta_incluyendo_funebre(monkeypatch):
 
     monkeypatch.setattr(catalog, "get", fake_get)
     monkeypatch.setattr(catalog.adapters, "usd_pen_rate", lambda c: _rate())
+    monkeypatch.setattr(
+        catalog,
+        "valid_products",
+        lambda client, products, limit: _valid(products, limit),
+    )
 
     result = await catalog.catalogo_categoria(None, {"slug": "arreglos-funebres"})
 

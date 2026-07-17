@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
+from app.tools.image_validation import valid_products
 
 log = logging.getLogger(__name__)
 
@@ -246,9 +247,10 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
     # Solo validar activos en el top (menos latencia vs API donregalo)
     top = candidatos[: max(settings.semantic_limit * 2, 12)]
     top = await _filtrar_activos(client, top)
+    top = await valid_products(client, top, limit=settings.semantic_limit)
 
     productos = []
-    for p in top[: settings.semantic_limit]:
+    for p in top:
         p.pop("_rank", None)
         productos.append(p)
 
@@ -282,7 +284,7 @@ async def productos_similares(client: httpx.AsyncClient, args: dict):
             collection_name=settings.qdrant_collection,
             query=ref_vec,
             query_filter=qfilter,
-            limit=settings.semantic_limit + 1,
+            limit=max(settings.semantic_limit * 2 + 1, 13),
             with_payload=True,
         ).points
 
@@ -292,7 +294,9 @@ async def productos_similares(client: httpx.AsyncClient, args: dict):
 
     candidatos = [_hit_to_producto(h) for h in hits if h.id != pid]
     candidatos = await _filtrar_activos(client, candidatos)
-    productos  = candidatos[:settings.semantic_limit]
+    productos = await valid_products(
+        client, candidatos, limit=settings.semantic_limit
+    )
     return await _canonical(
         client,
         {"data": productos, "total": len(productos), "fuente": "similares", "referencia": pid},

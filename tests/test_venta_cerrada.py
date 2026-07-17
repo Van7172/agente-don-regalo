@@ -17,7 +17,7 @@ CERRADA = ConversationState(
     chosen_product_id=11,
     district="Miraflores",
     shipping_fee_sol=14.18,
-    date="viernes 18",
+    date="2026-07-18",
     time_slot="09:00 AM a 11:00 AM",
     checkout_step="payment",
     handoff_reason="cliente listo para pagar",
@@ -30,7 +30,7 @@ def test_la_venta_lleva_todo_el_pedido():
     assert venta["producto"] == "Desayuno Dulce Rosita"
     assert venta["distrito"] == "Miraflores"
     assert venta["envio_sol"] == 14.18
-    assert venta["fecha"] == "viernes 18"
+    assert venta["fecha"] == "18/07/26"
     assert venta["horario"] == "09:00 AM a 11:00 AM"
 
 

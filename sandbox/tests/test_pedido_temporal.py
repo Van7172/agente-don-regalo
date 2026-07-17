@@ -11,10 +11,22 @@ from datetime import date
 import httpx
 import pytest
 
-from app.delivery_windows import hora_entrega_api
+from app.delivery_windows import hora_entrega_api, schedule_options_for
 from app.harness import orders as orders_mod
-from app.harness.checkout import parse_address, parse_contact, parse_recipient, split_name
-from app.harness.orders import build_body, create_from_state, normalize_fecha
+from app.harness.checkout import (
+    advance_checkout,
+    parse_address,
+    parse_contact,
+    parse_recipient,
+    parse_schedule,
+    split_name,
+)
+from app.harness.orders import (
+    build_body,
+    create_from_state,
+    display_fecha,
+    normalize_fecha,
+)
 from app.harness.state import ConversationState
 
 HOY = date(2026, 7, 14)  # martes
@@ -122,9 +134,57 @@ def test_normalize_fecha(texto, esperado):
     assert normalize_fecha(texto, today=HOY) == esperado
 
 
-def test_normalize_fecha_pasada_asume_proximo_anio():
-    # "20 de enero" en julio → el enero que viene, no uno ya pasado.
-    assert normalize_fecha("20 de enero", today=HOY) == "2027-01-20"
+def test_normalize_fecha_sin_anio_no_salta_silenciosamente_al_siguiente():
+    assert normalize_fecha("20 de enero", today=HOY) == "2026-01-20"
+    assert normalize_fecha("13/07", today=HOY) == "2026-07-13"
+
+
+def test_normalize_fecha_ambigua_no_elige_la_primera():
+    assert normalize_fecha("20/07 o 21/07", today=HOY) is None
+    assert normalize_fecha("mañana o pasado mañana", today=HOY) is None
+    assert normalize_fecha("viernes o sábado", today=HOY) is None
+    assert normalize_fecha("mañana o 20/07", today=HOY) is None
+
+
+def test_fsm_guarda_manana_como_fecha_iso_y_la_muestra_legible():
+    state = ConversationState(checkout_step="date", district="Miraflores")
+
+    state, reply, _ = advance_checkout(state, "mañana", today=date(2026, 7, 17))
+
+    assert state.date == "2026-07-18"
+    assert display_fecha(state.date) == "18/07/26"
+    assert state.checkout_step == "schedule"
+    assert "Mañana temprano" in reply
+
+
+def test_fsm_no_avanza_con_fecha_pasada_o_irreconocible():
+    for text in ("16/07/2026", "cuando sea"):
+        state = ConversationState(checkout_step="date", district="Miraflores")
+        state, reply, _ = advance_checkout(
+            state, text, today=date(2026, 7, 17)
+        )
+        assert state.checkout_step == "date"
+        assert state.date == ""
+        assert "fecha" in reply.casefold()
+
+
+def test_viernes_no_ofrece_horario_temprano_y_renumera():
+    friday = date(2026, 7, 17)
+    options = schedule_options_for(friday)
+
+    assert "Mañana temprano" not in options
+    assert options.splitlines()[0].startswith("1. Mañana ")
+    assert len(options.splitlines()) == 4
+    assert parse_schedule("1", friday) == "09:00 AM a 11:00 AM"
+
+
+def test_otro_dia_conserva_cinco_horarios():
+    saturday = date(2026, 7, 18)
+    options = schedule_options_for(saturday)
+
+    assert "1. Mañana temprano" in options
+    assert len(options.splitlines()) == 5
+    assert parse_schedule("1", saturday) == "07:00 AM a 09:00 AM"
 
 
 # ── Construcción del cuerpo ───────────────────────────────────────────

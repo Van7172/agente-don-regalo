@@ -38,7 +38,11 @@ DELIVERY = f"""## HORARIOS Y DELIVERY
   pedidos, usa este dato. No confundas la sede con la dirección de entrega del cliente.
 
 ## RANGOS HORARIOS DE ENTREGA
-{SCHEDULE_OPTIONS}"""
+{SCHEDULE_OPTIONS}
+
+**Excepción de viernes:** Si la entrega cae viernes, NO ofrezcas 07:00 AM a 09:00 AM.
+Ofrece y renumera únicamente: 1) 09:00–11:00, 2) 11:00–14:00,
+3) 14:00–17:00 y 4) 16:00–19:00."""
 
 PAYMENT = """## MÉTODOS DE PAGO (confírmalos con `metodos_pago`)
 El pago es SIEMPRE por adelantado, por uno de estos medios:

@@ -9,10 +9,12 @@ import httpx
 
 from app.config import settings
 from app.tools import adapters
+from app.tools.image_validation import valid_products
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PER_PAGE = 6
+_IMAGE_CANDIDATE_POOL = 50
 
 # ─── Caché in-memory con TTL ─────────────────────────────────────────────────
 # distritos_cobertura, metodos_pago y tipo_cambio raramente cambian;
@@ -50,9 +52,31 @@ async def _productos(
     *,
     default_slug: str = "",
 ):
-    payload = await get(client, url, params)
+    candidate_params = dict(params or {})
+    if "per_page" in candidate_params:
+        candidate_params["per_page"] = max(
+            int(candidate_params["per_page"]), _IMAGE_CANDIDATE_POOL
+        )
+    if "limit" in candidate_params:
+        candidate_params["limit"] = max(
+            int(candidate_params["limit"]), _IMAGE_CANDIDATE_POOL
+        )
+    payload = await get(client, url, candidate_params or None)
     rate = await adapters.usd_pen_rate(client)
-    return adapters.products_payload(payload, rate, default_slug=default_slug)
+    normalized = adapters.products_payload(payload, rate, default_slug=default_slug)
+    if not isinstance(normalized, dict):
+        return normalized
+    if isinstance(normalized.get("data"), dict):
+        products = await valid_products(
+            client, [normalized["data"]], limit=1
+        )
+        return {**normalized, "data": products[0] if products else []}
+    if not isinstance(normalized.get("data"), list):
+        return normalized
+    products = await valid_products(
+        client, normalized["data"], limit=DEFAULT_PER_PAGE
+    )
+    return {**normalized, "data": products, "total": len(products)}
 
 
 async def explorar_catalogo(client: httpx.AsyncClient, args: dict):
