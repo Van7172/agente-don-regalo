@@ -19,12 +19,51 @@ no una tarea para un modelo de lenguaje.
 """
 from __future__ import annotations
 
+import html
 import logging
+import re
 from typing import Any
 
 import httpx
 
 log = logging.getLogger(__name__)
+
+# Los textos del catálogo se editan en un WYSIWYG y llegan con HTML crudo:
+# `<br>`, `<p>`, tabs y entidades. WhatsApp no renderiza nada de eso, así que al
+# cliente le llegaba tal cual ("…el alma del Perú.<br>"). Se limpia aquí, en la
+# misma frontera donde ya se normaliza el resto, y no en `render.py`: así también
+# sale limpio el texto que el especialista `detail` lee para responder
+# "¿qué contiene?".
+_BLOCK_TAG = re.compile(
+    r"<\s*/?\s*(?:br|p|div|li|ul|ol|tr|h[1-6])\b[^>]*>", re.IGNORECASE
+)
+_ANY_TAG = re.compile(r"<[^>]+>")
+
+
+def clean_html(text: Any, *, inline: bool = False) -> str:
+    """HTML del CMS → texto plano para WhatsApp.
+
+    `inline=True` colapsa además los saltos de línea: `descripcion_corta` se
+    imprime dentro de la viñeta de un producto (`render.render_product_list`) y
+    un salto ahí parte el listado en dos.
+    """
+    if not text:
+        return ""
+
+    out = _BLOCK_TAG.sub("\n", str(text))
+    out = _ANY_TAG.sub(" ", out)          # tags inline (<b>, <span>): no separan línea
+    out = html.unescape(out)              # &amp;, &nbsp;, &oacute;…
+    out = out.replace("\xa0", " ").replace("\t", " ").replace("\r", "\n")
+
+    # Espacios sobrantes por línea, sin tocar los saltos que sí significan algo.
+    lines = [re.sub(r"[^\S\n]+", " ", ln).strip() for ln in out.split("\n")]
+    out = "\n".join(ln for ln in lines if ln)
+
+    if inline:
+        out = re.sub(r"\s*\n\s*", " ", out)
+        out = re.sub(r" {2,}", " ", out)
+
+    return out.strip()
 
 # Si la API del tipo de cambio falla, es mejor un precio aproximado con un valor
 # reciente que ningún precio. Se revisa en el log.
@@ -114,10 +153,13 @@ def product(raw: dict[str, Any], rate: float) -> dict[str, Any] | None:
 
     canonical: dict[str, Any] = {
         "id_producto": pid,
-        "nombre": str(raw.get("nombre_producto") or raw.get("nombre") or "").strip(),
-        "descripcion_corta": str(
-            raw.get("descripcion_corta_producto") or raw.get("descripcion_corta") or ""
-        ).strip(),
+        "nombre": clean_html(
+            raw.get("nombre_producto") or raw.get("nombre") or "", inline=True
+        ),
+        "descripcion_corta": clean_html(
+            raw.get("descripcion_corta_producto") or raw.get("descripcion_corta") or "",
+            inline=True,
+        ),
         "precio_usd": precio_usd,
         "precio_sol": _to_sol(precio_usd, rate),
         "imagen_url": _first_image(raw),
@@ -205,6 +247,10 @@ def products_payload(payload: Any, rate: float, *, default_slug: str = "") -> An
         for extra in ("descripcion", "ocasiones", "imagenes", "relacionados", "tags"):
             if data.get(extra):
                 canonical[extra] = data[extra]
+        # `descripcion` es la lista de "¿qué contiene?" y es lo único que puede
+        # responderla: se limpia conservando los saltos, que son las viñetas.
+        if canonical.get("descripcion"):
+            canonical["descripcion"] = clean_html(canonical["descripcion"])
         return {**payload, "data": canonical}
 
     items = _items(payload)
@@ -235,6 +281,31 @@ def products_payload(payload: Any, rate: float, *, default_slug: str = "") -> An
         out["categoria"] = sobre
 
     return out
+
+
+def payment_methods_payload(payload: Any) -> Any:
+    """Limpia el HTML de los métodos de pago (no lleva precios: no necesita `rate`).
+
+    `descripcion_metodo_pago` llega con `<p>`, `<strong>` y `<br />` alrededor de
+    los datos bancarios —número de cuenta, CCI, titular—. Es el texto que el
+    cliente copia para pagar: si le llega con tags, lo copia mal. Se conservan
+    los saltos de línea, que es lo que separa "Cuenta Corriente" de "CCI".
+    """
+    if not isinstance(payload, dict):
+        return payload
+    items = _items(payload)
+    if not items:
+        return payload
+
+    metodos = []
+    for raw in items:
+        limpio = dict(raw)
+        for campo in ("descripcion_metodo_pago", "descripcion", "nombre_metodo_pago"):
+            if limpio.get(campo):
+                limpio[campo] = clean_html(limpio[campo], inline=(campo == "nombre_metodo_pago"))
+        metodos.append(limpio)
+
+    return {**payload, "data": metodos}
 
 
 def districts_payload(payload: Any, rate: float) -> Any:

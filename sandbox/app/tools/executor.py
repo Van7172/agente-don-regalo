@@ -11,10 +11,14 @@ from app.tools import catalog, search
 
 log = logging.getLogger(__name__)
 
+# `listar_categorias` y `listar_ocasiones` NO están aquí a propósito: ningún toolset
+# las expone (ver `registry.CATALOG_TOOLS`) y dejarlas ejecutables era una segunda
+# puerta a la taxonomía. Si el modelo alucina la llamada, ahora recibe "Herramienta
+# desconocida" y reintenta con `explorar_catalogo`, en vez de recibir en silencio una
+# taxonomía parcial —sin filtros ni landings— de la que extrapolar categorías que no
+# existen. Las funciones siguen en `catalog.py` para uso fuera del harness.
 _CATALOG_TOOLS = {
     "explorar_catalogo":   catalog.explorar_catalogo,
-    "listar_categorias":   catalog.listar_categorias,
-    "listar_ocasiones":    catalog.listar_ocasiones,
     "buscar_productos":    catalog.buscar_productos,
     "catalogo_categoria":  catalog.catalogo_categoria,
     "productos_destacados":catalog.productos_destacados,
@@ -255,7 +259,7 @@ async def execute_tool(name: str, args: dict) -> str:
                     result = {
                         "error": (
                             "Búsqueda semántica libre bloqueada para campaña de temporada. "
-                            "Usa listar_categorias y luego catalogo_categoria con el slug "
+                            "Usa explorar_catalogo y luego catalogo_categoria con el slug "
                             "temporal correspondiente, por ejemplo dia-del-padre. Si luego "
                             "usas buscar_semantico, debe llevar categoria_slug."
                         ),

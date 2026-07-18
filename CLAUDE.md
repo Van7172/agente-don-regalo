@@ -10,7 +10,11 @@ El cliente escribe por WhatsApp → Meta Cloud API → webhook → un orquestado
 la intención y delega en un especialista → responde por Cloud API. Los asesores
 humanos atienden desde un CRM PHP.
 
-Pila: FastAPI (Python 3.11), OpenAI, Qdrant, MySQL (CRM PHP), SQLite (local/tests).
+Pila: FastAPI (Python 3.12), OpenAI, Qdrant, MySQL (CRM PHP), SQLite (local/tests).
+
+**Mínimo 3.11** (el `Dockerfile` fija `python:3.12-slim`, que es lo que corre en
+producción). En 3.10 revientan ~9 tests por `asyncio.timeout`, que no existe hasta
+3.11 — si ves esos fallos, es la versión de Python, no el código.
 
 ## La regla que más se olvida: sandbox/ es un espejo
 
@@ -19,13 +23,19 @@ Pila: FastAPI (Python 3.11), OpenAI, Qdrant, MySQL (CRM PHP), SQLite (local/test
 hay que reflejarlo en `sandbox/`** o divergen — ya pasó. Tras editar:
 
 ```bash
-rm -rf sandbox/app sandbox/tests sandbox/evals
-mkdir -p sandbox/app sandbox/tests sandbox/evals
-cp -r app/. sandbox/app/ && cp -r tests/. sandbox/tests/ && cp -r evals/. sandbox/evals/
-diff -rq app sandbox/app --exclude=__pycache__   # debe decir "espejo OK"
+python scripts/check_mirror.py         # ¿está sincronizado? (0 = "espejo OK")
+python scripts/check_mirror.py --fix   # sincronízalo desde la raíz
 ```
 
-(Sí, mantener dos copias idénticas es frágil. Borrar `sandbox/` está sobre la mesa,
+Compara contenido (no mtime), ignora `__pycache__` y avisa también de lo que
+**sobra** en el espejo: un archivo borrado en la raíz que sigue vivo en `sandbox/`
+es la otra mitad de la divergencia, y el `diff` a mano de antes no la miraba.
+
+Ya no depende de que alguien se acuerde: **CI lo corre y falla si divergen**
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), antes de los tests — si
+el espejo divergió, el resto del build mide dos versiones distintas del código.
+
+(Sí, mantener dos copias idénticas es frágil. Borrar `sandbox/` sigue sobre la mesa,
 pero mientras exista, se sincroniza.)
 
 ## Arquitectura del harness
@@ -92,10 +102,20 @@ Invariantes de respuesta en [`harness/invariants.py`](app/harness/invariants.py)
 (cada una nació de un incidente real: contraentrega, URLs pegadas al texto, precios
 inventados, productos repetidos). Se evalúan en runtime (van a la `Trace`) y en el corpus.
 
+**Detectar no basta: las dos graves se aplican.** Un precio inventado
+(`prices_are_sourced`) o un medio de pago que no existe (`no_cash_on_delivery`) NO
+salen al cliente — antes solo se anotaban en la traza, o sea que quedaban
+registrados *después* de que el cliente ya los había leído. Ahora
+`master._degrade_unsafe_reply` descarta la prosa del modelo y conserva el listado,
+que lo arma el código desde `artifacts` y trae los precios reales; sin productos que
+preservar, cae a un texto fijo. Las otras invariantes siguen siendo observacionales
+a propósito: solo pueden venir del listado determinista, que es fiable por
+construcción.
+
 ## Tests
 
 ```bash
-python -m pytest tests/ -q       # 281 pasan, offline
+python -m pytest tests/ -q       # 444 pasan, 2 skip, offline
 ```
 
 **La suite NO sale a la red.** [`tests/conftest.py`](tests/conftest.py) fuerza
@@ -132,14 +152,17 @@ solo de ceder el chat. Lo que hay hoy, verificado contra la API real:
 | *"¿Qué contiene?"* | **Sí.** `GET /productos/{id}` (`detalle_producto`) trae `descripcion` con la lista: *"contiene:<br> - Packaging… - Croissant de pollo…"*. El playbook de `detail` ya manda usarla; el modelo a veces no la pide. |
 | *"¿Se puede quitar/añadir items? ¿Qué opciones hay?"* | **No.** La API **no modela** personalización: no hay items, ni sustituciones, ni precios por componente. Esto **sí** es deuda del servidor y hoy es motivo legítimo de handoff. |
 
-Dos cosas pendientes:
+Estado:
 
-1. **El HTML se filtra al cliente.** `descripcion` y `descripcion_corta` vienen con
-   `<br>`, tabs y viñetas `-`, y **nadie los limpia** (ni `adapters.py` ni
-   `render.py`): al cliente le llega *"…el alma del Perú.\<br\>"* tal cual. Hay que
-   limpiarlo en el adapter, que es la frontera donde se normaliza todo lo demás.
+1. ~~**El HTML se filtra al cliente.**~~ **Corregido (jul 2026):** `adapters.clean_html()`
+   limpia tags, entidades y tabs en la frontera del adapter. Dos formas según el destino:
+   `descripcion_corta` y `nombre` van `inline=True` (una sola línea, porque se imprimen
+   dentro de la viñeta del listado y un salto lo parte); la `descripcion` del detalle
+   conserva los saltos, que **son** las viñetas del "¿qué contiene?". También se limpia
+   `metodos_pago` — su descripción envuelve el número de cuenta y el CCI en `<p>`/`<strong>`,
+   y es texto que el cliente copia para pagar. Cubierto en `tests/test_adapters.py`.
 2. **Personalizar un producto no existe en la API.** Mientras no exista, "¿se puede
-   cambiar el globo / quitar el croissant?" se escala, no se improvisa.
+   cambiar el globo / quitar el croissant?" se escala, no se improvisa. **Sigue abierto.**
 
 Regla que ya es determinista (no depende del prompt): si la respuesta del modelo
 **promete** meter a un asesor ("consulto con un asesor", "un asesor te enviará…"),

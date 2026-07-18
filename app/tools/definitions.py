@@ -72,7 +72,7 @@ TOOLS = [
                     },
                     "categoria_slug": {
                         "type": "string",
-                        "description": "Opcional. Restringe la búsqueda a una categoría exacta. Úsalo cuando el cliente mencionó explícitamente una categoría, y OBLIGATORIAMENTE cuando busques dentro de una campaña de temporada (día del padre, navidad, etc.). Slugs permanentes: desayunos, arreglos-florales, peluches, plantas, cestas, regalo-para-bebe, arreglos-funebres. Slugs de campaña (rotan, confírmalos con listar_categorias): dia-del-padre, dia-de-la-madre, etc.",
+                        "description": "Opcional. Restringe la búsqueda a una categoría exacta. Úsalo cuando el cliente mencionó explícitamente una categoría, y OBLIGATORIAMENTE cuando busques dentro de una campaña de temporada (día del padre, navidad, etc.). Slugs permanentes: desayunos, arreglos-florales, peluches, plantas, cestas, regalo-para-bebe, arreglos-funebres. Slugs de campaña (rotan, confírmalos con explorar_catalogo): dia-del-padre, dia-de-la-madre, etc.",
                     },
                     "excluir_ids": {
                         "type": "array",
@@ -160,7 +160,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "catalogo_categoria",
-            "description": "Obtiene los productos de una categoría específica. Usa el slug (url_categoria) obtenido de listar_categorias. Ejemplos de slugs: arreglos-florales, desayunos, peluches, plantas, cestas.",
+            "description": "Obtiene los productos de una categoría específica. Usa el slug (url_categoria) obtenido de explorar_catalogo. Ejemplos de slugs: arreglos-florales, desayunos, peluches, plantas, cestas.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -210,7 +210,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "productos_por_ocasion",
-            "description": "Obtiene productos sugeridos para una ocasion permanente. No la uses para campanas temporales como Dia del Padre, Dia de la Madre, Navidad o San Valentin; esas van por listar_categorias y catalogo_categoria. IDs: Cumpleanos=1, Aniversario=2, Felicitacion=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
+            "description": "Obtiene productos sugeridos para una ocasion permanente. No la uses para campanas temporales como Dia del Padre, Dia de la Madre, Navidad o San Valentin; esas van por explorar_catalogo y catalogo_categoria. IDs: Cumpleanos=1, Aniversario=2, Felicitacion=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
             "parameters": {
                 "type": "object",
                 "properties": {

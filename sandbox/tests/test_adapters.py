@@ -132,3 +132,61 @@ def test_los_artifacts_del_harness_ya_traen_nombre_y_precio():
 def test_el_tipo_de_cambio_tiene_un_valor_de_respaldo():
     """Sin tipo de cambio, un precio aproximado es mejor que ningún precio."""
     assert adapters.DEFAULT_USD_PEN > 0
+
+
+# ── HTML del CMS ──────────────────────────────────────────────────────
+
+def test_las_descripciones_no_llegan_con_html_al_cliente():
+    """Deuda #1: `descripcion` traía `<br>` y tabs, y nadie los limpiaba.
+
+    El cliente leía literalmente "…el alma del Perú.<br>". Se limpia en el
+    adapter, que es la frontera donde ya se normaliza todo lo demás.
+    """
+    payload = adapters.products_payload(load("producto_detalle"), RATE)
+    detalle = payload["data"]
+
+    for campo in ("descripcion", "descripcion_corta", "nombre"):
+        texto = detalle.get(campo) or ""
+        assert "<br" not in texto and "<p" not in texto, f"{campo} conserva HTML"
+        assert "\t" not in texto, f"{campo} conserva tabs"
+        assert "&nbsp;" not in texto and "&amp;" not in texto
+
+
+def test_la_descripcion_del_detalle_conserva_las_vinetas():
+    """Es la única respuesta a "¿qué contiene?": los saltos SON la lista."""
+    detalle = adapters.products_payload(load("producto_detalle"), RATE)["data"]
+    desc = detalle["descripcion"]
+
+    # El fixture es el peluche de 60cm: cada `<br>` separaba un item.
+    assert "Osito de peluche" in desc
+    assert "Tarjeta dedicatoria" in desc
+    assert desc.count("\n") >= 2, "se perdieron los saltos que separan los items"
+    assert "\n\n" not in desc, "quedaron saltos dobles del HTML"
+
+
+def test_la_descripcion_corta_va_en_una_sola_linea():
+    """Se imprime dentro de la viñeta del listado; un salto parte el listado."""
+    payload = adapters.products_payload(load("productos_destacados"), RATE)
+
+    for p in payload["data"]:
+        assert "\n" not in (p.get("descripcion_corta") or "")
+        assert "\n" not in (p.get("nombre") or "")
+
+
+def test_los_metodos_de_pago_no_llegan_con_html():
+    """Son los datos bancarios que el cliente copia para pagar."""
+    payload = adapters.payment_methods_payload(load("metodos_pago"))
+
+    for metodo in payload["data"]:
+        desc = metodo.get("descripcion_metodo_pago") or ""
+        assert "<p" not in desc and "<br" not in desc and "<strong" not in desc
+        assert "&" not in desc or "&" in desc.replace("&amp;", "")
+    # Y el dato que importa sigue ahí, no lo comió la limpieza.
+    bcp = next(m for m in payload["data"] if m["nombre_metodo_pago"] == "BCP")
+    assert "194 1987991 0 15" in bcp["descripcion_metodo_pago"]
+
+
+def test_limpiar_html_no_rompe_un_texto_ya_limpio():
+    assert adapters.clean_html("Desayuno criollo para dos") == "Desayuno criollo para dos"
+    assert adapters.clean_html("") == ""
+    assert adapters.clean_html(None) == ""
