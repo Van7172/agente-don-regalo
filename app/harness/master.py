@@ -209,6 +209,19 @@ async def run_master(
         result.user_facing, state=state, artifacts=result.artifacts
     )
 
+    # Detectar no basta: lo grave no sale al cliente (ver `_degrade_unsafe_reply`).
+    if result.user_facing is not None:
+        seguro = _degrade_unsafe_reply(
+            result.user_facing, violations, result.artifacts
+        )
+        if seguro != result.user_facing:
+            log.warning(
+                "[INVARIANTE] conversation=%s respuesta degradada por %s",
+                conversation_id,
+                [str(v) for v in violations],
+            )
+            result.user_facing = seguro
+
     state = _reduce(state, result)
 
     # ¿Este turno el bot ofreció un asesor? Si el cliente responde "sí", el router
@@ -488,6 +501,47 @@ def _capture_choice(
             "chosen_product_id": chosen[0],
             "chosen_product_name": chosen[1],
         }
+
+
+# Invariantes que NO se pueden dejar pasar al cliente: un precio inventado que el
+# cliente da por bueno, o un medio de pago que no existe. Las demás
+# (`image_urls_on_own_line`, repetidos) solo pueden venir del listado, que ya arma
+# el código y es fiable por construcción: registrarlas basta.
+_BLOCKING_RULES = frozenset({"prices_are_sourced", "no_cash_on_delivery"})
+
+# Respaldo cuando el turno no tiene productos que preservar (prosa pura). No cita
+# ninguna cifra —que es justo lo que se degradó— y no promete traer a un asesor:
+# eso dispararía `_promises_handoff`, y Regalito no puede consultar y volver.
+_SAFE_FALLBACK = (
+    "Para no darte un dato equivocado, prefiero confirmártelo bien 🙏 "
+    "El pago es siempre por adelantado (Yape/Plin, transferencia bancaria o "
+    "tarjeta). ¿Te comparto los precios exactos del regalo que te interesa?"
+)
+
+
+def _degrade_unsafe_reply(
+    reply: str | None, violations: list, artifacts: list
+) -> str | None:
+    """Ante una violación grave, no enviar la prosa del modelo tal cual.
+
+    Hasta ahora las invariantes eran solo observacionales: `check_reply` dejaba la
+    violación en la traza y la respuesta salía igual. Es decir, el fallo más caro
+    del negocio —un precio que el modelo se inventó— quedaba registrado *después*
+    de que el cliente ya lo había leído.
+
+    La degradación aprovecha que la respuesta es de dos piezas
+    (`compose_product_reply`): la intro la escribe el modelo, el listado lo arma el
+    código desde `artifacts`. Lo contaminado solo puede ser la intro, así que se
+    tira la intro y se conserva el listado, que trae los precios reales. Sin
+    productos que preservar, cae al respaldo fijo.
+    """
+    rotas = {v.rule for v in violations} & _BLOCKING_RULES
+    if not rotas:
+        return reply
+
+    if artifacts:
+        return render_product_list([_as_dict(p) for p in artifacts])
+    return _SAFE_FALLBACK
 
 
 # Una línea que lleva una URL de imagen, la escriba el modelo como la escriba.

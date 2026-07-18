@@ -484,3 +484,47 @@ async def test_confirmar_derivacion_en_curso_cede_el_control(harness, monkeypatc
 
     assert reply == agent_mod.HANDOFF_DONE
     assert harness["systems"] == [], "la continuación de la derivación no llama al LLM"
+
+
+@pytest.mark.asyncio
+async def test_un_precio_inventado_no_sale_del_turno(harness, monkeypatch):
+    """El lazo completo, no solo la función pura.
+
+    La auditoría encontró que `check_reply` anotaba la violación en la traza y
+    la respuesta salía igual: el precio inventado le llegaba al cliente y el
+    registro solo servía para el post-mortem. Este test cierra el lazo.
+    """
+    _mock_llm(monkeypatch, harness, [
+        _tool_call("buscar_semantico", {"q": "peluches"}),
+        # El modelo se inventa S/45.00: la tool devolvió 87.50 y 120.00.
+        _final("¡Mira esto! El terrario te sale S/45.00, una ganga 🎉"),
+    ])
+
+    reply = await master_mod.run_master(
+        [{"role": "user", "content": "busco un terrario"}],
+        wa_id="51999",
+        conversation_id=77,
+    )
+
+    assert reply is not None
+    assert "S/45" not in reply, "el precio inventado llegó al cliente"
+    assert "ganga" not in reply, "sobrevivió la prosa contaminada"
+    # Y el cliente no se queda sin respuesta: recibe el listado con precios reales.
+    assert "87.50" in reply and "Terrario Familia Panditas" in reply
+
+
+@pytest.mark.asyncio
+async def test_una_respuesta_con_precios_reales_sale_intacta(harness, monkeypatch):
+    """La degradación no puede dispararse contra un turno sano."""
+    _mock_llm(monkeypatch, harness, [
+        _tool_call("buscar_semantico", {"q": "peluches"}),
+        _final("¡Encontré estas opciones preciosas para ti! 😊"),
+    ])
+
+    reply = await master_mod.run_master(
+        [{"role": "user", "content": "busco un terrario"}],
+        wa_id="51999",
+        conversation_id=78,
+    )
+
+    assert "preciosas para ti" in reply, "se degradó una respuesta que estaba bien"

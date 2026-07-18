@@ -55,6 +55,42 @@ def test_el_playbook_solo_cita_tools_de_su_propio_toolset(name):
     assert not huerfanas, f"{name} cita tools que no están en su toolset: {huerfanas}"
 
 
+def _tool_texts():
+    """Todo el texto de las definiciones que el modelo llega a leer."""
+    for tool in TOOLS + [MEMORY_TOOL, HUMAN_HANDOFF_TOOL]:
+        fn = tool["function"]
+        yield fn["name"], fn.get("description", "")
+        props = (fn.get("parameters") or {}).get("properties") or {}
+        for arg, spec in props.items():
+            yield f"{fn['name']}.{arg}", spec.get("description", "")
+
+
+# Tools retiradas: nombrarlas en una descripción le ordena al modelo llamar algo
+# que no tiene. Ya pasó: las descripciones seguían diciendo "confírmalos con
+# listar_categorias" después de que `registry.py` la quitara de todos los
+# toolsets, y el modelo alucinaba la llamada o se quedaba sin taxonomía y
+# extrapolaba categorías inexistentes ("desayuno clásico/premium").
+TOOLS_RETIRADAS = {"listar_categorias", "listar_ocasiones"}
+
+
+@pytest.mark.parametrize("origen,texto", list(_tool_texts()))
+def test_ninguna_descripcion_de_tool_nombra_una_tool_retirada(origen, texto):
+    citadas = set(re.findall(r"\b([a-z_]{4,})\b", texto)) & TOOLS_RETIRADAS
+    assert not citadas, f"{origen} manda usar una tool retirada: {citadas}"
+
+
+def test_el_executor_no_expone_las_tools_retiradas():
+    """Una sola puerta a la taxonomía: `explorar_catalogo`.
+
+    Mientras siguieran en el dispatch del executor, una llamada alucinada
+    devolvía en silencio una taxonomía parcial en vez de fallar.
+    """
+    from app.tools.executor import _CATALOG_TOOLS
+
+    assert not (TOOLS_RETIRADAS & set(_CATALOG_TOOLS))
+    assert "explorar_catalogo" in _CATALOG_TOOLS
+
+
 @pytest.mark.parametrize("name", sorted(AGENTS))
 def test_solo_los_agentes_con_can_handoff_reciben_la_tool(name):
     spec = AGENTS[name]

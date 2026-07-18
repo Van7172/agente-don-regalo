@@ -188,7 +188,8 @@ async def distritos_cobertura(client: httpx.AsyncClient, _args: dict):
 
 
 async def metodos_pago(client: httpx.AsyncClient, _args: dict):
-    return await _cached_get(client, f"{settings.donregalo_api_base}/metodos-pago")
+    payload = await _cached_get(client, f"{settings.donregalo_api_base}/metodos-pago")
+    return adapters.payment_methods_payload(payload)
 
 
 async def tipo_cambio(client: httpx.AsyncClient, _args: dict):

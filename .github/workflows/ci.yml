@@ -1,0 +1,42 @@
+# Red de regresión en CI: la misma que se corre en local, sin excusas.
+#
+# Nada de aquí sale a la red: `tests/conftest.py` fuerza `crm_enabled=False` y
+# stubea la API, y el runner de evals usa el corpus determinista. Los evals con
+# clasificador LLM (`--llm`) NO corren aquí: llaman a OpenAI, cuestan dinero y
+# necesitan credenciales.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # La misma que el Dockerfile (`python:3.12-slim`), que es lo que corre
+          # en producción. El mínimo real es 3.11: en 3.10 no existe
+          # `asyncio.timeout` y revientan ~9 tests.
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Antes que los tests: si el espejo divergió, el resto del build se está
+      # midiendo sobre dos versiones distintas del mismo código.
+      - name: El espejo sandbox/ sigue siendo un espejo
+        run: python scripts/check_mirror.py
+
+      - name: Tests
+        run: python -m pytest tests/ -q
+
+      - name: Evals (corpus determinista)
+        run: python -m evals.runner

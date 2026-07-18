@@ -6,6 +6,9 @@ import time
 import pytest
 
 from app.harness.aliases import resolve_alias
+from app.harness.contracts import Product
+from app.harness.invariants import check_reply
+from app.harness.master import _degrade_unsafe_reply
 from app.harness.checkout import advance_checkout, parse_schedule, start_checkout, wants_checkout
 from app.harness.coverage import extract_place_candidates, match_district
 from app.harness.releaser import should_release_to_ai
@@ -248,3 +251,72 @@ async def test_coverage_resolve_con_payload_real(monkeypatch):
 def test_extract_places():
     c = extract_place_candidates("Independencia\n2da de palao")
     assert len(c) >= 1
+
+
+# ── Degradación por invariante rota ───────────────────────────────────
+
+def _producto(pid=1235, nombre="Osito", sol=149.60, usd=44.0):
+    return Product(
+        id_producto=pid,
+        nombre=nombre,
+        precio_sol=sol,
+        precio_usd=usd,
+        imagen_url="https://donregalo.pe/img/osito.jpg",
+        descripcion="Peluche de 60cm",
+    )
+
+
+def test_un_precio_inventado_no_llega_al_cliente():
+    """El fallo más caro del negocio: el cliente da por bueno un precio falso.
+
+    Antes `check_reply` lo anotaba en la traza y la respuesta salía igual: la
+    violación quedaba registrada DESPUÉS de que el cliente ya la había leído.
+    """
+    artifacts = [_producto(sol=149.60)]
+    reply = "¡Tengo justo lo tuyo! Te sale S/99.00, un precio genial 😊"
+    violations = check_reply(reply, artifacts=artifacts)
+
+    assert any(v.rule == "prices_are_sourced" for v in violations)
+
+    seguro = _degrade_unsafe_reply(reply, violations, artifacts)
+    assert "S/99" not in seguro, "el precio inventado sobrevivió a la degradación"
+    assert "149" in seguro, "se perdió el precio real del listado"
+
+
+def test_la_degradacion_conserva_las_fotos_del_listado():
+    """Degradar no es tirar el mensaje: el listado lo arma el código y es fiable."""
+    artifacts = [_producto()]
+    violations = check_reply("Te sale S/12.00", artifacts=artifacts)
+
+    seguro = _degrade_unsafe_reply("Te sale S/12.00", violations, artifacts)
+    assert "https://donregalo.pe/img/osito.jpg" in seguro
+    assert "Osito" in seguro
+
+
+def test_contraentrega_se_degrada_aunque_no_haya_productos():
+    """Prosa pura (policy): no hay listado que preservar, cae al respaldo fijo."""
+    reply = "Puedes pagar contra entrega cuando llegue el repartidor."
+    violations = check_reply(reply, artifacts=[])
+
+    assert any(v.rule == "no_cash_on_delivery" for v in violations)
+
+    seguro = _degrade_unsafe_reply(reply, violations, [])
+    assert "contra entrega" not in seguro.lower()
+    assert not check_reply(seguro), "el respaldo viola sus propias invariantes"
+
+
+def test_una_respuesta_limpia_no_se_toca():
+    artifacts = [_producto(sol=149.60)]
+    reply = "Mira esta opción 😊"
+    assert _degrade_unsafe_reply(reply, check_reply(reply, artifacts=artifacts), artifacts) == reply
+
+
+def test_las_invariantes_leves_no_degradan_la_respuesta():
+    """Repetir un producto es molesto, pero no justifica romper el mensaje."""
+    state = ConversationState(shown_product_ids=[1235])
+    artifacts = [_producto(1235)]
+    reply = "Aquí van 😊"
+    violations = check_reply(reply, state=state, artifacts=artifacts)
+
+    assert any(v.rule == "no_repeated_products" for v in violations)
+    assert _degrade_unsafe_reply(reply, violations, artifacts) == reply
