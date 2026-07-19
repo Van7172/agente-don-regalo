@@ -40,7 +40,7 @@ CRM_BASE_URL=https://donregalo.pe/crm/public
 
 ## 2. Archivos
 
-Sube el contenido de `crm-php/` (FTP/Git). En el servidor:
+Sube el contenido de `crm/` (FTP/Git). En el servidor:
 
 ```bash
 cp config.example.php config.php
@@ -61,12 +61,12 @@ Variables clave en `config.php`:
 
 Si aún no corriste el SQL de producción:
 
-`crm/sql/002_crm_schema_produccion.sql` en phpMyAdmin (BD del cliente).
+`crm/sql/001_crm_schema.sql` (y migraciones en `crm/sql/`) en phpMyAdmin (BD del cliente).
 
 Si el asesor no puede adjuntar PDF/audio (`Data truncated for column 'type_outbox'`):
 
 ```sql
--- crm-php/sql/003_media_outbox.sql
+-- crm/sql/003_media_outbox.sql
 ALTER TABLE crm_outbox
   MODIFY COLUMN type_outbox ENUM('text','image','audio','document')
   NOT NULL DEFAULT 'text';
@@ -75,7 +75,7 @@ ALTER TABLE crm_outbox
 Antes de publicar **Historial de ventas**, ejecutar en phpMyAdmin:
 
 ```text
-crm-php/sql/004_sales_history.sql
+crm/sql/004_sales_history.sql
 ```
 
 La migración crea `crm_ventas_historiales` y copia como pendientes las fichas
@@ -94,7 +94,7 @@ En EasyPanel → `app-agente-sandbox` → Entorno:
 CRM_MODE=external
 CRM_BASE_URL=https://donregalo.pe/crm/public
 CRM_INTERNAL_TOKEN=...mismo-token...
-AGENT_INTERNAL_TOKEN=...mismo-que-crm-php...
+AGENT_INTERNAL_TOKEN=...mismo-que-crm/config.php...
 ```
 
 Redeploy del sandbox.

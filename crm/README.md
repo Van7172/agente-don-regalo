@@ -10,12 +10,13 @@ Ver **[`../docs/SANDBOX_Y_CRM_PHP.md`](../docs/SANDBOX_Y_CRM_PHP.md)** — estad
 ## Estructura
 
 ```
-crm-php/
+crm/
   public/           ← document root (o /crm/public)
     index.php       inbox
     login.php
     reports.php
     api/index.php   API del agente (X-CRM-Token)
+  sql/              migraciones MySQL
   src/              PDO, Auth, Repository
   views/
   config.example.php
@@ -24,7 +25,7 @@ crm-php/
 ## Setup rápido
 
 1. Copia `config.example.php` → `config.php` y completa `db`, tokens.
-2. Asegura el schema `crm/sql/002_crm_schema_produccion.sql` en la BD.
+2. Asegura el schema `crm/sql/001_crm_schema.sql` (y migraciones posteriores) en la BD.
 3. Publicación actual (carpeta): `https://donregalo.pe/crm/public/` con `base_path => '/crm/public'`.
 4. Login con `login_usuario` de la tabla `usuarios`.
 
@@ -41,7 +42,3 @@ WATCHDOG_ENABLED=0
 ```
 
 Health: `GET https://donregalo.pe/crm/public/api/health`
-
-## Nota sobre `crm/` (Next.js)
-
-Esa carpeta es **legado**. El panel de producción es este CRM PHP.

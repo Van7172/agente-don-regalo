@@ -117,7 +117,7 @@ python -m pytest tests/ -q       # 281 pasan, offline
   desde GitHub — el código en local no llega a producción hasta hacer push Y redeploy.
   Webhook Meta: `.../whatsapp/webhook`. Env clave: `WHATSAPP_APP_SECRET` (valida la
   firma — sin él cualquiera inyecta mensajes), `WATCHDOG_ENABLED=1`, `ALERT_WHATSAPP`.
-- **CRM PHP**: hosting de Don Regalo, carpeta [`crm-php/`](crm-php/). El verde de venta
+- **CRM PHP**: hosting de Don Regalo, carpeta [`crm/`](crm/). El verde de venta
   cerrada, el sonido del handoff y los emojis viven aquí — hay que subir el CRM aparte.
 
 ## Deuda conocida (del servidor, no de este código)

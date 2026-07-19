@@ -23,9 +23,9 @@ build/
 .idea/
 *.swp
 
-# Dumps SQL (no versionar volcados de BD)
+# Dumps SQL (no versionar volcados de BD); sí las migraciones del CRM
 *.sql
-!crm-php/sql/004_sales_history.sql
+!crm/sql/*.sql
 
 # Artefactos locales de tests
 test_sandbox.db

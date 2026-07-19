@@ -24,7 +24,7 @@ requiresText($migration, 'INSERT IGNORE INTO crm_ventas_historiales', 'Falta bac
 requiresText($migration, 'ON DELETE RESTRICT', 'El historial no debe borrarse en cascada');
 
 $gitignore = source('../.gitignore');
-requiresText($gitignore, '!crm-php/sql/004_sales_history.sql', 'La migración debe versionarse');
+requiresText($gitignore, '!crm/sql/*.sql', 'Las migraciones CRM deben versionarse');
 
 $repository = source('src/Repository.php');
 requiresText($repository, 'function archiveSale', 'Falta archivado de ventas');

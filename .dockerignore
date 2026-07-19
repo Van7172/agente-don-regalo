@@ -11,7 +11,6 @@ __pycache__/
 .agents/
 
 # No van en la imagen del agente
-crm-php/
 crm/
 sandbox/
 docs/
@@ -20,4 +19,3 @@ legacy_backup_*/
 !requirements.txt
 test_sandbox.db
 *.db
-crm-php.zip

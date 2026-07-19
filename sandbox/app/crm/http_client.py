@@ -1,4 +1,4 @@
-"""Cliente HTTP hacia el CRM (crm-php en subdominio del cliente, o legacy Next)."""
+"""Cliente HTTP hacia el CRM (crm/ PHP en hosting del cliente, o legacy Next)."""
 from __future__ import annotations
 
 import logging

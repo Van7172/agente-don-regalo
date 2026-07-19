@@ -22,13 +22,13 @@ Checklist de corte: [`MIGRATION_CHECKLIST.md`](MIGRATION_CHECKLIST.md)
 ## Tras la promoción
 
 1. EasyPanel construye desde la **raíz** del repo (mismo `Dockerfile` promovido).
-2. Env: Meta + `CRM_MODE=external` + tokens alineados con `crm-php`.
+2. Env: Meta + `CRM_MODE=external` + tokens alineados con `crm/`.
 3. Webhook Meta → `https://tu-dominio-agente/whatsapp/webhook`.
-4. Panel asesores → `crm-php` en el hosting del cliente (no el `web/` mínimo).
+4. Panel asesores → `crm/` en el hosting del cliente (no el `web/` mínimo).
 5. Monitorear 24–48 h; rollback = checkout del tag `legacy-chatwoot-evolution`.
 
 ## Desarrollo futuro
 
 - Features del agente: editar `app/` en la raíz (ya no hace falta `sandbox/` salvo que quieras un entorno paralelo).
-- Panel asesores: editar `crm-php/`.
+- Panel asesores: editar `crm/`.
 - No reintroducir Chatwoot/Evolution salvo rollback explícito.

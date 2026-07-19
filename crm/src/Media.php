@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * Archivos de conversación (fotos, notas de voz, comprobantes).
  *
- * Viven FUERA del docroot (crm-php/storage/media) y solo se sirven vía
+ * Viven FUERA del docroot (crm/storage/media) y solo se sirven vía
  * public/media.php, que exige sesión de asesor o el token interno del agente.
  * Son datos personales de clientes: nunca deben quedar colgando de una URL pública.
  */

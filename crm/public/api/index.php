@@ -15,7 +15,7 @@ $uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $uri = preg_replace('#/+#', '/', $uri);
 
 // Soporta document root = public/ → /api/...
-// o subcarpeta /crm-php/public/api/...
+// o subcarpeta /crm/public/api/...
 $path = $uri;
 if (preg_match('#/api(/.*)?$#', $uri, $m)) {
     $path = $m[1] ?? '/';
@@ -27,7 +27,7 @@ try {
     if ($path === '/health' && $method === 'GET') {
         Http::jsonOk([
             'ok' => true,
-            'service' => 'crm-php',
+            'service' => 'crm',
             'tenant' => $config['tenant_slug'] ?? 'don-regalo',
         ]);
     }

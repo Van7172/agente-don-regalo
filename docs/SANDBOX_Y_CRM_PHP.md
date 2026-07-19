@@ -29,7 +29,7 @@ Cliente WhatsApp
        ├─ buffer de mensajes
        ├─ OpenAI + tools (catálogo, Qdrant, handoff, memoria)
        ├─ fillers de latencia (excepto saludos simples)
-       └─ CRM_MODE=external ──HTTP──► crm-php (hosting cliente)
+       └─ CRM_MODE=external ──HTTP──► crm (hosting cliente)
                                           │
                                           ├─ MySQL local (crm_* + usuarios)
                                           ├─ Inbox asesores (polling)
@@ -41,10 +41,9 @@ Cliente WhatsApp
 | Pieza                    | Dónde vive                                 | Rol                                        |
 | ------------------------ | ------------------------------------------ | ------------------------------------------ |
 | **Agente IA**            | `app/` en la raíz (EasyPanel)              | WhatsApp Cloud API, LLM, tools, Qdrant     |
-| **CRM panel + API**      | `crm-php/` en hosting PHP del cliente      | Inbox, login, reportes, persistencia MySQL |
+| **CRM panel + API**      | `crm/` en hosting PHP del cliente      | Inbox, login, reportes, persistencia MySQL |
 | **Catálogo**             | `DONREGALO_API_BASE` → `clienteApiApp/api` | Productos reales Don Regalo                |
 | **`sandbox/`**           | Espejo histórico                           | Ya no es el deploy de producción           |
-| **CRM Next.js** (`crm/`) | Legado                                     | No es el panel de producción               |
 
 
 URLs típicas actuales:
@@ -99,8 +98,8 @@ Variables en EasyPanel (`app-agente-sandbox`):
 ```env
 CRM_MODE=external
 CRM_BASE_URL=https://donregalo.pe/crm/public
-CRM_INTERNAL_TOKEN=<mismo que crm-php config.php → crm_internal_token>
-AGENT_INTERNAL_TOKEN=<mismo que crm-php → agent_internal_token>
+CRM_INTERNAL_TOKEN=<mismo que crm config.php → crm_internal_token>
+AGENT_INTERNAL_TOKEN=<mismo que crm → agent_internal_token>
 WATCHDOG_ENABLED=0
 ```
 
@@ -177,14 +176,14 @@ Guías cortas:
 
 
 
-## 4. CRM PHP (`crm-php/`)
+## 4. CRM PHP (`crm/`)
 
 
 
 ### 4.1 Estructura
 
 ```text
-crm-php/
+crm/
   public/                 ← document root (o /crm/public en el hosting)
     index.php             inbox
     login.php / logout.php
@@ -213,8 +212,8 @@ crm-php/
 | `catalog_api_base`     | Opcional, corroborar reportes                                     |
 
 
-Schema tablas `crm_*`: `crm/sql/002_crm_schema_produccion.sql`.
-Medios (audio/PDF en outbox): `crm-php/sql/003_media_outbox.sql` (ensancha `type_outbox`).
+Schema tablas `crm_*`: `crm/sql/001_crm_schema.sql` (y migraciones posteriores en `crm/sql/`).
+Medios (audio/PDF en outbox): `crm/sql/003_media_outbox.sql` (ensancha `type_outbox`).
 
 ### 4.3 Autenticación
 
@@ -238,7 +237,7 @@ Base: `{CRM_BASE_URL}/api/...`
 
 | Método         | Ruta                       | Quién               | Descripción                             |
 | -------------- | -------------------------- | ------------------- | --------------------------------------- |
-| GET            | `/health`                  | Público / monitoreo | `{ ok, service: crm-php, … }`           |
+| GET            | `/health`                  | Público / monitoreo | `{ ok, service: crm, … }`           |
 | GET/POST       | `/conversations`           | Agente              | Listar / crear por `wa_id`              |
 | GET            | `/conversations/{id}`      | Agente / panel      | Detalle + mensajes + **lead** (memoria) |
 | POST           | `/conversations/{id}`      | Agente              | Append mensaje                          |
@@ -276,10 +275,10 @@ El PHP **ya no** inserta el mensaje otra vez tras OK del agente (evita burbujas 
 
 ### 4.7 Deploy CRM
 
-1. Subir `crm-php/` al hosting (`public_html/crm/…`).
+1. Subir `crm/` al hosting (`public_html/crm/…`).
 2. `config.example.php` → `config.php` con tokens alineados al sandbox.
 3. Verificar `api/health` y login.
-4. Detalle: `[crm-php/docs/DEPLOY.md](../crm-php/docs/DEPLOY.md)`.
+4. Detalle: `[crm/docs/DEPLOY.md](../crm/docs/DEPLOY.md)`.
 
 Tras cambios solo de PHP: **subir archivos al hosting** (no hace falta redeploy EasyPanel).
 
@@ -366,7 +365,6 @@ Tokens deben ser **idénticos** en ambos lados (nunca el texto literal del place
 | Carpeta / servicio               | Estado                                   |
 | -------------------------------- | ---------------------------------------- |
 | Raíz `app/` + Chatwoot/Evolution | Legacy / otra línea                      |
-| `crm/` Next.js                   | Legado; no desplegar como panel actual   |
 | SQLite CRM del sandbox           | Solo si `CRM_MODE=local` (dev/tests)     |
 | Watchdog como “auto-mejora”      | Futuro; hoy solo vigía/avisos y está off |
 
@@ -384,10 +382,10 @@ Tokens deben ser **idénticos** en ambos lados (nunca el texto literal del place
 | Prompt + pagos | `app/prompts/system.py` |
 | Flush CRM externo | `app/services/buffer.py` |
 | Cliente HTTP CRM | `app/crm/http_client.py` |
-| API CRM                | `crm-php/public/api/index.php`                      |
-| Auth token / login     | `crm-php/src/Auth.php`                              |
-| Queries                | `crm-php/src/Repository.php`                        |
-| Inbox UI               | `crm-php/views/inbox.php`, `public/assets/inbox.js` |
-| Deploy                 | `crm-php/docs/DEPLOY.md`                            |
+| API CRM                | `crm/public/api/index.php`                      |
+| Auth token / login     | `crm/src/Auth.php`                              |
+| Queries                | `crm/src/Repository.php`                        |
+| Inbox UI               | `crm/views/inbox.php`, `public/assets/inbox.js` |
+| Deploy                 | `crm/docs/DEPLOY.md`                            |
 
 

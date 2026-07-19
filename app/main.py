@@ -87,5 +87,5 @@ async def panel():
     if index.is_file():
         return FileResponse(index)
     return {
-        "message": "Agente Don Regalo. Panel de asesores: crm-php en el hosting del cliente.",
+        "message": "Agente Don Regalo. Panel de asesores: crm/ en el hosting del cliente.",
     }

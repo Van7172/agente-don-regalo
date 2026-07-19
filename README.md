@@ -13,7 +13,7 @@ OpenAI, Qdrant y catálogo real de Don Regalo.
 | Pieza | Ubicación | Rol |
 |-------|-----------|-----|
 | Agente (esta raíz) | `app/` | Webhook Meta, LLM, tools, envío WhatsApp |
-| Panel asesores | `crm-php/` | Inbox + reportes en hosting PHP / MySQL local |
+| Panel asesores | `crm/` | Inbox + reportes en hosting PHP / MySQL local |
 | Panel mínimo local | `web/` | Solo si `CRM_MODE=local` |
 | Copia histórica rework | `sandbox/` | Referencia; la fuente de verdad del agente es la raíz |
 
@@ -61,7 +61,7 @@ uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-80}
 2. Buffer agrupa mensajes; se persiste en CRM (`external` → PHP).
 3. OpenAI + tools (catálogo, Qdrant, memoria, handoff).
 4. Respuesta por Cloud API (texto / imágenes de producto).
-5. Asesor toma el chat en `crm-php` → outbox → agente → WhatsApp.
+5. Asesor toma el chat en `crm/` → outbox → agente → WhatsApp.
 
 ## Activación del bot
 
@@ -106,5 +106,4 @@ git checkout legacy-chatwoot-evolution
 
 ## CRM PHP
 
-Panel de producción: [`crm-php/`](crm-php/). Deploy: [`crm-php/docs/DEPLOY.md`](crm-php/docs/DEPLOY.md).
-La carpeta `crm/` (Next.js) es legado.
+Panel de producción: [`crm/`](crm/). Deploy: [`crm/docs/DEPLOY.md`](crm/docs/DEPLOY.md).

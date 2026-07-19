@@ -26,7 +26,7 @@ Cliente WhatsApp
       ├─ buffer de mensajes
       ├─ HARNESS: orquestador → especialista → tools
       ├─ fillers de latencia (salvo saludos simples)
-      └─ CRM_MODE=external ──HTTP+token──► crm-php (hosting Don Regalo)
+      └─ CRM_MODE=external ──HTTP+token──► crm (hosting Don Regalo)
                                               ├─ MySQL local (crm_* + usuarios)
                                               ├─ Inbox asesores (polling ~4s)
                                               └─ Outbox → push al agente → WhatsApp
@@ -37,10 +37,9 @@ Cliente WhatsApp
 | Pieza | Dónde vive | Rol |
 |---|---|---|
 | **Agente IA** | `app/` en la raíz (EasyPanel) | WhatsApp Cloud API, LLM, harness, tools, Qdrant |
-| **CRM panel + API** | `crm-php/` en hosting PHP de Don Regalo | Inbox, login, reportes, persistencia MySQL |
+| **CRM panel + API** | `crm/` en hosting PHP de Don Regalo | Inbox, login, reportes, persistencia MySQL |
 | **Catálogo / pedidos** | `DONREGALO_API_BASE` → `clienteApiApp/api` | Productos, distritos, tipo de cambio, pedidos temporales |
 | `sandbox/` | Espejo de la raíz | Se sincroniza; **no** es el deploy |
-| `crm/` (Next.js) | Legado | **No** es el panel de producción |
 
 ---
 
@@ -183,7 +182,7 @@ Al confirmar el resumen, el sistema:
 
 ---
 
-## 4. CRM PHP (`crm-php/`)
+## 4. CRM PHP (`crm/`)
 
 Panel de asesores + API de persistencia en el hosting de Don Regalo. MySQL local (no
 se abre a Internet); el agente habla con él solo por **HTTP + token**.
@@ -192,7 +191,7 @@ se abre a Internet); el agente habla con él solo por **HTTP + token**.
   AI/HUMAN, resumen del lead, venta en verde. Assets: `public/assets/inbox.js`,
   `app.css`. Los **enlaces http/https del chat son clickeables** (linkify seguro:
   escapa y luego enlaza).
-- **API interna** (`crm-php/public/api/index.php`), base `{CRM_BASE_URL}/api/...`:
+- **API interna** (`crm/public/api/index.php`), base `{CRM_BASE_URL}/api/...`:
   conversaciones, mensajes, memoria/leads, `mode` (AI↔HUMAN), settings, outbox,
   watchdog, reportes. Auth por `X-CRM-Token` / `Bearer` (salvo `/health`).
 - **Outbox** (asesor → WhatsApp): el panel encola en MySQL → curl a
@@ -209,7 +208,7 @@ El estado de la conversación del harness vive hoy como blob JSON en `settings`
 - **Agente:** EasyPanel, servicio `agente-donregalo`, `uvicorn app.main:app`. Despliega
   **desde GitHub**: el código local no llega a producción hasta hacer **push Y redeploy**.
   Webhook Meta: `.../whatsapp/webhook`.
-- **CRM PHP:** hosting de Don Regalo, carpeta `crm-php/`. Se sube **aparte** (el verde de
+- **CRM PHP:** hosting de Don Regalo, carpeta `crm/`. Se sube **aparte** (el verde de
   venta, el sonido del handoff, los emojis y los enlaces clickeables viven aquí). Tras
   cambios solo de PHP no hace falta redeploy en EasyPanel.
 
@@ -289,7 +288,7 @@ diff -rq app sandbox/app --exclude=__pycache__
 | Loop LLM / fillers | `app/services/agent.py` |
 | Buffer / flush CRM | `app/services/buffer.py` |
 | Cliente HTTP CRM | `app/crm/http_client.py` |
-| API CRM (PHP) | `crm-php/public/api/index.php` |
-| Inbox UI | `crm-php/views/inbox.php`, `crm-php/public/assets/inbox.js` |
+| API CRM (PHP) | `crm/public/api/index.php` |
+| Inbox UI | `crm/views/inbox.php`, `crm/public/assets/inbox.js` |
 
 Ver también [`CLAUDE.md`](CLAUDE.md) (guía corta para agentes) y [`API.md`](API.md).

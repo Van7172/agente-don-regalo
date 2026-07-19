@@ -15,14 +15,13 @@ Cliente WhatsApp
   sandbox/app (FastAPI)
        │
        ├─► channels/whatsapp   (parse + send Graph API)
-       ├─► crm                 (local SQLite O CRM_MODE=external → crm-php)
+       ├─► crm                 (local SQLite O CRM_MODE=external → crm)
        ├─► agent/services      (buffer, LLM loop, tools, fillers)
        ├─► Qdrant              (productos + conocimiento)
        └─► API donregalo.pe    (catálogo real)
        │
        ▼
-  Panel CRM PHP (asesor humano / handoff)  ← producción
-  (crm/ Next.js = legado)
+  Panel CRM PHP (asesor humano / handoff)  ← `crm/` en hosting
 ```
 
 ## Capas

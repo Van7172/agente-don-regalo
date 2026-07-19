@@ -29,7 +29,7 @@ class Settings:
         self.database_url: str = os.getenv(
             "DATABASE_URL", "sqlite+aiosqlite:///./sandbox.db"
         )
-        # Opción C: CRM externo (Next.js + MySQL). local = SQLite embebido sandbox.
+        # Opción C: CRM externo (PHP + MySQL en hosting). local = SQLite embebido.
         # local = SQLite sandbox (tests); external = CRM PHP (hosting) vía HTTP
         self.crm_mode: str = os.getenv("CRM_MODE", "local").strip().lower()
         self.crm_base_url: str = os.getenv("CRM_BASE_URL", "http://127.0.0.1:3100").rstrip("/")

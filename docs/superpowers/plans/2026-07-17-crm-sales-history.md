@@ -13,7 +13,7 @@
 ### Task 1: Migración de historial
 
 **Files:**
-- Create: `crm-php/sql/004_sales_history.sql`
+- Create: `crm/sql/004_sales_history.sql`
 
 - [ ] Crear `crm_ventas_historiales` con PK independiente, FKs, índices por
 tenant/estado/fecha y UNIQUE `(id_tenant, id_conversation,
@@ -21,14 +21,14 @@ cerrada_en_venta_historial)`.
 - [ ] Añadir `INSERT IGNORE ... SELECT` desde claves `sale_%`, extrayendo el
 snapshot JSON y dejando estado `pendiente`.
 - [ ] Verificar sintaxis MySQL y documentar ejecución en
-`crm-php/docs/DEPLOY.md`.
+`crm/docs/DEPLOY.md`.
 
 ### Task 2: Repositorio y API
 
 **Files:**
-- Modify: `crm-php/src/Repository.php`
-- Modify: `crm-php/public/api/index.php`
-- Test: `crm-php/tests/sales_history_contract.php`
+- Modify: `crm/src/Repository.php`
+- Modify: `crm/public/api/index.php`
+- Test: `crm/tests/sales_history_contract.php`
 
 - [ ] **Step 1: Add failing contract tests**
 
@@ -37,7 +37,7 @@ idempotencia y orden “archivar antes de borrar setting”.
 
 - [ ] **Step 2: Verify RED**
 
-Run: `php crm-php/tests/sales_history_contract.php`
+Run: `php crm/tests/sales_history_contract.php`
 
 Expected: FAIL por métodos/rutas ausentes.
 
@@ -62,16 +62,16 @@ snapshot además de conservar el setting.
 
 - [ ] **Step 5: Verify GREEN**
 
-Run: `php crm-php/tests/sales_history_contract.php`
+Run: `php crm/tests/sales_history_contract.php`
 
 Expected: PASS.
 
 ### Task 3: Interacción del inbox
 
 **Files:**
-- Modify: `crm-php/public/assets/inbox.js`
-- Modify: `crm-php/public/assets/app.css`
-- Test: `crm-php/tests/sales_history_contract.php`
+- Modify: `crm/public/assets/inbox.js`
+- Modify: `crm/public/assets/app.css`
+- Test: `crm/tests/sales_history_contract.php`
 
 - [ ] Añadir el test que exige botón, confirmación, endpoint y tratamiento de
 éxito/error; verificar RED.
@@ -79,16 +79,16 @@ Expected: PASS.
 - [ ] Usar `window.confirm` con el texto aprobado.
 - [ ] Al confirmar, hacer PATCH; limpiar `lastThread.conv.sale`, repintar ficha y
 lista. Si falla, mantener la ficha y mostrar error.
-- [ ] Verificar GREEN y ejecutar `node --check crm-php/public/assets/inbox.js`.
+- [ ] Verificar GREEN y ejecutar `node --check crm/public/assets/inbox.js`.
 
 ### Task 4: Módulo Historial de ventas
 
 **Files:**
-- Create: `crm-php/public/sales-history.php`
-- Create: `crm-php/views/sales-history.php`
-- Modify: `crm-php/views/layout.php`
-- Modify: `crm-php/public/assets/app.css`
-- Test: `crm-php/tests/sales_history_contract.php`
+- Create: `crm/public/sales-history.php`
+- Create: `crm/views/sales-history.php`
+- Modify: `crm/views/layout.php`
+- Modify: `crm/public/assets/app.css`
+- Test: `crm/tests/sales_history_contract.php`
 
 - [ ] Añadir pruebas contractuales de autenticación, filtros, escape y enlace de
 navegación; verificar RED.
