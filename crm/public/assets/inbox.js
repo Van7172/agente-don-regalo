@@ -1130,7 +1130,13 @@
             }),
           });
           if (json.queued && json.pushed === false) {
-            showError(json.warning || "Mensaje en cola hacia WhatsApp…");
+            // No dar por enviado: el push al agente falló. La burbuja queda en rojo.
+            settle(false);
+            showError(
+              json.warning ||
+                "No se pudo enviar a WhatsApp. Revisa agent_base_url / tokens del agente."
+            );
+            return;
           }
         } else {
           // Un outbox por archivo (WA no agrupa álbumes desde Cloud API).
@@ -1150,7 +1156,12 @@
               }),
             });
             if (json.queued && json.pushed === false) {
-              showError(json.warning || "Mensaje en cola hacia WhatsApp…");
+              settle(false);
+              showError(
+                json.warning ||
+                  "No se pudo enviar a WhatsApp. Revisa agent_base_url / tokens del agente."
+              );
+              return;
             }
           }
         }

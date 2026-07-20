@@ -79,6 +79,13 @@ async def deliver_outbox(
         stored = content
         media_key = None
 
+    # send_message traga errores de Meta y devuelve None: sin id no hubo entrega.
+    # Antes se marcaba sent + append igual → el CRM mentía y el cliente no veía nada.
+    if not wa_mid:
+        raise RuntimeError(
+            f"WhatsApp no entregó el mensaje (sin wa_message_id; wa_id={wa_id})"
+        )
+
     if outbox_id and crm_http.crm_enabled():
         await crm_http.mark_outbox(outbox_id, "sent")
     if conversation_id and crm_http.crm_enabled():
