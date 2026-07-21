@@ -223,3 +223,76 @@ def test_la_cache_de_wamids_no_crece_sin_limite():
     assert len(buf._seen_wa_message_ids) == buf._SEEN_LIMIT
     # Se olvidan los más viejos, no los recientes.
     assert buf._already_seen(f"wamid.{buf._SEEN_LIMIT + 499}") is True
+
+
+# ── Adjuntos del asesor: WebP no llega a WhatsApp ─────────────────────
+
+@pytest.mark.asyncio
+async def test_el_webp_del_asesor_se_convierte_antes_de_subirlo(monkeypatch):
+    """Meta devuelve 200 al subir un WebP y lo rechaza DESPUÉS.
+
+    Visto en producción (21-07, outbox 488): el asesor mandó un .webp, el CRM lo
+    dio por enviado y el cliente no recibió nada — el fallo llegaba tarde, por el
+    webhook de estado (`131053: Media upload error`). El camino del bot ya
+    convertía; el del asesor, que es el único que sube adjuntos suyos, no.
+    """
+    import io
+
+    from PIL import Image
+
+    from app.services import messenger
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buf, format="WEBP")
+    subido: dict = {}
+
+    async def fake_upload(data, mime, filename):
+        subido.update(mime=mime, filename=filename, data=data)
+        return "media.1"
+
+    async def fake_send(wa_id, media_id, caption=""):
+        return {"messages": [{"id": "wamid.1"}]}
+
+    monkeypatch.setattr(messenger.whatsapp_client, "upload_media", fake_upload)
+    monkeypatch.setattr(messenger.whatsapp_client, "send_image_id", fake_send)
+
+    await messenger.send_media(
+        "519", "image", buf.getvalue(), "image/webp", filename="foto.webp"
+    )
+
+    assert subido["mime"] == "image/jpeg"
+    assert subido["filename"].endswith(".jpg")
+    with Image.open(io.BytesIO(subido["data"])) as img:
+        assert img.format == "JPEG"
+
+
+@pytest.mark.asyncio
+async def test_un_jpeg_del_asesor_se_sube_tal_cual(monkeypatch):
+    """Convertir lo que ya sirve solo añadiría pérdida de calidad."""
+    import io
+
+    from PIL import Image
+
+    from app.services import messenger
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buf, format="JPEG")
+    original = buf.getvalue()
+    subido: dict = {}
+
+    async def fake_upload(data, mime, filename):
+        subido.update(mime=mime, data=data)
+        return "media.1"
+
+    async def fake_send(wa_id, media_id, caption=""):
+        return {"messages": [{"id": "wamid.1"}]}
+
+    monkeypatch.setattr(messenger.whatsapp_client, "upload_media", fake_upload)
+    monkeypatch.setattr(messenger.whatsapp_client, "send_image_id", fake_send)
+
+    await messenger.send_media(
+        "519", "image", original, "image/jpeg", filename="foto.jpg"
+    )
+
+    assert subido["mime"] == "image/jpeg"
+    assert subido["data"] == original

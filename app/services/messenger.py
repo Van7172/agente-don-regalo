@@ -287,7 +287,13 @@ async def send_media(
         media_id = await whatsapp_client.upload_media(data, mime, filename or auto_name)
         result = await whatsapp_client.send_audio_id(wa_id, media_id)
     elif kind == "image":
-        media_id = await whatsapp_client.upload_media(data, mime, filename or "image.jpg")
+        # WhatsApp no acepta WebP como imagen: Meta responde 200 al subir el
+        # archivo y recién después manda `131053: Media upload error` por el
+        # webhook de estado — o sea que el CRM ya marcó el mensaje como enviado y
+        # el asesor cree que llegó. El camino del bot ya convertía (`send_image`);
+        # este no, y era el único que usan los adjuntos del asesor.
+        data, filename, mime = _prepare_image_bytes(data, filename or "image.jpg", mime)
+        media_id = await whatsapp_client.upload_media(data, mime, filename)
         result = await whatsapp_client.send_image_id(wa_id, media_id, caption)
     else:
         name = filename or "documento"
