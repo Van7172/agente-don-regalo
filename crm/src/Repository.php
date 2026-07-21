@@ -563,22 +563,7 @@ final class Repository
                 throw new RuntimeException('Sale not found');
             }
 
-            $userName = '';
-            try {
-                $user = Database::fetchOne(
-                    'SELECT nombre_usuario, apellidos_usuario
-                     FROM usuarios WHERE id_usuario = :userId LIMIT 1',
-                    ['userId' => $userId]
-                );
-                if ($user) {
-                    $userName = trim(
-                        (string) ($user['nombre_usuario'] ?? '') . ' ' .
-                        (string) ($user['apellidos_usuario'] ?? '')
-                    );
-                }
-            } catch (Throwable $ignored) {
-                // La identidad numérica sigue auditada si la tabla legacy difiere.
-            }
+            $userName = self::userDisplayName($userId);
 
             Database::exec(
                 'UPDATE crm_ventas_historiales
@@ -609,6 +594,104 @@ final class Repository
             }
             throw $error;
         }
+    }
+
+    /** Estados que puede tener una venta en el historial. */
+    const SALE_STATUSES = ['pendiente', 'entregado'];
+
+    /**
+     * Cambia el estado de UNA venta del historial, en los dos sentidos.
+     *
+     * Distinto de `markSaleDelivered`, que actúa por conversación y toma la
+     * última venta de esa conversación: eso vale desde el chat, donde solo hay
+     * una ficha activa, pero desde el historial marcaría la venta equivocada si
+     * un cliente compró dos veces. Aquí se actúa sobre el `id_venta_historial`
+     * que el vendedor tiene delante.
+     *
+     * Y va en ambos sentidos a propósito: confirmar una entrega era irreversible
+     * y un clic por error se quedaba así para siempre.
+     */
+    public static function setSaleStatus(int $saleId, string $status, int $userId): array
+    {
+        if (!in_array($status, self::SALE_STATUSES, true)) {
+            throw new RuntimeException('Invalid sale status');
+        }
+        $tenantId = self::ensureTenantId();
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $row = Database::fetchOne(
+                'SELECT * FROM crm_ventas_historiales
+                 WHERE id_venta_historial = :saleId AND id_tenant = :tenantId
+                 LIMIT 1 FOR UPDATE',
+                ['saleId' => $saleId, 'tenantId' => $tenantId]
+            );
+            if (!$row) {
+                throw new RuntimeException('Sale not found');
+            }
+
+            $entregado = $status === 'entregado';
+            // Sin COALESCE: si se revierte y se vuelve a confirmar, la auditoría
+            // debe decir quién dejó la venta como está AHORA, no quién la tocó la
+            // primera vez.
+            Database::exec(
+                'UPDATE crm_ventas_historiales
+                 SET estado_venta_historial = :status,
+                     fecha_confirmacion_entrega = ' . ($entregado ? 'NOW()' : 'NULL') . ',
+                     id_usuario = :userId,
+                     nombre_usuario_confirmacion = :userName
+                 WHERE id_venta_historial = :saleId',
+                [
+                    'status' => $status,
+                    'userId' => $userId,
+                    'userName' => self::userDisplayName($userId),
+                    'saleId' => $saleId,
+                ]
+            );
+
+            // Al confirmar la entrega se retira la ficha verde del chat, igual que
+            // hace el botón del inbox: si no, el asesor ve un pendiente que ya no
+            // lo es. Al revertir NO se resucita — la venta ya está archivada y
+            // devolver la ficha al chat sería reabrir algo que nadie pidió.
+            if ($entregado) {
+                self::deleteSetting('sale_' . (int) $row['id_conversation']);
+            }
+
+            $updated = Database::fetchOne(
+                'SELECT * FROM crm_ventas_historiales
+                 WHERE id_venta_historial = :saleId LIMIT 1',
+                ['saleId' => $saleId]
+            ) ?? [];
+            $pdo->commit();
+            return $updated;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    /** Nombre del usuario para la auditoría; vacío si la tabla legacy difiere. */
+    private static function userDisplayName(int $userId): string
+    {
+        try {
+            $user = Database::fetchOne(
+                'SELECT nombre_usuario, apellidos_usuario
+                 FROM usuarios WHERE id_usuario = :userId LIMIT 1',
+                ['userId' => $userId]
+            );
+        } catch (Throwable $ignored) {
+            // La identidad numérica (`id_usuario`) sigue auditada igual.
+            return '';
+        }
+        if (!$user) {
+            return '';
+        }
+        return trim(
+            (string) ($user['nombre_usuario'] ?? '') . ' ' .
+            (string) ($user['apellidos_usuario'] ?? '')
+        );
     }
 
     /** Listado del módulo de historial, siempre aislado por tenant. */

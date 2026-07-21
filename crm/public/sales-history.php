@@ -33,6 +33,8 @@ $rows = array_map(static function (array $row): array {
     };
     $shipping = $row['envio_sol_venta_historial'] ?? null;
     return [
+        // Sin el id la vista no puede cambiar el estado de una fila concreta.
+        'id' => (int) ($row['id_venta_historial'] ?? 0),
         'status' => (string) ($row['estado_venta_historial'] ?? 'pendiente'),
         'status_label' => ($row['estado_venta_historial'] ?? '') === 'entregado'
             ? 'Entregado'

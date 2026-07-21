@@ -275,6 +275,28 @@ try {
         Http::jsonOk(['ok' => true, 'sale' => $sale]);
     }
 
+    // PATCH /sales/{id}/status — cambio de estado desde el Historial de Ventas.
+    // Va por id de venta (no por conversación, como /sale/delivered): en el
+    // historial el vendedor tiene delante una fila concreta, y una conversación
+    // puede tener varias ventas.
+    if (preg_match('#^/sales/(\d+)/status$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $body = Http::readJson();
+        $status = (string) ($body['status'] ?? '');
+        if (!in_array($status, Repository::SALE_STATUSES, true)) {
+            Http::jsonError('Invalid status');
+        }
+        try {
+            $sale = Repository::setSaleStatus((int) $m[1], $status, (int) $user['id']);
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
     // Memory
     if (preg_match('#^/memory/([^/]+)$#', $path, $m)) {
         $waId = preg_replace('/\D/', '', $m[1]) ?: $m[1];

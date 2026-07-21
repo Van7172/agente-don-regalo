@@ -1013,6 +1013,16 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 }
 .history-status.is-pendiente { background: #fff1cc; color: #8a5a00; }
 .history-status.is-entregado { background: #d9f5e5; color: #126b3b; }
+
+/* El estado dejó de ser una etiqueta para ser editable, pero conserva el color:
+   el vendedor barre la columna buscando pendientes, no leyendo cada fila. */
+.history-status-select {
+  width: auto; min-width: 168px; padding: 6px 8px;
+  font-size: 12px; font-weight: 800; border-radius: 8px; cursor: pointer;
+}
+.history-status-select.is-pendiente { background: #fff1cc; color: #8a5a00; }
+.history-status-select.is-entregado { background: #d9f5e5; color: #126b3b; }
+.history-status-select:disabled { opacity: .6; cursor: progress; }
 .history-empty { padding: 36px !important; color: var(--color-neutral-600); text-align: center !important; }
 
 @media (max-width: 900px) {
