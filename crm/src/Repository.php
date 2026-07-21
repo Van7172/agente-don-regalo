@@ -96,10 +96,14 @@ final class Repository
         $limit = max(1, min(200, $limit));
         // `sale`: el agente cerró la venta con todos los datos del pedido. El panel
         // pinta ese chat en verde para que el vendedor entre directo a cobrarlo.
-        // Un lead nuevo sube por encima del resto, pero NO por encima del dinero
-        // por cobrar ni de quien lleva horas esperando asesor: la cola de ayuda ya
-        // va fijada aparte, en las fichas de arriba. Sin esta banda el lead recién
-        // llegado caía detrás de todos los `human_support` y el vendedor no lo veía.
+        //
+        // El lead nuevo va PRIMERO, encima de todo. La primera versión lo puso
+        // detrás de las ventas y de la cola de ayuda, y en producción no servía:
+        // con la cola llena de gente esperando horas, el chat recién llegado
+        // quedaba fuera de pantalla. El vendedor lo quiere arriba para ver al
+        // agente atendiendo al lead en vivo y entrar si hace falta — seguimiento,
+        // no rescate. La cola de ayuda va justo después, y además sigue fijada
+        // aparte en las fichas de la cabecera, así que no se pierde de vista.
         return Database::fetchAll(
             "SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support, c.last_message_at,
@@ -117,9 +121,9 @@ final class Repository
                     ON s.id_tenant = c.id_tenant
                    AND s.llave_setting = CONCAT('sale_', c.id_conversation)
              WHERE c.id_tenant = :tenantId
-             ORDER BY (s.valor_setting IS NOT NULL) DESC,
+             ORDER BY es_nuevo DESC,
+                      (s.valor_setting IS NOT NULL) DESC,
                       c.human_support DESC,
-                      es_nuevo DESC,
                       COALESCE(c.last_message_at, c.fecha_creacion) DESC
              LIMIT {$limit}",
             ['tenantId' => $tenantId, 'nuevoMin' => self::LEAD_NUEVO_MIN]

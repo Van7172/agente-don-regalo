@@ -68,7 +68,9 @@ requiresText($inbox, 'tag-new', 'Falta el badge de lead nuevo en la lista');
 
 $repositoryLista = source('src/Repository.php');
 requiresText($repositoryLista, 'LEAD_NUEVO_MIN', 'La ventana de "nuevo" debe estar en un solo sitio');
-requiresText($repositoryLista, 'es_nuevo DESC', 'El lead nuevo debe subir en la lista');
+// El lead nuevo va PRIMERO. Puesto detrás de las ventas y de la cola de ayuda no
+// servía: con la cola llena, el chat recién llegado quedaba fuera de pantalla.
+requiresText($repositoryLista, 'ORDER BY es_nuevo DESC', 'El lead nuevo debe ir primero en la lista');
 requiresText($repositoryLista, "'is_new'", 'El panel necesita el flag para avisar');
 requiresText($inbox, '/sale/delivered', 'Falta llamada del inbox');
 requiresText($inbox, 'window.confirm', 'Falta confirmación previa');
