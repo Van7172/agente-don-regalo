@@ -64,6 +64,13 @@ def _fmt(y: int, mo: int, d: int) -> str | None:
         return None
 
 
+_RE_ISO = re.compile(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})")
+_RE_DIA_MES = re.compile(
+    r"\b(\d{1,2})\s*(?:de\s+)?(" + "|".join(_MESES) + r")(?:\s+(?:de\s+)?(20\d{2}))?\b"
+)
+_RE_DIA_BARRA = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
+
+
 def normalize_fecha(text: str, today: date | None = None) -> str | None:
     """Texto libre de fecha → `YYYY-MM-DD`, o `None` si no se puede afirmar.
 
@@ -71,68 +78,64 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
     18", "20 de julio", "2026-07-20"). La API exige un ISO, así que aquí se
     interpreta lo común. Ante la duda devuelve `None`: preferimos no crear el
     pedido a mandar una fecha inventada.
+
+    Varias menciones NO son automáticamente ambiguas: se resuelven todas y solo
+    hay duda si **discrepan**. "Hoy día 21 de julio" es una fecha sola dicha dos
+    veces; contar menciones la rechazaba y el cliente veía "no pude confirmar esa
+    fecha" con la fecha correcta escrita delante.
     """
     today = today or lima_today()
     t = _norm(text)
     if not t:
         return None
 
-    date_mentions = re.findall(
-        r"\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b"
-        r"|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b"
-        r"|\b\d{1,2}\s*(?:de\s+)?(?:"
-        + "|".join(_MESES)
-        + r")(?:\s+(?:de\s+)?20\d{2})?\b",
-        t,
-    )
-    relative_text = t
-    relative_mentions = 0
-    if "pasado manana" in relative_text:
-        relative_mentions += 1
-        relative_text = relative_text.replace("pasado manana", " ")
-    relative_mentions += int(bool(re.search(r"\bmanana\b", relative_text)))
-    relative_mentions += int(bool(re.search(r"\bhoy\b", relative_text)))
-    weekday_mentions = sum(
-        1 for name in _DIAS if re.search(rf"\b{name}\b", t)
-    )
-    if len(date_mentions) + relative_mentions + weekday_mentions > 1:
+    # "No es para hoy 21 de julio" nombra una fecha para DESCARTARLA. Resolver
+    # menciones sin mirar la negación afirmaría justo la fecha que el cliente
+    # acaba de rechazar — peor que no entender. No intentamos interpretar qué
+    # quiso decir: preguntamos.
+    if re.search(r"\b(no|tampoco|ni)\b", t):
         return None
 
-    m = re.search(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})", t)
-    if m:
-        return _fmt(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    candidates: list[str | None] = []
+
+    # Cada patrón se resuelve y se consume, para que el siguiente no vuelva a
+    # leer los mismos dígitos ("2026-07-20" no es además el 7 de mes 20).
+    for m in _RE_ISO.finditer(t):
+        candidates.append(_fmt(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    t = _RE_ISO.sub(" ", t)
 
     if "pasado manana" in t:
-        return (today + timedelta(days=2)).isoformat()
-    if "manana" in t:
-        return (today + timedelta(days=1)).isoformat()
-    if "hoy" in t:
-        return today.isoformat()
+        candidates.append((today + timedelta(days=2)).isoformat())
+        t = t.replace("pasado manana", " ")
+    if re.search(r"\bmanana\b", t):
+        candidates.append((today + timedelta(days=1)).isoformat())
+    if re.search(r"\bhoy\b", t):
+        candidates.append(today.isoformat())
 
-    m = re.search(
-        r"\b(\d{1,2})\s*(?:de\s+)?(" + "|".join(_MESES) + r")(?:\s+(?:de\s+)?(20\d{2}))?\b",
-        t,
-    )
-    if m:
+    for m in _RE_DIA_MES.finditer(t):
         d, mo = int(m.group(1)), _MESES[m.group(2)]
         y = int(m.group(3)) if m.group(3) else today.year
-        return _fmt(y, mo, d)
+        candidates.append(_fmt(y, mo, d))
+    t = _RE_DIA_MES.sub(" ", t)
 
-    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b", t)
-    if m:
+    for m in _RE_DIA_BARRA.finditer(t):
         d, mo = int(m.group(1)), int(m.group(2))
         if m.group(3):
             y = int(m.group(3))
             y = y + 2000 if y < 100 else y
         else:
             y = today.year
-        return _fmt(y, mo, d)
+        candidates.append(_fmt(y, mo, d))
+    t = _RE_DIA_BARRA.sub(" ", t)
 
     for name, idx in _DIAS.items():
-        if name in t:
+        if re.search(rf"\b{name}\b", t):
             delta = (idx - today.weekday()) % 7 or 7
-            return (today + timedelta(days=delta)).isoformat()
+            candidates.append((today + timedelta(days=delta)).isoformat())
 
+    distintas = set(candidates)
+    if len(distintas) == 1:
+        return distintas.pop()
     return None
 
 

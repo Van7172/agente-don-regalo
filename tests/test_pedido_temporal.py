@@ -139,6 +139,20 @@ def test_normalize_fecha_sin_anio_no_salta_silenciosamente_al_siguiente():
     assert normalize_fecha("13/07", today=HOY) == "2026-07-13"
 
 
+def test_normalize_fecha_redundante_no_es_ambigua():
+    """Decir la misma fecha dos veces no es dudar: es confirmarla.
+
+    Un cliente escribió "Hoy dia 21 de julio" el 21 de julio y el bot respondió
+    "no pude confirmar esa fecha" — contábamos menciones en vez de compararlas.
+    """
+    assert normalize_fecha("hoy 14 de julio", today=HOY) == "2026-07-14"
+    assert normalize_fecha("hoy día 14/07", today=HOY) == "2026-07-14"
+    assert normalize_fecha("mañana 15 de julio", today=HOY) == "2026-07-15"
+    assert normalize_fecha("el viernes 17 de julio", today=HOY) == "2026-07-17"
+    # Si de verdad se contradicen, seguimos sin adivinar.
+    assert normalize_fecha("hoy 20 de julio", today=HOY) is None
+
+
 def test_normalize_fecha_ambigua_no_elige_la_primera():
     assert normalize_fecha("20/07 o 21/07", today=HOY) is None
     assert normalize_fecha("mañana o pasado mañana", today=HOY) is None
