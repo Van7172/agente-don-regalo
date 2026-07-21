@@ -58,6 +58,11 @@ foreach (['public/assets/inbox.js', 'views/inbox.php', 'views/login.php',
 $inbox = source('public/assets/inbox.js');
 requiresText($inbox, 'Marcar como entregado', 'Falta acción en la ficha');
 requiresText($inbox, 'alertOnNewLead', 'Falta el aviso de lead nuevo');
+// Un fallo en el archivo N no puede marcar como fallidos los N-1 que YA salieron:
+// el asesor reintenta y al cliente le llega dos veces lo que ya tenía.
+requiresText($inbox, 'const fallidos = []', 'El envío múltiple debe contar archivo por archivo');
+requiresText($inbox, 'pending.kind = fallidos', 'La burbuja debe quedarse solo con lo que no salió');
+requiresText($api, 'upload_max_filesize', 'La subida debe decir POR QUÉ la rechazó el servidor');
 requiresText($inbox, 'leadsAvisados', 'El aviso debe ser por lead, no por refresco');
 requiresText($inbox, 'tag-new', 'Falta el badge de lead nuevo en la lista');
 

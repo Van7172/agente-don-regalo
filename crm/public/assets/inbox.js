@@ -1178,28 +1178,48 @@
         } else {
           // Un outbox por archivo (WA no agrupa álbumes desde Cloud API).
           // El texto del borrador va de pie en la primera imagen/doc.
+          //
+          // Cada archivo se contabiliza aparte. Antes un fallo en el segundo
+          // hacía `return` y marcaba TODO el envío como "no se envió" — pero el
+          // primero ya estaba en el WhatsApp del cliente. El asesor reintentaba
+          // y le llegaba dos veces. Un fallo tampoco corta los siguientes: que
+          // un archivo sea inválido no es razón para no mandar el resto.
+          const fallidos = [];
           for (let i = 0; i < attachments.length; i++) {
             const file = attachments[i];
-            const up = await uploadMedia(file.blob, file.name);
-            const json = await api("/outbox", {
-              method: "POST",
-              body: JSON.stringify({
-                conversation_id: convId,
-                content: i === 0 ? content : "",
-                media_path: up.key,
-                filename: file.name,
-                // La cita solo tiene sentido en el primer adjunto: es la respuesta.
-                reply_to_wa_id: i === 0 ? replyToWaId : null,
-              }),
-            });
-            if (json.queued && json.pushed === false) {
-              settle(false);
-              showError(
-                json.warning ||
-                  "No se pudo enviar a WhatsApp. Revisa agent_base_url / tokens del agente."
-              );
-              return;
+            try {
+              const up = await uploadMedia(file.blob, file.name);
+              const json = await api("/outbox", {
+                method: "POST",
+                body: JSON.stringify({
+                  conversation_id: convId,
+                  content: i === 0 ? content : "",
+                  media_path: up.key,
+                  filename: file.name,
+                  // La cita solo tiene sentido en el primer adjunto: es la respuesta.
+                  reply_to_wa_id: i === 0 ? replyToWaId : null,
+                }),
+              });
+              if (json.queued && json.pushed === false) {
+                fallidos.push({ name: file.name, why: json.warning || "el agente no respondió" });
+              }
+            } catch (err) {
+              fallidos.push({ name: file.name, why: err.message || String(err) });
             }
+          }
+          if (fallidos.length) {
+            // La burbuja se queda solo con lo que NO salió, para que reintentar
+            // no reenvíe lo que el cliente ya tiene.
+            pending.kind = fallidos.map((f) => f.name).join(", ");
+            const enviados = attachments.length - fallidos.length;
+            settle(false);
+            showError(
+              (enviados ? `Se enviaron ${enviados} de ${attachments.length}. ` : "") +
+                fallidos.map((f) => `«${f.name}»: ${f.why}`).join(" · ")
+            );
+            listSig = "";
+            await Promise.all([loadThread(), loadList()]);
+            return;
           }
         }
         settle(true);

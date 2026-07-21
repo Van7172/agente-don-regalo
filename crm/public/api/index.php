@@ -368,8 +368,36 @@ try {
 
     // POST /media — sube un archivo y devuelve su clave de almacenamiento.
     if ($path === '/media' && $method === 'POST') {
-        if (empty($_FILES['file'])) {
-            Http::jsonError('file required');
+        // Cuando el archivo pasa del límite de PHP (`upload_max_filesize` /
+        // `post_max_size`), $_FILES llega vacío o con código de error y esto
+        // respondía "file required" — que hace pensar en un bug del panel cuando
+        // en realidad es el hosting rechazando el archivo. El asesor veía "no se
+        // envió" sin ninguna pista de por qué.
+        $subida = $_FILES['file'] ?? null;
+        $codigo = is_array($subida) ? (int) ($subida['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+        if (!is_array($subida) || $codigo !== UPLOAD_ERR_OK) {
+            $limite = ini_get('upload_max_filesize') ?: '?';
+            $post = ini_get('post_max_size') ?: '?';
+            $motivos = [
+                UPLOAD_ERR_INI_SIZE => "El archivo supera el máximo del servidor (upload_max_filesize = {$limite}).",
+                UPLOAD_ERR_FORM_SIZE => 'El archivo supera el máximo del formulario.',
+                UPLOAD_ERR_PARTIAL => 'La subida se cortó a medias. Reintenta.',
+                UPLOAD_ERR_NO_FILE => 'No llegó ningún archivo.',
+                UPLOAD_ERR_NO_TMP_DIR => 'El servidor no tiene carpeta temporal para subidas.',
+                UPLOAD_ERR_CANT_WRITE => 'El servidor no pudo escribir el archivo.',
+                UPLOAD_ERR_EXTENSION => 'Una extensión de PHP bloqueó la subida.',
+            ];
+            // Sin $_FILES y con CONTENT_LENGTH grande, fue post_max_size: PHP
+            // descarta TODO el POST antes de poblar $_FILES.
+            $enviado = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+            if (!is_array($subida) && $enviado > 0) {
+                Http::jsonError(
+                    "El envío pesa " . round($enviado / 1048576, 1) . " MB y el servidor "
+                    . "acepta hasta {$post} por POST (post_max_size).",
+                    413
+                );
+            }
+            Http::jsonError($motivos[$codigo] ?? 'No se pudo subir el archivo.', 413);
         }
         try {
             $key = Media::storeUploaded($_FILES['file']);
