@@ -9,7 +9,7 @@
   <header class="sales-history-head">
     <div>
       <h2>Historial de ventas</h2>
-      <p class="lead">Ventas cerradas por Regalito y confirmaciones de entrega del CRM.</p>
+      <p class="lead">Ventas cerradas por Don Regalo y confirmaciones de entrega del CRM.</p>
     </div>
     <span class="history-count"><?= e((string) count($rows)) ?> registros</span>
   </header>

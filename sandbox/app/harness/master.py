@@ -51,7 +51,7 @@ _ADVISOR_RE = re.compile(
     r"\b(asesor\w*|ejecutiv\w*|human[oa]s?|una persona|del equipo)\b", re.I
 )
 
-# El bot PROMETE meter a un asesor: lo AFIRMA, no lo pregunta. Regalito no puede
+# El bot PROMETE meter a un asesor: lo AFIRMA, no lo pregunta. Don Regalo no puede
 # consultarle nada a nadie ni "volver con la respuesta" — lo único que puede hacer
 # con un asesor es cederle el chat. Si lo dice y no se ejecuta, el cliente espera a
 # alguien que nunca viene ("consulto con un asesor y te vuelvo", "un asesor te
@@ -177,7 +177,7 @@ async def run_master(
     )
 
     # El modelo prometió meter a un asesor. Eso no es una frase, es un cambio de
-    # estado: Regalito no puede consultarle nada a nadie ni volver con la respuesta,
+    # estado: Don Regalo no puede consultarle nada a nadie ni volver con la respuesta,
     # solo cederle el chat. Si lo dijo, se ejecuta — y si no, el cliente se queda
     # esperando a alguien que nunca viene ("consulto con un asesor y te vuelvo").
     if (
@@ -620,7 +620,7 @@ _BLOCKING_RULES = frozenset({"prices_are_sourced", "no_cash_on_delivery"})
 
 # Respaldo cuando el turno no tiene productos que preservar (prosa pura). No cita
 # ninguna cifra —que es justo lo que se degradó— y no promete traer a un asesor:
-# eso dispararía `_promises_handoff`, y Regalito no puede consultar y volver.
+# eso dispararía `_promises_handoff`, y Don Regalo no puede consultar y volver.
 _SAFE_FALLBACK = (
     "Para no darte un dato equivocado, prefiero confirmártelo bien 🙏 "
     "El pago es siempre por adelantado (Yape/Plin, transferencia bancaria o "

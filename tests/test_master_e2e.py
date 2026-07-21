@@ -166,7 +166,7 @@ async def test_un_saludo_posterior_lo_atiende_el_concierge_sin_tools(harness, mo
     reply = await master_mod.run_master(
         [
             {"role": "user", "content": "hola"},
-            {"role": "assistant", "content": "👋 ¡Hola! Soy Regalito…"},
+            {"role": "assistant", "content": "👋 ¡Hola! Soy Don Regalo…"},
             {"role": "user", "content": "hola de nuevo"},
         ],
         wa_id="51999",
@@ -448,7 +448,7 @@ async def test_la_marca_de_oferta_se_apaga_sola(harness, monkeypatch):
     await master_mod.run_master(
         [
             {"role": "user", "content": "hola"},
-            {"role": "assistant", "content": "👋 ¡Hola! Soy Regalito…"},
+            {"role": "assistant", "content": "👋 ¡Hola! Soy Don Regalo…"},
             {"role": "user", "content": "hola de nuevo"},
         ],
         wa_id="51999",

@@ -6,7 +6,7 @@
   <aside class="login-brand">
     <?= brand_mark('login') ?>
     <p class="brand-tagline">Regalos con alma,<br />atendidos con cuidado.</p>
-    <p class="brand-sub">Panel interno para asesores que acompañan a Regalito, nuestro asistente de WhatsApp.</p>
+    <p class="brand-sub">Panel interno para asesores que acompañan a Don Regalo, nuestro asistente de WhatsApp.</p>
   </aside>
 
   <main class="login-form-pane">

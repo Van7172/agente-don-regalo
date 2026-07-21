@@ -76,7 +76,10 @@ def test_un_producto_sin_imagen_no_rompe_el_listado():
 def test_el_primer_saludo_es_una_presentacion():
     nuevo = ConversationState()
     assert is_first_contact(nuevo, [{"role": "user", "content": "hola"}]) is True
-    assert "Regalito" in WELCOME
+    # El agente se llama como la tienda: "Regalito" se retiró en jul 2026 a
+    # pedido del vendedor. Un diminutivo suelto en el saludo es la vía más
+    # directa a que vuelva a colarse.
+    assert "Regalito" not in WELCOME
     assert "Don Regalo" in WELCOME
     assert "¿en qué puedo ayudarte hoy?" in WELCOME.casefold()
 

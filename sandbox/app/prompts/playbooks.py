@@ -32,7 +32,7 @@ Si dudas entre dos, elige la más probable y baja la confianza."""
 # Primer contacto: presentación. Es el mensaje más plantillable de todos, así que
 # lo emite el sistema tal cual — sin LLM, sin coste, sin variaciones raras.
 WELCOME = (
-    "👋 ¡Hola! Soy *Regalito*, el asistente virtual de Don Regalo 🎁\n"
+    "👋 ¡Hola! Soy *Don Regalo*, tu asistente virtual 🎁\n"
     "Estoy acá para ayudarte a encontrar el regalo ideal y coordinar tu envío "
     "en Lima.\n\n"
     "Cuéntame, ¿en qué puedo ayudarte hoy?"

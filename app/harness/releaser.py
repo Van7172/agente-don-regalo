@@ -97,7 +97,7 @@ def should_release_to_ai(
         # Sin ancla no hay forma de medir cuánto lleva el asesor con el chat, y sin
         # medirlo esto liberaba AL INSTANTE: el bot prometía un asesor y recuperaba
         # la conversación con el siguiente mensaje del cliente. Un humano tiene el
-        # chat: no se le quita a ciegas (y siempre le queda "Devolver a Regalito").
+        # chat: no se le quita a ciegas (y siempre le queda "Devolver a Don Regalo").
         return False
     return (now - float(anchor)) >= idle_threshold_sec(state)
 

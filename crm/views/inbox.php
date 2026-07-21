@@ -26,7 +26,7 @@
       </svg>
     </div>
     <h3>Aún no hay conversaciones</h3>
-    <p>Cuando tus clientes escriban por WhatsApp, sus chats con Regalito aparecerán aquí en tiempo real.</p>
+    <p>Cuando tus clientes escriban por WhatsApp, sus chats con Don Regalo aparecerán aquí en tiempo real.</p>
   </div>
 
   <div class="inbox-panes" id="inbox-panes">
@@ -81,7 +81,7 @@
             </svg>
             Tomar conversación
           </button>
-          <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Regalito</button>
+          <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Don Regalo</button>
           <button type="button" class="icon-btn icon-btn-outline" id="btn-lead" title="Resumen del lead" aria-label="Resumen del lead">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
@@ -97,7 +97,7 @@
 
         <!-- Bot al mando: sin composer, hay que tomar la conversación -->
         <div class="ai-banner" id="ai-banner" hidden>
-          <span>Regalito está a cargo de este chat. Toma la conversación para responder tú.</span>
+          <span>Don Regalo está a cargo de este chat. Toma la conversación para responder tú.</span>
           <button type="button" class="btn btn-primary" id="btn-take">Tomar</button>
         </div>
 
@@ -105,12 +105,12 @@
         <div class="composer-wrap" id="composer-wrap" hidden>
 
           <div class="human-return-banner" id="human-return-banner">
-            <span>Cuando termines → <strong>Devolver a Regalito</strong> para que el bot siga el chat.</span>
+            <span>Cuando termines → <strong>Devolver a Don Regalo</strong> para que el bot siga el chat.</span>
             <label class="keep-human-label" title="Evita el auto-retorno del bot">
               <input type="checkbox" id="keep-human" />
               Mantener humano
             </label>
-            <button type="button" class="btn btn-secondary" id="btn-ai-banner">Devolver a Regalito</button>
+            <button type="button" class="btn btn-secondary" id="btn-ai-banner">Devolver a Don Regalo</button>
           </div>
 
           <!-- Mensaje al que se está respondiendo (clic derecho → Responder) -->

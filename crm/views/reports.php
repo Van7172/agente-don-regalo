@@ -9,7 +9,7 @@ $kpis = [
     ['kicker' => 'Conversaciones', 'value' => (int) $overview['conversations'], 'meta' => 'creadas en el rango'],
     ['kicker' => 'Mensajes', 'value' => (int) $overview['messages'], 'meta' => 'intercambiados'],
     ['kicker' => 'Inbound', 'value' => (int) $overview['inbound_messages'], 'meta' => 'escritos por clientes'],
-    ['kicker' => 'Msgs bot', 'value' => (int) $overview['bot_messages'], 'meta' => 'enviados por Regalito'],
+    ['kicker' => 'Msgs bot', 'value' => (int) $overview['bot_messages'], 'meta' => 'enviados por Don Regalo'],
     ['kicker' => 'Msgs asesor', 'value' => (int) $overview['agent_messages'], 'meta' => 'enviados por humanos'],
     ['kicker' => 'Modo AI', 'value' => (int) $overview['mode_ai'], 'meta' => 'chats con el bot al mando'],
     ['kicker' => 'Modo HUMAN', 'value' => (int) $overview['mode_human'], 'meta' => 'chats tomados'],
@@ -62,7 +62,7 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
 ?>
 <div class="reports">
   <h2>Reportes</h2>
-  <p class="lead">Resumen de la actividad de Regalito y tus asesores.</p>
+  <p class="lead">Resumen de la actividad de Don Regalo y tus asesores.</p>
 
   <form class="reports-filters" method="get" action="<?= e(url_to('reports.php')) ?>">
     <div class="field">

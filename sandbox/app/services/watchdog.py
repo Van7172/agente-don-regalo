@@ -228,7 +228,7 @@ async def check_human_abandoned() -> None:
     ok = await _send_alert(
         f"👤 Hay {len(humans)} chat(s) en modo humano sin respuesta reciente:\n"
         f"{quien}\n\n"
-        "Si el asesor ya terminó, pulsa «Devolver a Regalito» o espera el auto-retorno."
+        "Si el asesor ya terminó, pulsa «Devolver a Don Regalo» o espera el auto-retorno."
     )
     if ok:
         await _marcar("human_idle")

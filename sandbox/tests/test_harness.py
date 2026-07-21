@@ -171,7 +171,7 @@ def test_releaser_no_recupera_el_chat_recien_derivado():
 
 def test_releaser_sin_ancla_no_quita_el_chat_a_un_humano():
     """Sin nada que medir no se libera: un humano tiene el chat y siempre le queda
-    "Devolver a Regalito". Antes esto devolvía True y el bot se metía de vuelta."""
+    "Devolver a Don Regalo". Antes esto devolvía True y el bot se metía de vuelta."""
     st = ConversationState()
     assert not should_release_to_ai(
         mode="HUMAN", human_support=True, state=st, last_human_at=None, now=time.time()
