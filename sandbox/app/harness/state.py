@@ -55,6 +55,12 @@ class ConversationState:
     email_cliente: str = ""
     # id del pedido temporal ya creado en la API (para no duplicarlo y para el aviso).
     pedido_temporal_id: Optional[int] = None
+    # Fallos SEGUIDOS del paso actual del cierre. La FSM era una función pura de
+    # (paso, texto): cuando no entendía devolvía los mismos bytes, y los devolvía
+    # para siempre. Una clienta recibió cuatro veces "No pude confirmar esa fecha"
+    # y se fue ("ya no deseo el pedido por q no entienden"). Con el contador cada
+    # reintento cambia de texto y el tercero cede el chat a un humano.
+    step_retries: int = 0
     shown_product_ids: list[int] = field(default_factory=list)
     # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
     # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".

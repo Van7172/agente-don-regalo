@@ -125,6 +125,20 @@ def is_small_talk(messages: list) -> bool:
         # Se quedó vacío al normalizar: era solo emojis ("👍", "😊").
         return True
 
+    return is_courtesy_text(raw)
+
+
+def is_courtesy_text(text: str) -> bool:
+    """¿El texto es SOLO cortesía ("gracias", "ok listo", "👍", "jaja")?
+
+    Mismo vocabulario que `is_small_talk`, pero sobre un texto suelto: el cierre
+    lo necesita para no tratar un "Gracias" como si fuera la fecha que pidió.
+    """
+    norm = _normalize(text or "")
+    if not norm:
+        # Se quedó vacío al normalizar: era solo emojis ("👍", "😊").
+        return True
+
     tokens = norm.split()
     if not tokens or len(tokens) > 6:
         return False

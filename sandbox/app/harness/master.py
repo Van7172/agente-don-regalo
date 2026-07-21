@@ -374,6 +374,21 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
 
     state, reply, meta = advance_checkout(state, turn.text)
 
+    # El cierre se atascó (no lo entendimos tres veces) o el cliente se está
+    # yendo. Se cede el chat de verdad, en código — pero NO es una venta: no se
+    # crea pedido temporal ni se anuncia nada en verde en el CRM. El asesor entra
+    # a rescatar la conversación, no a cobrar.
+    if meta.get("handoff"):
+        escalate = await perform_handoff(
+            wa_id=ctx.get("wa_id"),
+            conversation_id=ctx.get("conversation_id"),
+            motivo=state.handoff_reason or "el cierre se atascó",
+            use_external_crm=ctx.get("use_external_crm", False),
+            session=ctx.get("session"),
+            persist=ctx.get("persist"),
+        )
+        return AgentResult(user_facing=reply, escalate=escalate)
+
     if not meta.get("escalate"):
         return AgentResult(user_facing=reply)
 

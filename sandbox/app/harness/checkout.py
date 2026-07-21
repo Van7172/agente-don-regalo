@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
 from app.harness.orders import display_fecha, lima_today, normalize_fecha
+from app.harness.policies import is_courtesy_text
 from app.harness.state import ConversationState
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "parse_contact",
     "parse_recipient",
     "parse_schedule",
+    "recognized_window",
     "resolve_chosen_product",
     "split_name",
     "start_checkout",
@@ -36,6 +38,77 @@ def wants_checkout(text: str) -> bool:
     return bool(_BUY_RE.search(text or ""))
 
 
+def _label_for_hour(hour: int) -> str | None:
+    # En delivery "de 2 a 5" es la tarde, no la madrugada: sin am/pm, las horas
+    # de 1 a 6 son PM.
+    if 1 <= hour <= 6:
+        hour += 12
+    if 7 <= hour < 9:
+        return "Mañana temprano"
+    if 9 <= hour < 11:
+        return "Mañana"
+    if 11 <= hour < 14:
+        return "Mediodía"
+    if 14 <= hour < 16:
+        return "Tarde"
+    if 16 <= hour <= 19:
+        return "Tarde-noche"
+    return None
+
+
+# El orden manda: "tarde-noche" antes que "tarde", "mañana temprano" antes que
+# "mañana". En este paso la fecha ya está fija, así que "mañana" es la franja
+# horaria, no el día.
+_LABEL_PATTERNS = (
+    ("Mañana temprano", r"temprano|primera\s+hora"),
+    ("Mediodía", r"mediod[ií]a|medio\s+dia|al\s+almuerzo"),
+    ("Tarde-noche", r"tarde\s*[-/ ]?\s*noche|\bnoche\b|fin\s+de\s+la\s+tarde"),
+    ("Tarde", r"\btarde\b"),
+    ("Mañana", r"\bmanana\b|\bam\b|por\s+la\s+manana"),
+)
+
+# "De 7 a 9", "entre 9 y 11", "7-9": manda la hora de inicio. El separador va con
+# `\b` para que la "a" de "9 am" no se lea como el "a" de un rango.
+_RANGE_RE = re.compile(
+    r"\b(\d{1,2})(?::\d{2})?\s*(?:-|\ba\b|\bal\b|\bhasta\b|\by\b)\s*(\d{1,2})"
+)
+_AMPM_RE = re.compile(r"\b(\d{1,2})\s*(?::\d{2})?\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)")
+_BARE_HOUR_RE = re.compile(r"\b(?:a\s+las\s+|las\s+)?(\d{1,2})\b")
+
+
+def recognized_window(text: str) -> str | None:
+    """Franja que nombra el texto, exista o no ese día; `None` si no se reconoce.
+
+    Separado de `parse_schedule` para distinguir dos fracasos que no son el
+    mismo: "no te entendí" y "esa franja no sale ese día". Repetir el menú
+    entero valía para los dos, y por eso no servía para ninguno.
+    """
+    raw = _norm(text)
+    if not raw:
+        return None
+
+    m = _RANGE_RE.search(raw)
+    if m:
+        return _label_for_hour(int(m.group(1)))
+
+    m = _AMPM_RE.search(raw)
+    if m:
+        hour = int(m.group(1))
+        if re.search(r"p\.?\s*m", raw) and hour < 12:
+            hour += 12
+        return _label_for_hour(hour)
+
+    for label, pattern in _LABEL_PATTERNS:
+        if re.search(pattern, raw):
+            return label
+
+    m = _BARE_HOUR_RE.search(raw)
+    if m:
+        return _label_for_hour(int(m.group(1)))
+
+    return None
+
+
 def parse_schedule(
     text: str, delivery_date: date | str | None = None
 ) -> str | None:
@@ -46,30 +119,11 @@ def parse_schedule(
     if raw[0] in schedule_map and (len(raw) == 1 or not raw[1].isdigit()):
         return schedule_map[raw[0]]
 
+    label = recognized_window(raw)
+    if label is None:
+        return None
     available = {window.label: window.display for window in windows_for(delivery_date)}
-
-    def by_label(label: str) -> str | None:
-        return available.get(label)
-
-    m = re.search(r"(\d{1,2})\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)", raw, re.I)
-    if m:
-        hour = int(m.group(1))
-        if 7 <= hour < 9:
-            return by_label("Mañana temprano")
-        if 9 <= hour < 11:
-            return by_label("Mañana")
-        if 11 <= hour < 14:
-            return by_label("Mediodía")
-        if 14 <= hour < 17:
-            return by_label("Tarde")
-        if 16 <= hour <= 19:
-            return by_label("Tarde-noche")
-    low = raw.casefold()
-    if "11:00" in low or "09" in low or "9 am" in low:
-        return by_label("Mañana")
-    if "mediod" in low:
-        return by_label("Mediodía")
-    return None
+    return available.get(label)
 
 
 _ASK_RECIPIENT = (
@@ -85,6 +139,82 @@ _ASK_CONTACT = (
     "enviamos la confirmación? (el teléfono lo tomo de este WhatsApp)"
 )
 
+# ── No entender no puede ser un bucle ─────────────────────────────────
+#
+# La FSM era una función pura de (paso, texto): cuando no entendía devolvía los
+# mismos bytes, y los devolvía indefinidamente. Una clienta recibió cuatro veces
+# "No pude confirmar esa fecha" y otras cuatro el menú de horarios completo —
+# incluso al escribir "gracias" y "ya no deseo el pedido por q no entienden".
+# Se fue. Tres reglas salieron de ahí:
+#
+#   1. Nunca el mismo texto dos veces: cada reintento reformula y cita lo que el
+#      cliente escribió, para que se note que alguien lo está leyendo.
+#   2. Al tercer fallo seguido el bot suelta y cede el chat. Si no entendió dos
+#      veces, no va a entender a la tercera.
+#   3. Lo que no es una respuesta al formulario tampoco se trata como tal: la
+#      cortesía se acusa recibo y el abandono se deriva.
+_MAX_RETRIES = 3
+
+_GIVE_UP = (
+    "Perdona, no estoy logrando entenderte y no quiero hacerte perder más "
+    "tiempo 🙏 Te paso con un asesor del equipo para que lo cierre contigo."
+)
+_ABANDON_REPLY = (
+    "Entendido, sin problema 🙏 Te dejo con un asesor del equipo por si "
+    "quieres retomarlo o resolver cualquier duda."
+)
+_STUCK_REPLY = (
+    "Tienes toda la razón y te pido disculpas 🙏 Te paso con un asesor del "
+    "equipo para cerrarlo sin más vueltas."
+)
+
+# "Ya no gracias", "ya no deseo el pedido", "mejor otro día": el cliente se está
+# yendo. No se comprueba en el paso `card`, donde "mejor no" es la respuesta
+# legítima a "¿quieres tarjeta?".
+_ABANDON_RE = re.compile(
+    r"\bya\s+no\b|no\s+(?:lo\s+)?(?:deseo|quiero)\b|"
+    r"olv[ií]dal[oa]|d[eé]jal[oa]\b|d[eé]jemoslo|lo\s+dejamos|"
+    r"mejor\s+no\b|otro\s+d[ií]a|en\s+otro\s+momento",
+    re.I,
+)
+# El cliente nos dice que estamos fallando. Es la señal más clara de que seguir
+# preguntando no va a funcionar. "co[nm]firm" porque la gente escribe "comfirme".
+_STUCK_RE = re.compile(
+    r"no\s+(?:me\s+)?entiend(?:en|es|e)\b|no\s+me\s+est[aá]s?\s+entend|"
+    r"ya\s+(?:te\s+)?(?:lo\s+)?(?:dije|co[nm]firm\w+|respond\w+|indiqu\w+|"
+    r"puse|escrib\w+|mand\w+)|te\s+lo\s+dije|siempre\s+lo\s+mismo|"
+    r"otra\s+vez\s+lo\s+mismo",
+    re.I,
+)
+
+
+def _echo(text: str, limit: int = 40) -> str:
+    """Lo que escribió el cliente, recortado para citarlo de vuelta."""
+    clean = " ".join((text or "").split())
+    return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
+
+
+def _again(
+    state: ConversationState, meta: dict[str, Any], variants: tuple[str, ...]
+) -> tuple[ConversationState, str, dict[str, Any]]:
+    """Repregunta con otras palabras; al tercer fallo seguido cede el chat."""
+    state.step_retries += 1
+    if state.step_retries >= _MAX_RETRIES:
+        state.handoff_reason = (
+            f"el bot no logró entender al cliente en el paso «{state.checkout_step}» "
+            f"del cierre ({state.step_retries} intentos)"
+        )
+        meta["handoff"] = True
+        return state, _GIVE_UP, meta
+    return state, variants[min(state.step_retries, len(variants)) - 1], meta
+
+
+def _courtesy(
+    state: ConversationState, meta: dict[str, Any], question: str
+) -> tuple[ConversationState, str, dict[str, Any]]:
+    """"Gracias" no es la fecha que pedimos: se acusa y no gasta un reintento."""
+    return state, f"¡A ti! 😊 Solo me falta esto para cerrarlo:\n{question}", meta
+
 
 def advance_checkout(
     state: ConversationState,
@@ -94,16 +224,49 @@ def advance_checkout(
 ) -> tuple[ConversationState, str, dict[str, Any]]:
     """
     Avanza un paso del cierre. Devuelve (state, reply, meta).
-    meta puede incluir escalate=True en payment tras confirmación.
+    meta puede incluir escalate=True en payment tras confirmación, o handoff=True
+    cuando el cierre se atasca y hay que ceder el chat sin anunciar venta.
 
     Tras el horario se recogen los datos que exige `POST /pedidos/temporales`:
     dedicatoria (paso `card`/`card_text`), destinatario, dirección y datos del
     comprador. Recién con todo eso se muestra el resumen y, al confirmarlo, el
     orquestador crea el pedido temporal y escala al pago.
     """
+    before = state.checkout_step or "idle"
+    state, reply, meta = _advance(state, user_text, today=today)
+    # Un paso que avanza es un paso que entendimos: la escalera vuelve a cero.
+    # Centralizado aquí y no en cada rama para que un `return` nuevo no se olvide
+    # de resetearlo y arrastre los reintentos de un paso al siguiente.
+    if (state.checkout_step or "idle") != before:
+        state.step_retries = 0
+    return state, reply, meta
+
+
+def _advance(
+    state: ConversationState,
+    user_text: str,
+    *,
+    today: date | None = None,
+) -> tuple[ConversationState, str, dict[str, Any]]:
     step = state.checkout_step or "idle"
     text = (user_text or "").strip()
     meta: dict[str, Any] = {"specialty": "checkout"}
+
+    # Antes de tratar el texto como una respuesta al formulario: ¿lo es? Un
+    # cliente que se despide o que nos dice que no lo entendemos no está
+    # contestando la pregunta, y contestarle con la pregunta otra vez es lo que
+    # rompió la conversación que originó esto.
+    if step not in ("idle", "", "payment", "done"):
+        if step != "card" and _ABANDON_RE.search(text):
+            state.handoff_reason = "el cliente abandonó el cierre a medias"
+            meta["handoff"] = True
+            return state, _ABANDON_REPLY, meta
+        if _STUCK_RE.search(text):
+            state.handoff_reason = (
+                "el cliente avisó que el bot no lo estaba entendiendo durante el cierre"
+            )
+            meta["handoff"] = True
+            return state, _STUCK_REPLY, meta
 
     if step == "idle" or (wants_checkout(text) and step == "idle"):
         if not state.district:
@@ -118,24 +281,50 @@ def advance_checkout(
         looks_like_product = (
             resolve_chosen_product(state, text, allow_implicit=False) is not None
         )
+        ask_district = (
+            "¡Perfecto! 🎉 ¿A qué distrito lo enviamos?",
+            "Solo necesito el *distrito* de Lima donde lo entregamos 🏠 "
+            "(por ejemplo: Miraflores, Surco, San Isidro).",
+        )
         if wants_checkout(text) or len(text) > 80 or looks_like_product:
-            return state, "¡Perfecto! 🎉 ¿A qué distrito lo enviamos?", meta
+            return _again(state, meta, ask_district)
         if text:
             state.district = text
         if not state.district:
-            return state, "¡Perfecto! 🎉 ¿A qué distrito lo enviamos?", meta
+            return _again(state, meta, ask_district)
         state.checkout_step = "date"
         return state, "¿Para qué fecha lo necesitas? 📅", meta
 
     if step == "date":
-        normalized = normalize_fecha(text, today=today)
         effective_today = today or lima_today()
-        if normalized is None or normalized < effective_today.isoformat():
-            return (
+        # El ejemplo se calcula, no se escribe: la plantilla fija proponía "20/07"
+        # y el 21 de julio le estábamos pidiendo a una clienta una fecha futura
+        # con un ejemplo del día anterior.
+        ejemplo = (effective_today + timedelta(days=1)).strftime("%d/%m")
+        if is_courtesy_text(text):
+            return _courtesy(state, meta, "¿Para qué fecha lo necesitas? 📅")
+        normalized = normalize_fecha(text, today=today)
+        if normalized is not None and normalized < effective_today.isoformat():
+            return _again(
                 state,
-                "No pude confirmar esa fecha 📅 ¿Me indicas una fecha futura, "
-                "por ejemplo 20/07 o mañana?",
                 meta,
+                (
+                    f"Esa fecha ({display_fecha(normalized)}) ya pasó 😅 "
+                    f"¿Para qué día lo necesitas? Puede ser hoy mismo o *{ejemplo}*.",
+                    f"¿Me la escribes como día/mes? Por ejemplo *{ejemplo}* 📅",
+                ),
+            )
+        if normalized is None:
+            return _again(
+                state,
+                meta,
+                (
+                    f"No logré leer una fecha en «{_echo(text)}» 😅 ¿Me la pones "
+                    f"en números, día/mes? Por ejemplo *{ejemplo}*, o dime *hoy* "
+                    f"o *mañana*.",
+                    f"Vamos con lo más simple: escríbeme solo el día y el mes, "
+                    f"así → *{ejemplo}* 📅",
+                ),
             )
         state.date = normalized
         state.checkout_step = "schedule"
@@ -148,14 +337,35 @@ def advance_checkout(
         )
 
     if step == "schedule":
+        opciones = schedule_options_for(state.date)
+        if is_courtesy_text(text):
+            return _courtesy(state, meta, f"¿En qué horario te llega mejor? 🕐\n{opciones}")
         slot = parse_schedule(text, state.date)
         if slot is None:
-            return (
+            # Entender la franja y que no salga ese día NO es lo mismo que no
+            # entender nada. Repetir el menú entero servía para ambos casos —
+            # y por eso no servía para ninguno.
+            label = recognized_window(text)
+            if label:
+                return _again(
+                    state,
+                    meta,
+                    (
+                        f"Te entendí *{label}*, pero justo esa franja no sale "
+                        f"para el {display_fecha(state.date)} 😕 Estas sí:\n{opciones}",
+                        f"De las que quedan ese día, ¿cuál te sirve? Respóndeme "
+                        f"con el número 🕐\n{opciones}",
+                    ),
+                )
+            return _again(
                 state,
-                f"Elige uno de estos horarios 🕐\n"
-                f"{schedule_options_for(state.date)}\n"
-                "Responde con el número que prefieras.",
                 meta,
+                (
+                    f"No logré cuadrar «{_echo(text)}» con nuestras franjas 😅 "
+                    f"Respóndeme con el *número* de la que te sirva:\n{opciones}",
+                    f"Solo necesito un número del 1 al "
+                    f"{len(windows_for(state.date))} 🕐\n{opciones}",
+                ),
             )
         state.time_slot = slot
         state.checkout_step = "card"
@@ -177,10 +387,21 @@ def advance_checkout(
         return state, _ASK_RECIPIENT, meta
 
     if step == "recipient":
+        if is_courtesy_text(text):
+            return _courtesy(state, meta, _ASK_RECIPIENT)
         nombre, apellidos, telefono = parse_recipient(text)
         # Sin al menos un nombre no podemos avanzar con algo útil: repreguntamos.
         if not nombre:
-            return state, _ASK_RECIPIENT, meta
+            return _again(
+                state,
+                meta,
+                (
+                    f"De «{_echo(text)}» no logré sacar el nombre 😅 "
+                    f"{_ASK_RECIPIENT}",
+                    "Con el *nombre y apellido* del destinatario me basta para "
+                    "seguir 🎁 (el teléfono me lo puedes dar después).",
+                ),
+            )
         state.nombre_destinatario = nombre
         state.apellidos_destinatario = apellidos
         state.telefono_destinatario = telefono
@@ -188,22 +409,39 @@ def advance_checkout(
         return state, _ASK_ADDRESS, meta
 
     if step == "address":
+        if is_courtesy_text(text):
+            return _courtesy(state, meta, _ASK_ADDRESS)
         direccion, tipo = parse_address(text)
         if not direccion:
-            return state, _ASK_ADDRESS, meta
+            return _again(
+                state,
+                meta,
+                (
+                    f"No logré leer una dirección en «{_echo(text)}» 😅 "
+                    f"{_ASK_ADDRESS}",
+                    "Con la *calle y el número* me basta 🏠 (las referencias me "
+                    "las puedes dar después).",
+                ),
+            )
         state.direccion = direccion
         state.tipo = tipo
         state.checkout_step = "contact"
         return state, _ASK_CONTACT, meta
 
     if step == "contact":
+        if is_courtesy_text(text):
+            return _courtesy(state, meta, _ASK_CONTACT)
         nombre, apellidos, email = parse_contact(text)
         if not email:
-            return (
+            return _again(
                 state,
-                "Necesito un *correo* válido para enviarte la confirmación. "
-                "¿Me lo compartes? ✉️",
                 meta,
+                (
+                    f"En «{_echo(text)}» no encontré un correo ✉️ ¿Me lo "
+                    f"escribes? Es donde te llega la confirmación.",
+                    "Solo me falta tu *correo* para mandarte la confirmación "
+                    "(algo como nombre@gmail.com) ✉️",
+                ),
             )
         state.nombre_cliente = nombre
         state.apellidos_cliente = apellidos
