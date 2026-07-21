@@ -82,15 +82,30 @@ final class Repository
         ];
     }
 
+    /**
+     * Minutos que una conversación cuenta como "lead nuevo".
+     *
+     * Es la banda de orden Y el badge del panel. Corta: pasado ese rato deja de
+     * ser una novedad y vuelve a ordenarse por recencia como todas.
+     */
+    const LEAD_NUEVO_MIN = 30;
+
     public static function listConversations(int $limit = 80): array
     {
         $tenantId = self::ensureTenantId();
         $limit = max(1, min(200, $limit));
         // `sale`: el agente cerró la venta con todos los datos del pedido. El panel
         // pinta ese chat en verde para que el vendedor entre directo a cobrarlo.
+        // Un lead nuevo sube por encima del resto, pero NO por encima del dinero
+        // por cobrar ni de quien lleva horas esperando asesor: la cola de ayuda ya
+        // va fijada aparte, en las fichas de arriba. Sin esta banda el lead recién
+        // llegado caía detrás de todos los `human_support` y el vendedor no lo veía.
         return Database::fetchAll(
             "SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support, c.last_message_at,
+                    c.fecha_creacion,
+                    (c.fecha_creacion >= DATE_SUB(NOW(), INTERVAL :nuevoMin MINUTE))
+                      AS es_nuevo,
                     ct.wa_id, ct.nombre_contact,
                     s.valor_setting AS sale,
                     (SELECT m.content_message FROM crm_messages m
@@ -104,9 +119,10 @@ final class Repository
              WHERE c.id_tenant = :tenantId
              ORDER BY (s.valor_setting IS NOT NULL) DESC,
                       c.human_support DESC,
+                      es_nuevo DESC,
                       COALESCE(c.last_message_at, c.fecha_creacion) DESC
              LIMIT {$limit}",
-            ['tenantId' => $tenantId]
+            ['tenantId' => $tenantId, 'nuevoMin' => self::LEAD_NUEVO_MIN]
         );
     }
 
@@ -422,7 +438,7 @@ final class Repository
         );
     }
 
-    /** Conserva una venta anunciada por Regalito sin duplicar sus reintentos. */
+    /** Conserva una venta anunciada por Don Regalo sin duplicar sus reintentos. */
     public static function archiveSale(int $conversationId, array $sale): array
     {
         $tenantId = self::ensureTenantId();
@@ -1032,6 +1048,11 @@ final class Repository
             'bot_active' => (bool) $c['bot_active'],
             'human_support' => (bool) $c['human_support'],
             'last_message_at' => self::iso($c['last_message_at']),
+            // Lead nuevo: el panel lo sube en la lista, lo marca y hace sonar el
+            // aviso. `created_at` va aparte porque el "nuevo" caduca (LEAD_NUEVO_MIN)
+            // y el panel necesita el dato crudo para no depender solo del flag.
+            'created_at' => self::iso($c['fecha_creacion'] ?? null),
+            'is_new' => (bool) ($c['es_nuevo'] ?? false),
             // Venta cerrada por el agente: el panel lo pinta en verde.
             'sale' => isset($c['sale']) && $c['sale'] !== null
                 ? json_decode((string) $c['sale'], true)

@@ -245,7 +245,7 @@
   const STATUS_META = {
     help: { badge: "AYUDA", tag: "tag-accent", label: "Necesita ayuda humana" },
     human: { badge: "HUMAN", tag: "tag-neutral", label: "Tú tienes el control" },
-    ai: { badge: "AI", tag: "tag-accent-2", label: "Regalito escuchando" },
+    ai: { badge: "AI", tag: "tag-accent-2", label: "Don Regalo escuchando" },
   };
 
   const displayName = (c) => c.contact?.name || c.contact?.wa_id || "Sin nombre";
@@ -329,6 +329,7 @@
         <div class="item-preview">${esc(c.last_message || "Sin mensajes")}</div>
         <div class="item-foot">
           ${sold ? `<span class="tag tag-sold">💚 VENTA CERRADA</span>` : ""}
+          ${c.is_new ? `<span class="tag tag-new">✨ NUEVO</span>` : ""}
           <span class="tag ${meta.tag}">${esc(meta.badge)}</span>
           ${wait ? `<span class="item-wait">${esc(wait)}</span>` : ""}
         </div>
@@ -552,7 +553,7 @@
                 aria-expanded="${saleCollapsed ? "false" : "true"}"
                 title="${saleCollapsed ? "Ver el pedido" : "Plegar el pedido"}">
           <span class="sale-head-text">
-            💚 Venta cerrada por Regalito — solo falta cobrar${
+            💚 Venta cerrada por Don Regalo — solo falta cobrar${
               saleCollapsed && sale.producto ? `: ${esc(String(sale.producto))}` : ""
             }
           </span>
@@ -979,9 +980,19 @@
   function notifyHandoff(conv) {
     beep();
     if (document.hidden && "Notification" in window && Notification.permission === "granted") {
-      new Notification("Regalito pidió ayuda", {
+      new Notification("Don Regalo pidió ayuda", {
         body: `${displayName(conv)} necesita un asesor ahora.`,
         tag: `handoff-${conv.id}`,
+      });
+    }
+  }
+
+  function notifyNewLead(conv) {
+    beep();
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      new Notification("Lead nuevo", {
+        body: `${displayName(conv)} escribió por primera vez.`,
+        tag: `lead-${conv.id}`,
       });
     }
   }
@@ -992,6 +1003,31 @@
     const antes = new Set(prev.filter((c) => statusOf(c) === "help").map((c) => c.id));
     const nuevos = next.filter((c) => statusOf(c) === "help" && !antes.has(c.id));
     if (nuevos.length) notifyHandoff(nuevos[0]);
+  }
+
+  // Ids ya avisados: el aviso es por lead, no por refresco. Sin esto, una
+  // conversación que sigue siendo "nueva" durante media hora pitaría en cada
+  // tick de la lista.
+  const leadsAvisados = new Set();
+
+  /**
+   * Solo la PRIMERA vez que un número escribe.
+   *
+   * No basta con "no estaba en la lista anterior": la lista está limitada a 80 y
+   * ordenada por recencia, así que una conversación vieja puede reaparecer desde
+   * abajo al llegarle un mensaje y no es un lead nuevo. Por eso manda `is_new`,
+   * que el CRM calcula contra `fecha_creacion` de la conversación.
+   */
+  function alertOnNewLead(prev, next) {
+    if (!prev.length) {
+      // Primera carga: marcamos los que ya estaban como avisados para no soltar
+      // una ráfaga de pitidos al abrir el panel por la mañana.
+      next.forEach((c) => c.is_new && leadsAvisados.add(c.id));
+      return;
+    }
+    const nuevos = next.filter((c) => c.is_new && !leadsAvisados.has(c.id));
+    nuevos.forEach((c) => leadsAvisados.add(c.id));
+    if (nuevos.length) notifyNewLead(nuevos[0]);
   }
 
   async function loadList() {
@@ -1006,6 +1042,7 @@
       const sig = JSON.stringify(next);
       if (sig !== listSig) {
         alertOnHandoff(conversations, next);
+        alertOnNewLead(conversations, next);
         listSig = sig;
         conversations = next;
         renderList();

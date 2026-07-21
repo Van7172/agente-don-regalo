@@ -913,6 +913,15 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   letter-spacing: 0.02em;
 }
 
+/* Lead que acaba de escribir por primera vez. Caduca solo (LEAD_NUEVO_MIN en el
+   CRM), así que no hace falta limpiarlo a mano. */
+.tag-new {
+  background: #7c4dff;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .sale-card-wrap[hidden] { display: none; }
 
 .sale-card {

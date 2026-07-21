@@ -46,8 +46,25 @@ requiresText($api, '/sale/delivered', 'Falta endpoint de entrega');
 requiresText($api, 'Repository::storeActiveSale', 'Settings debe guardar sale_* atómicamente');
 requiresText($api, 'Auth::user()', 'La entrega requiere usuario de sesión');
 
+// El agente se llama Don Regalo (jul 2026). Basta con que el nombre viejo quede
+// en un sitio para que el panel y el bot se contradigan delante del cliente.
+foreach (['public/assets/inbox.js', 'views/inbox.php', 'views/login.php',
+          'views/reports.php', 'views/sales-history.php'] as $archivo) {
+    if (strpos(source($archivo), 'Regalito') !== false) {
+        throw new RuntimeException("Quedó 'Regalito' en {$archivo}");
+    }
+}
+
 $inbox = source('public/assets/inbox.js');
 requiresText($inbox, 'Marcar como entregado', 'Falta acción en la ficha');
+requiresText($inbox, 'alertOnNewLead', 'Falta el aviso de lead nuevo');
+requiresText($inbox, 'leadsAvisados', 'El aviso debe ser por lead, no por refresco');
+requiresText($inbox, 'tag-new', 'Falta el badge de lead nuevo en la lista');
+
+$repositoryLista = source('src/Repository.php');
+requiresText($repositoryLista, 'LEAD_NUEVO_MIN', 'La ventana de "nuevo" debe estar en un solo sitio');
+requiresText($repositoryLista, 'es_nuevo DESC', 'El lead nuevo debe subir en la lista');
+requiresText($repositoryLista, "'is_new'", 'El panel necesita el flag para avisar');
 requiresText($inbox, '/sale/delivered', 'Falta llamada del inbox');
 requiresText($inbox, 'window.confirm', 'Falta confirmación previa');
 
