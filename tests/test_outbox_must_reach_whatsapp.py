@@ -25,8 +25,12 @@ async def test_si_whatsapp_no_entrega_texto_no_se_marca_enviado(monkeypatch):
     async def set_mode(*a, **kw):
         acciones.append(("mode", a, kw))
 
+    async def claim_outbox(outbox_id):
+        return True  # nadie más tiene la fila
+
     monkeypatch.setattr(od, "send_message", send_falla)
     monkeypatch.setattr(od.crm_http, "crm_enabled", lambda: True)
+    monkeypatch.setattr(od.crm_http, "claim_outbox", claim_outbox)
     monkeypatch.setattr(od.crm_http, "mark_outbox", mark_outbox)
     monkeypatch.setattr(od.crm_http, "append_outbound", append_outbound)
     monkeypatch.setattr(od.crm_http, "set_mode", set_mode)

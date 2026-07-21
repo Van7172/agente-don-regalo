@@ -50,6 +50,25 @@ async def deliver_outbox(
             outbox_id,
         )
 
+    # Reclamar ANTES de hablar con Meta. Este es el único punto por el que pasan
+    # los dos caminos de entrega (el push del CRM y el drenaje periódico), así
+    # que es el sitio donde el candado los cubre a ambos. Sin él, la fila seguía
+    # 'pending' durante toda la llamada a la Cloud API y el drenaje la reenviaba:
+    # al cliente le llegó tres veces el mismo mensaje del asesor.
+    if outbox_id and crm_http.crm_enabled():
+        try:
+            claimed = await crm_http.claim_outbox(outbox_id)
+        except Exception as err:
+            # El endpoint no existe todavía (CRM sin actualizar) o el CRM no
+            # responde. Se envía igual: quedarse callado rompería el canal del
+            # asesor por completo, y un duplicado ocasional es exactamente el
+            # comportamiento que ya había. Degradar, no bloquear.
+            log.warning("[OUTBOX] no pude reclamar outbox=%s (%s); envío igual", outbox_id, err)
+        else:
+            if not claimed:
+                log.info("[OUTBOX] outbox=%s ya reclamado por otro envío; no se repite", outbox_id)
+                return {"status": "skipped", "reason": "already_claimed"}
+
     media_key = media_path
     log.info(
         "[OUTBOX] send type=%s to=%s outbox=%s conv=%s dry_run=%s media=%s",
@@ -138,7 +157,7 @@ async def drain_pending_outbox(limit: int = 10) -> int:
             continue
 
         try:
-            await deliver_outbox(
+            res = await deliver_outbox(
                 wa_id=wa_id,
                 content=content,
                 conversation_id=conv_id,
@@ -148,6 +167,8 @@ async def drain_pending_outbox(limit: int = 10) -> int:
                 filename="",
                 reply_to_wa_id=str(reply_to) if reply_to else None,
             )
+            if res.get("status") == "skipped":
+                continue
             done += 1
             log.info("[OUTBOX] drenado outbox_id=%s", outbox_id)
         except Exception as err:

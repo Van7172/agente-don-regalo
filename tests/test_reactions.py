@@ -181,8 +181,12 @@ async def test_responder_del_asesor_manda_context_a_meta_y_cita_en_el_crm(monkey
     async def fake_noop(*a, **kw):
         return {}
 
+    async def fake_claim(outbox_id):
+        return True
+
     monkeypatch.setattr(od, "send_message", fake_send)
     monkeypatch.setattr(od.crm_http, "crm_enabled", lambda: True)
+    monkeypatch.setattr(od.crm_http, "claim_outbox", fake_claim)
     monkeypatch.setattr(od.crm_http, "append_outbound", fake_append)
     monkeypatch.setattr(od.crm_http, "mark_outbox", fake_noop)
     monkeypatch.setattr(od.crm_http, "set_mode", fake_noop)

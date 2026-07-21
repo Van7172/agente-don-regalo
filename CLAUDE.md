@@ -87,6 +87,35 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    prompt se desactualiza Y le da al modelo de dónde extrapolar: inventó "desayuno
    clásico/premium", "globos y kits". Una sola puerta a la taxonomía; nada de
    `listar_categorias` compitiendo.
+5. **Un paso determinista que no entiende NO puede repetirse igual.** La FSM del
+   cierre era una función pura de `(paso, texto)`: al no entender devolvía los mismos
+   bytes, y los devolvía para siempre. Una clienta recibió cuatro veces "No pude
+   confirmar esa fecha" y otras cuatro el menú de horarios — también al escribir
+   "Gracias" y "Ya no deseo el pedido por q no entienden" — y se fue. Ahora
+   `state.step_retries` cuenta fallos seguidos: cada reintento reformula y **cita** lo
+   que el cliente escribió, y al tercero `meta["handoff"]` cede el chat (rescate, no
+   venta: sin pedido temporal ni verde en el CRM). Antes de tratar el texto como
+   respuesta al formulario se mira si lo es: cortesía se acusa sin gastar reintento,
+   abandono y "no me entienden" derivan. Ver `_again`/`_advance` en
+   [`checkout.py`](app/harness/checkout.py) y `tests/test_checkout_no_bucle.py`.
+   Corolario: los ejemplos dentro de un mensaje se **calculan**, no se escriben — la
+   plantilla fija proponía "20/07" y el 21 de julio pedía una fecha futura con un
+   ejemplo del día anterior.
+6. **Dos caminos que entregan lo mismo necesitan un candado, no buena suerte.** El
+   push del CRM (`POST /internal/outbox/send`) y el drenaje periódico del agente
+   (cada 12s) leían la misma fila `pending` de `crm_outbox`, y la fila seguía
+   `pending` durante TODA la llamada a la Cloud API. Un "No disculpe. Somos de Lima"
+   del asesor le llegó tres veces al cliente. Ahora `deliver_outbox` **reclama antes
+   de hablar con Meta** (`Repository::claimOutbox`, un UPDATE condicional atómico:
+   `pending → sending`); quien no gana el claim se retira. Las filas que se quedan en
+   `sending` vuelven a la cola a los 3 min, por si el agente muere entre medias.
+   Debajo hay dos redes más: `_already_seen` descarta redeliveries de Meta por
+   `wamid` ([`buffer.py`](app/services/buffer.py)) y `findDuplicateMessage` no pinta
+   dos veces el mismo texto del mismo emisor en 90s. Ojo con el criterio: **"mismo
+   contenido" a secas no es un duplicado** — un cliente puede escribir "sí" dos veces
+   a propósito, y borrarle el segundo es inventarse una conversación que no ocurrió.
+   Hacen falta conversación + dirección + emisor + ventana corta, o un `wamid`
+   repetido, que sí es prueba directa.
 
 ## Evals: la red de regresión
 
@@ -139,6 +168,12 @@ python -m pytest tests/ -q       # 444 pasan, 2 skip, offline
   firma — sin él cualquiera inyecta mensajes), `WATCHDOG_ENABLED=1`, `ALERT_WHATSAPP`.
 - **CRM PHP**: hosting de Don Regalo, carpeta [`crm/`](crm/). El verde de venta
   cerrada, el sonido del handoff y los emojis viven aquí — hay que subir el CRM aparte.
+
+**Las migraciones SQL van primero.** [`crm/sql/`](crm/sql/) se corre a mano contra el
+MySQL del hosting, y el orden importa: SQL → CRM PHP → agente. Al revés, el agente
+llama a endpoints que aún no existen. Por eso el claim del outbox degrada en vez de
+fallar (`deliver_outbox`): si el CRM no sabe reclamar todavía, envía igual — quedarse
+callado dejaría al equipo sin poder escribirle a ningún cliente.
 
 ## Deuda conocida: que Regalito sepa QUÉ CONTIENE cada producto
 

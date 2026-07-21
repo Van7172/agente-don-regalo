@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 
 from sqlalchemy import select
 
@@ -39,6 +40,33 @@ _FALLBACK_SOFT_MSG = (
 _buffers: dict[int, dict] = {}
 _buffers_lock = asyncio.Lock()
 
+# Meta reentrega el webhook si no ve un 200 a tiempo, y el mismo `wamid` vuelve a
+# entrar. Sin este guardia se persistía el mensaje dos veces Y el bot lo
+# respondía dos veces — el cliente veía su propia frase repetida y una respuesta
+# duplicada detrás. Basta con los últimos ids: una redelivery llega en segundos,
+# no horas.
+_SEEN_LIMIT = 2000
+_seen_wa_message_ids: OrderedDict[str, None] = OrderedDict()
+
+
+def _already_seen(wa_message_id: str) -> bool:
+    """¿Ya procesamos este `wamid`? Marca el id como visto de paso."""
+    if not wa_message_id:
+        # Sin id no hay forma de afirmar que sea repetido: se deja pasar. El
+        # filtro por contenido del CRM es la red de abajo.
+        return False
+    if wa_message_id in _seen_wa_message_ids:
+        return True
+    _seen_wa_message_ids[wa_message_id] = None
+    while len(_seen_wa_message_ids) > _SEEN_LIMIT:
+        _seen_wa_message_ids.popitem(last=False)
+    return False
+
+
+def reset_seen_wa_message_ids() -> None:
+    """Olvida los ids vistos. Para los tests: es estado global del proceso."""
+    _seen_wa_message_ids.clear()
+
 
 def _use_external_crm() -> bool:
     return crm_http.crm_enabled()
@@ -46,6 +74,9 @@ def _use_external_crm() -> bool:
 
 async def enqueue_inbound(msg: InboundMessage) -> dict:
     """Persiste inbound, aplica gates, encola en buffer."""
+    if _already_seen(msg.wa_message_id):
+        log.info("[WA-IN] duplicado ignorado id=%s", msg.wa_message_id)
+        return {"status": "ignored", "reason": "duplicate"}
     # Una reacción (emoji) se PINTA en el CRM pero NO despierta al bot: no es un
     # pedido. Antes llegaba como "[reaction]" (burbuja vacía) y encima el bot
     # respondía a un pulgar arriba con "¿quieres más detalles?".

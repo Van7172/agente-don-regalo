@@ -166,8 +166,75 @@ final class Repository
         return mb_substr((string) $row['content_message'], 0, 400);
     }
 
+    /** Ventana del filtro anti-duplicados del hilo, en segundos. */
+    const DUPLICATE_WINDOW = 90;
+
+    /**
+     * ¿Este mensaje ya está en el hilo? Devuelve su id, o null.
+     *
+     * Última línea de defensa: aunque el claim del outbox impide el doble envío,
+     * cualquier reintento (webhook redelivery de Meta, doble submit del panel,
+     * push + drenaje) podía pintar el mismo texto dos veces en el inbox.
+     *
+     * El criterio NO es "mismo contenido" a secas: un cliente puede escribir "sí"
+     * dos veces seguidas con toda la intención, y borrarle el segundo sería
+     * inventarnos una conversación que no ocurrió. Hace falta que coincidan
+     * conversación, dirección, emisor Y contenido dentro de una ventana corta.
+     * Un `wa_message_id` repetido, en cambio, es una redelivery pura y dura: ahí
+     * no hace falta ventana ninguna.
+     */
+    public static function findDuplicateMessage(array $input): ?int
+    {
+        $waId = (string) ($input['waMessageId'] ?? '');
+        if ($waId !== '') {
+            $row = Database::fetchOne(
+                'SELECT id_message FROM crm_messages WHERE wa_message_id = :waId LIMIT 1',
+                ['waId' => $waId]
+            );
+            if ($row) {
+                return (int) $row['id_message'];
+            }
+        }
+
+        $content = (string) ($input['content'] ?? '');
+        // Los adjuntos comparten contenido ("[image]") sin ser el mismo archivo:
+        // los deja pasar el claim del outbox, no este filtro.
+        if (trim($content) === '' || !empty($input['mediaUrl'])) {
+            return null;
+        }
+
+        $row = Database::fetchOne(
+            'SELECT id_message FROM crm_messages
+             WHERE id_conversation = :conversationId
+               AND direction_message = :direction
+               AND sender_type = :senderType
+               AND content_message = :content
+               AND fecha_creacion >= DATE_SUB(NOW(), INTERVAL :window SECOND)
+             ORDER BY id_message DESC LIMIT 1',
+            [
+                'conversationId' => $input['conversationId'],
+                'direction' => $input['direction'],
+                'senderType' => $input['senderType'],
+                'content' => $content,
+                'window' => self::DUPLICATE_WINDOW,
+            ]
+        );
+        return $row ? (int) $row['id_message'] : null;
+    }
+
     public static function addMessage(array $input): int
     {
+        $duplicate = self::findDuplicateMessage($input);
+        if ($duplicate !== null) {
+            error_log(sprintf(
+                '[CRM] mensaje duplicado descartado conv=%s sender=%s wa_message_id=%s',
+                $input['conversationId'] ?? '?',
+                $input['senderType'] ?? '?',
+                $input['waMessageId'] ?? '-'
+            ));
+            return $duplicate;
+        }
+
         $id = Database::execute(
             'INSERT INTO crm_messages
               (id_conversation, direction_message, sender_type, role_message, wa_message_id,
@@ -610,9 +677,41 @@ final class Repository
         );
     }
 
+    /**
+     * Reclama la fila para enviarla. `true` solo para el primero que llega.
+     *
+     * Dos caminos entregan el mismo outbox — el push del CRM al agente y el
+     * drenaje periódico — y la fila seguía en 'pending' durante toda la llamada
+     * a la Cloud API. Si esa llamada tardaba más que el tick del drenaje, ambos
+     * la enviaban: un "No disculpe. Somos de Lima" del asesor le llegó tres
+     * veces al cliente. El UPDATE condicional es atómico bajo el lock de fila de
+     * InnoDB, así que exactamente uno ve rowCount() === 1.
+     */
+    public static function claimOutbox(int $id): bool
+    {
+        return Database::affect(
+            "UPDATE crm_outbox SET status_outbox = 'sending'
+             WHERE id_outbox = :id AND status_outbox = 'pending'",
+            ['id' => $id]
+        ) === 1;
+    }
+
+    /** Segundos que puede quedarse una fila en 'sending' antes de darla por muerta. */
+    const OUTBOX_SENDING_TTL = 180;
+
     public static function listPendingOutbox(int $limit = 30): array
     {
         $limit = max(1, min(100, $limit));
+        // Si el agente murió entre el claim y el envío, la fila se quedaría en
+        // 'sending' para siempre y el mensaje del asesor no saldría nunca. A los
+        // 3 minutos vuelve a la cola: es más tiempo del que tarda cualquier envío
+        // real, incluido un adjunto (60s de timeout).
+        Database::exec(
+            "UPDATE crm_outbox SET status_outbox = 'pending'
+             WHERE status_outbox = 'sending'
+               AND fecha_creacion < DATE_SUB(NOW(), INTERVAL :ttl SECOND)",
+            ['ttl' => self::OUTBOX_SENDING_TTL]
+        );
         return Database::fetchAll(
             "SELECT * FROM crm_outbox WHERE status_outbox = 'pending' ORDER BY id_outbox ASC LIMIT {$limit}"
         );

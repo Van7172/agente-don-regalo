@@ -180,6 +180,17 @@ async def list_pending_outbox() -> list[dict]:
     return list(data.get("data") or [])
 
 
+async def claim_outbox(outbox_id: int) -> bool:
+    """Reclama la fila antes de mandarla. `False` = otro camino ya la tiene.
+
+    El push del CRM y el drenaje periódico competían por la misma fila `pending`
+    durante toda la llamada a la Cloud API, y los dos la enviaban. Quien no gana
+    el claim no envía.
+    """
+    data = await _request("POST", "/api/outbox/claim", json={"outbox_id": outbox_id})
+    return bool(data.get("claimed"))
+
+
 async def mark_outbox(outbox_id: int, status: str, error: str | None = None) -> None:
     await _request(
         "PATCH",

@@ -368,6 +368,19 @@ try {
         Auth::assertInternalToken();
         Http::jsonOk(['ok' => true, 'data' => Repository::listPendingOutbox(30)]);
     }
+    // Reclamar una fila antes de mandarla a WhatsApp. `claimed: false` significa
+    // que otro camino (el push o el drenaje) ya la tiene: quien recibe eso NO
+    // debe enviar nada. Es lo que impide que el mismo mensaje del asesor salga
+    // dos y tres veces.
+    if ($path === '/outbox/claim' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        if (empty($body['outbox_id'])) {
+            Http::jsonError('outbox_id required');
+        }
+        $claimed = Repository::claimOutbox((int) $body['outbox_id']);
+        Http::jsonOk(['ok' => true, 'claimed' => $claimed]);
+    }
     if ($path === '/outbox' && $method === 'POST') {
         $body = Http::readJson();
         if (empty($body['conversation_id'])) {

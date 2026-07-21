@@ -16,6 +16,21 @@ from app.config import settings as app_settings
 from app.crm import http_client as crm_http
 from app.harness import master as master_mod
 from app.harness import state as state_mod
+from app.services import buffer as buffer_mod
+
+
+@pytest.fixture(autouse=True)
+def sin_wamids_vistos():
+    """El guardia anti-redelivery no puede filtrarse entre tests.
+
+    `_seen_wa_message_ids` es global del proceso (como `_buffers`). Varios tests
+    reusan el mismo `wamid` de prueba, así que sin limpiarlo el segundo test que
+    corriera vería su mensaje descartado como duplicado — y fallaría según el
+    orden de la suite, que es la peor clase de fallo.
+    """
+    buffer_mod.reset_seen_wa_message_ids()
+    yield
+    buffer_mod.reset_seen_wa_message_ids()
 
 
 @pytest.fixture(autouse=True)

@@ -91,4 +91,21 @@ final class Database
         $stmt = self::pdo()->prepare($sql);
         $stmt->execute($params);
     }
+
+    /**
+     * Como `exec`, pero devuelve cuántas filas cambió.
+     *
+     * Es lo que convierte un UPDATE condicional en un candado: quien recibe 1 se
+     * quedó con la fila y los demás reciben 0. Sin esto no hay forma de saber si
+     * ganaste el claim del outbox.
+     *
+     * @param array $params
+     * @return int
+     */
+    public static function affect($sql, array $params = array())
+    {
+        $stmt = self::pdo()->prepare($sql);
+        $stmt->execute($params);
+        return (int) $stmt->rowCount();
+    }
 }
