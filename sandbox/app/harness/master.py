@@ -12,6 +12,7 @@ Dos reglas que lo definen:
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -23,7 +24,7 @@ from app.harness.checkout import (
     resolve_chosen_product,
     wants_checkout,
 )
-from app.harness.contracts import AgentResult, EscalateReason, Turn
+from app.harness.contracts import AgentResult, EscalateReason, Product, Turn
 from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
 from app.harness.orders import create_from_state as create_temporal_order
@@ -38,6 +39,7 @@ from app.harness.trace import Trace
 from app.prompts.compose import build_system
 from app.prompts.playbooks import WELCOME
 from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
+from app.tools.executor import execute_tool
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +290,10 @@ async def _handle(
     ):
         return await _handle_checkout(turn, state, **ctx)
 
+    # ── Detalle: el contenido se trae en código, no se le pide al modelo ──
+    if intent == "product_detail":
+        return await _handle_detail(turn, state, **ctx)
+
     # ── Resto: especialista LLM con toolset acotado ───────────────
     return await _run_specialty(intent, turn, state, **ctx)
 
@@ -431,6 +437,86 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     )
 
 
+async def _handle_detail(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+    """Detalle de producto con el contenido ya en la mano.
+
+    "¿Qué contiene?" solo la puede responder `GET /productos/{id}`: el listado
+    trae `descripcion_corta`, que es copy de marketing ("Sorprende con un
+    Desayuno Regalo para enamorar"), no la lista de items. Hasta ahora el único
+    camino a ese dato era que el modelo DECIDIERA llamar `detalle_producto`, y a
+    veces no lo hacía: entonces respondía con el copy, o se lo inventaba, o
+    prometía consultarlo con un asesor — algo que no puede hacer.
+
+    Así que se trae en código antes de que el modelo escriba, igual que el
+    formato de la ficha o el cambio de divisa. El modelo ya no puede olvidarse:
+    cuando le toca redactar, el contenido está en su contexto.
+
+    Si no se puede resolver a qué producto se refiere, no se adivina: se corre el
+    especialista como antes y él pregunta cuál.
+    """
+    detalle = await _prefetch_detalle(turn, state)
+    return await _run_specialty(
+        "product_detail",
+        turn,
+        state,
+        extra_system=_render_contenido(detalle),
+        fallback_artifacts=_artifacts_from(detalle),
+        **ctx,
+    )
+
+
+def _detalle_target(turn: Turn, state: ConversationState) -> int | None:
+    """¿De qué producto pregunta? `None` si no es unívoco."""
+    chosen = resolve_chosen_product(state, turn.text)
+    if chosen is not None:
+        return chosen[0]
+    # El cliente ya lo había elegido y ahora pregunta por él sin nombrarlo
+    # ("¿y qué trae?"): `resolve_chosen_product` mira lo mostrado, no lo elegido.
+    return state.chosen_product_id or None
+
+
+async def _prefetch_detalle(turn: Turn, state: ConversationState) -> dict | None:
+    pid = _detalle_target(turn, state)
+    if pid is None:
+        return None
+    try:
+        payload = json.loads(await execute_tool("detalle_producto", {"id_producto": pid}))
+    except Exception as err:
+        # Best-effort: si la API falla seguimos con el especialista de siempre.
+        # Quedarse sin responder por no poder precargar sería peor que antes.
+        log.warning("[detail] no pude precargar el detalle de %s: %s", pid, err)
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict) and data.get("id_producto"):
+        return data
+    return None
+
+
+def _render_contenido(detalle: dict | None) -> str:
+    """El "¿qué contiene?" como hecho del sistema, no como algo que ir a buscar."""
+    if not detalle:
+        return ""
+    descripcion = str(detalle.get("descripcion") or "").strip()
+    if not descripcion:
+        return ""
+    nombre = str(detalle.get("nombre") or "").strip()
+    return (
+        "## CONTENIDO REAL DE ESTE PRODUCTO (ya consultado por el sistema)\n"
+        f"{nombre} (id {detalle.get('id_producto')}):\n"
+        f"{descripcion}\n\n"
+        "Es el dato oficial de la API. Responde con ESTO, tal cual, sin añadir ni "
+        "quitar items. Si el cliente pregunta por algo que no aparece aquí, dilo: "
+        "no lo supongas."
+    )
+
+
+def _artifacts_from(detalle: dict | None) -> list[Product]:
+    if not detalle:
+        return []
+    product = Product.from_raw(detalle)
+    return [product] if product else []
+
+
 async def _run_specialty(
     intent: str,
     turn: Turn,
@@ -443,6 +529,7 @@ async def _run_specialty(
     use_external_crm: bool = False,
     persist=None,
     extra_system: str = "",
+    fallback_artifacts: list[Product] | None = None,
 ) -> AgentResult:
     spec = spec_for(intent)
     system = build_system(spec, state, extra=extra_system)
@@ -467,6 +554,13 @@ async def _run_specialty(
     # hicimos caso ("otras, no esas").
     if spec.name == "catalog":
         result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
+
+    # El modelo respondió sin llamar la tool porque el dato ya lo tenía en el
+    # system. Sin esto el turno saldría sin ficha (foto, nombre, precio) y sin
+    # `chosen_product_*`: el producto quedaría solo en la prosa, que es
+    # justamente de donde este harness no lee nada.
+    if not result.artifacts and fallback_artifacts:
+        result.artifacts = list(fallback_artifacts)
 
     if spec.name in ("catalog", "detail") and result.artifacts:
         result.user_facing = compose_product_reply(result.user_facing, result.artifacts)

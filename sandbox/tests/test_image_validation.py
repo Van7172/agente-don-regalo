@@ -203,7 +203,18 @@ async def test_url_privada_se_rechaza_sin_hacer_request(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_detalle_con_imagen_html_no_produce_artifact(monkeypatch):
+async def test_detalle_con_imagen_rota_pierde_la_foto_pero_no_el_producto(monkeypatch):
+    """Antes esto vaciaba `data`: sin foto no había producto.
+
+    Vale para un LISTADO — algo que no se puede enseñar no se ofrece — pero no
+    para el detalle, que responde "¿qué contiene ESE?" sobre algo que el cliente
+    ya vio. Verificado contra la API real: `GET /productos/{id}` devuelve
+    `imagen_url: null` y las cuatro variantes de `imagenes[]` dan 404, así que
+    descartar el producto dejaba la pregunta sin respuesta teniendo la lista de
+    items delante.
+
+    Lo que SÍ se mantiene: esa URL no llega a WhatsApp. Se cae la foto, no el dato.
+    """
     from app.tools import catalog
 
     async def fake_get(_client, _url, params=None):
@@ -232,7 +243,8 @@ async def test_detalle_con_imagen_html_no_produce_artifact(monkeypatch):
     ) as client:
         result = await catalog.detalle_producto(client, {"id_producto": 44})
 
-    assert result["data"] == []
+    assert result["data"]["id_producto"] == 44
+    assert result["data"]["imagen_url"] == ""
 
 
 def test_solo_hosts_de_imagen_del_dominio_configurado_son_confiables():

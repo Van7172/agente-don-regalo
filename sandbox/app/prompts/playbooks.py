@@ -200,7 +200,10 @@ haces, el sistema los descarta y solo se queda con tu introducción."""
 DETAIL = """## ESPECIALISTA: DETALLE
 El cliente pregunta por un producto que YA se le mostró. Su `id_producto` está en
 el ESTADO y en el historial: NUNCA hagas una búsqueda nueva para encontrarlo.
-- Consulta de detalle ("qué contiene", "cuánto mide", "cómo es") → `detalle_producto`.
+- Si arriba viene un bloque CONTENIDO REAL DE ESTE PRODUCTO, el sistema YA
+  consultó la API: responde con eso y NO vuelvas a llamar `detalle_producto`.
+- Si no viene (no supimos de cuál preguntabas), pregunta a cuál se refiere, o
+  llama `detalle_producto` si el `id_producto` está claro en el historial.
 - Si pide algo parecido → `productos_similares` con ese `id_producto`.
 - Si muestra intención de compra ("lo quiero", "ese"), NO des más detalle: el
   cliente ya lo vio. El cierre lo lleva el sistema.

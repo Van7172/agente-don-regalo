@@ -67,10 +67,18 @@ async def _productos(
     if not isinstance(normalized, dict):
         return normalized
     if isinstance(normalized.get("data"), dict):
-        products = await valid_products(
-            client, [normalized["data"]], limit=1
-        )
-        return {**normalized, "data": products[0] if products else []}
+        # Detalle de UN producto: aquí una imagen rota NO puede tirar el producto.
+        # En un listado sí — un producto que no se puede enseñar no se ofrece —
+        # pero el detalle responde a "¿qué contiene ESE?" sobre algo que el
+        # cliente ya vio. Descartarlo dejaba la pregunta sin respuesta teniendo la
+        # lista de items delante (id 734: la foto da 404 y el desayuno se perdía
+        # entero). Se cae la foto, no el dato: `render_product_list` ya imprime la
+        # ficha sin imagen.
+        detalle = normalized["data"]
+        products = await valid_products(client, [detalle], limit=1)
+        if products:
+            return {**normalized, "data": products[0]}
+        return {**normalized, "data": {**detalle, "imagen_url": ""}}
     if not isinstance(normalized.get("data"), list):
         return normalized
     products = await valid_products(

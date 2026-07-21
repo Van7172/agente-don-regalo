@@ -184,7 +184,7 @@ solo de ceder el chat. Lo que hay hoy, verificado contra la API real:
 
 | Pregunta | ¿Se puede responder hoy? |
 |---|---|
-| *"¿Qué contiene?"* | **Sí.** `GET /productos/{id}` (`detalle_producto`) trae `descripcion` con la lista: *"contiene:<br> - Packaging… - Croissant de pollo…"*. El playbook de `detail` ya manda usarla; el modelo a veces no la pide. |
+| *"¿Qué contiene?"* | **Sí, y ya no depende del modelo.** `GET /productos/{id}` trae `descripcion` con la lista. Antes había que confiar en que el especialista llamara `detalle_producto` y a veces no lo hacía. Ahora `master._handle_detail` resuelve el producto en código (`resolve_chosen_product`) y **precarga** el detalle antes de que el modelo escriba: el contenido entra por `extra_system` como hecho del sistema. Si no se puede saber de qué producto pregunta, no se adivina — el especialista pregunta cuál. |
 | *"¿Se puede quitar/añadir items? ¿Qué opciones hay?"* | **No.** La API **no modela** personalización: no hay items, ni sustituciones, ni precios por componente. Esto **sí** es deuda del servidor y hoy es motivo legítimo de handoff. |
 
 Estado:
@@ -210,8 +210,15 @@ consultar y volver; solo ceder el chat. Ver `_promises_handoff` en
 
 - ~~`GET /productos/{id}` devolvía un error fatal de PHP con status 200 para
   productos con imagen `null` (id 1235).~~ **Corregido en producción (jul 2026):**
-  devuelve JSON; con `imagen_url: null` la foto sale de `imagenes[]` y el adapter la
-  recupera. Verificado de punta a punta.
+  devuelve JSON. Pero **la foto del detalle sigue rota** (verificado 21-07-2026):
+  `imagen_url` viene `null` y las cuatro variantes de `imagenes[]`
+  (`thumb_`, `middle_`, `big_`, original) dan **404** — los nombres llevan prefijos
+  que no existen en disco. La única URL viva es la del listado
+  (`medium/<archivo>`, sin prefijo). O sea que el adapter "recupera" una URL muerta
+  y **ningún detalle sale con foto**. Es del servidor: bastaría con que
+  `GET /productos/{id}` devolviera la misma URL que ya devuelve el listado.
+  Mientras tanto el detalle se muestra sin imagen en vez de perderse entero
+  (`catalog._productos`), que es lo que pasaba antes.
 - ~~La API se autocontradecía: categorías usaban `url_categoria`, productos
   `categoria_url`.~~ **Corregido en producción (jul 2026):** ahora es `url_categoria`
   en todas partes (API.md nota #4). El adapter lee ese campo; mantiene `categoria_url`
