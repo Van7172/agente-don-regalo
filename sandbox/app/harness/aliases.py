@@ -52,9 +52,13 @@ PLACE_ALIASES: dict[str, str] = {
     "villa el salvador": "Villa El Salvador",
     "ves": "Villa El Salvador",
     "villa maria": "Villa María del Triunfo",
+    # La API lo llama "LIMA - CERCADO"; el cliente, cualquiera de estos.
     "cercado": "Cercado de Lima",
     "cercado de lima": "Cercado de Lima",
+    "lima cercado": "Cercado de Lima",
     "lima centro": "Cercado de Lima",
+    "centro de lima": "Cercado de Lima",
+    "centro historico": "Cercado de Lima",
 }
 
 
@@ -74,8 +78,11 @@ def resolve_alias(text: str) -> str | None:
         return None
     if norm in PLACE_ALIASES:
         return PLACE_ALIASES[norm]
-    # Buscar alias contenido en la frase (más largo primero).
+    # Buscar alias contenido en la frase (más largo primero), pero como PALABRA
+    # entera: los alias cortos ("ate", "smp", "ves") aparecen dentro de palabras
+    # que no son lugares — "zárate" contenía "ate" y mandaba Lurigancho-Zárate
+    # a Ate, con la tarifa de Ate.
     for alias in sorted(PLACE_ALIASES.keys(), key=len, reverse=True):
-        if alias in norm:
+        if re.search(rf"\b{re.escape(alias)}\b", norm):
             return PLACE_ALIASES[alias]
     return None

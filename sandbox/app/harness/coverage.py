@@ -35,6 +35,22 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Conectores que no distinguen un distrito de otro: "Lima - Cercado" y
+# "Cercado de Lima" son el mismo sitio.
+_STOPWORDS = frozenset({"de", "del", "la", "el", "los", "las", "y"})
+
+
+def _tokens(s: str) -> frozenset[str]:
+    """Palabras significativas del nombre, sin tildes, puntuación ni conectores."""
+    words = re.split(r"[^\w]+", _norm(s))
+    return frozenset(w for w in words if w and w not in _STOPWORDS)
+
+
+def _squash(s: str) -> str:
+    """Todo pegado, para cuando el cliente se come los espacios (“sanisidro”)."""
+    return re.sub(r"[^\w]+", "", _norm(s))
+
+
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -59,25 +75,55 @@ def _district_name(d: dict[str, Any]) -> str:
 
 
 def match_district(query: str, districts: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Fuzzy match contra lista de distritos_cobertura."""
-    q = _norm(query)
-    if not q:
+    """Fuzzy match contra lista de distritos_cobertura.
+
+    Compara por PALABRAS, no por substring: la API llama “LIMA - CERCADO” a lo que
+    el cliente escribe “Cercado de Lima”, y ninguno de los dos contiene al otro.
+    Con substring, cuanto más preciso era el cliente, peor iba: “cercado” a secas
+    sí matcheaba, “Cercado de Lima” no, y una clienta acabó en Google Maps
+    buscando el distrito en el que ya estaba.
+
+    Va de más a menos preciso, para que “San Juan de Miraflores” no caiga en
+    “Miraflores”: mismas palabras → subconjunto → substring.
+    """
+    if not _norm(query):
         return None
 
+    # El alias traduce el lugar informal (“2da de Palao”) al distrito canónico,
+    # pero NO le gana a un acierto exacto del texto crudo: “San Juan de
+    # Miraflores” contiene el alias “Miraflores”, y dejarlo mandar le cobraba a
+    # SJM la tarifa de Miraflores sin preguntar nada.
     alias = resolve_alias(query)
-    if alias:
-        q_alias = _norm(alias)
-        for d in districts:
-            name = _district_name(d)
-            if name and (name == q_alias or q_alias in name or name in q_alias):
-                return d
+    both = [alias, query] if alias else [query]
+    named = [(d, n) for d, n in ((d, _district_name(d)) for d in districts) if n]
 
-    for d in districts:
-        name = _district_name(d)
-        if not name:
-            continue
-        if name == q or q in name or name in q:
-            return d
+    same = lambda qt, nt: qt == nt          # noqa: E731
+    subset = lambda qt, nt: qt <= nt or nt <= qt  # noqa: E731
+
+    passes: list[tuple[list[str], Any]] = [([query], same)]
+    if alias:
+        passes.append(([alias], same))
+    passes.append((both, subset))
+
+    for cands, match in passes:
+        for cand in cands:
+            q_tokens = _tokens(cand)
+            if not q_tokens:
+                continue
+            for d, name in named:
+                if match(q_tokens, _tokens(name)):
+                    return d
+
+    # Última red: palabras pegadas (“sanisidro”). Compara por IGUALDAD, no por
+    # contención: “ate” vive dentro de “chocolates”, y la contención mandaba a
+    # Ate a quien solo pedía chocolates.
+    for cand in both:
+        squashed = _squash(cand)
+        words = {_squash(w) for w in _norm(cand).split()}
+        for d, name in named:
+            n = _squash(name)
+            if n and (n == squashed or n in words):
+                return d
     return None
 
 

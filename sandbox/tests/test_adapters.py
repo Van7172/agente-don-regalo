@@ -36,6 +36,64 @@ def test_los_distritos_reales_ahora_hacen_match():
         assert matched["nombre"]
 
 
+def _distritos():
+    return adapters.districts_payload(load("distritos"), RATE)["data"]
+
+
+def test_cercado_de_lima_aunque_la_api_lo_llame_al_reves():
+    """La API dice “LIMA - CERCADO”; el cliente escribe “Cercado de Lima”.
+
+    Ninguno contiene al otro, así que el match por substring fallaba justo con
+    el nombre completo: “cercado” a secas sí acertaba. Una clienta escribió
+    “Cercado de lima” y Regalito la mandó a Google Maps a buscar el distrito en
+    el que ya estaba; al segundo intento el asesor tuvo que entrar a mano.
+    """
+    distritos = _distritos()
+    for query in ("Cercado de lima", "cercado", "Centro de Lima", "lima centro"):
+        matched = match_district(query, distritos)
+        assert matched is not None, f"{query} debería resolver"
+        assert matched["nombre"] == "Lima - Cercado", query
+
+
+def test_no_confundir_un_distrito_con_otro_que_lo_contiene():
+    """Cobrar la tarifa equivocada es peor que preguntar.
+
+    “San Juan de Miraflores” contiene el alias “Miraflores”, y “Zárate”
+    contiene el alias “ate”: ambos resolvían al distrito corto y le cotizaban
+    al cliente una tarifa que no era la suya, sin avisar de nada.
+    """
+    distritos = _distritos()
+    esperado = {
+        "San Juan de Miraflores": "San Juan De Miraflores",
+        "sjm": "San Juan De Miraflores",
+        "Miraflores": "Miraflores",
+        "Lurigancho-Zarate": "Lurigancho-Zarate",
+        "Ate": "Ate",
+    }
+    for query, nombre in esperado.items():
+        matched = match_district(query, distritos)
+        assert matched is not None, f"{query} debería resolver"
+        assert matched["nombre"] == nombre, f"{query} cayó en {matched['nombre']}"
+
+
+def test_cada_distrito_real_se_reconoce_a_si_mismo():
+    """Red de barrido: los 41 nombres de la API, contra la lista de la API."""
+    distritos = _distritos()
+    for d in distritos:
+        matched = match_district(d["nombre"], distritos)
+        assert matched is not None, f"{d['nombre']} no se reconoce"
+        assert matched["nombre"] == d["nombre"], (
+            f"{d['nombre']} resuelve a {matched['nombre']}"
+        )
+
+
+def test_lo_que_no_es_un_distrito_no_inventa_uno():
+    """Sin match hay que preguntar, no adivinar: “ate” vive en “chocolates”."""
+    distritos = _distritos()
+    for query in ("chocolates", "un peluche grande", "Trujillo", "ramo de rosas"):
+        assert match_district(query, distritos) is None, query
+
+
 def test_la_tarifa_de_envio_llega_en_ambas_monedas():
     """La API entrega la tarifa en USD (`tarifa_envio_distrito`, moneda USD)."""
     crudo = load("distritos")["data"][0]
