@@ -89,6 +89,7 @@ async def upsert_inbound(
     media_url: Optional[str] = None,
     quoted_text: Optional[str] = None,
     quoted_wa_id: Optional[str] = None,
+    referral: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     return await _request(
         "POST",
@@ -103,6 +104,9 @@ async def upsert_inbound(
             # El id del mensaje citado: el CRM resuelve su texto (es quien guarda
             # los mensajes) y lo devuelve en `quoted_text`.
             "quoted_wa_id": quoted_wa_id,
+            # De qué anuncio viene el lead. Meta lo manda una sola vez, en el
+            # primer mensaje; el CRM lo fija y no lo pisa después.
+            "referral": referral,
             "direction": "inbound",
             "sender_type": "contact",
             "role": "user",
@@ -119,6 +123,7 @@ async def append_outbound(
     wa_message_id: Optional[str] = None,
     media_url: Optional[str] = None,
     quoted_text: Optional[str] = None,
+    quoted_media_url: Optional[str] = None,
 ) -> dict[str, Any]:
     return await _request(
         "POST",
@@ -132,6 +137,8 @@ async def append_outbound(
             "media_url": media_url,
             # El asesor respondió citando: el hilo del CRM debe mostrar la cita.
             "quoted_text": quoted_text,
+            # Si citó una foto, el texto es "[image]": hace falta la imagen.
+            "quoted_media_url": quoted_media_url,
         },
     )
 

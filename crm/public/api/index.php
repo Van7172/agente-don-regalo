@@ -103,8 +103,21 @@ try {
         // El texto lo tiene el CRM, así que lo resolvemos aquí y lo devolvemos:
         // el agente lo necesita para saber a qué producto se refiere el "quiero este".
         $quotedText = $body['quoted_text'] ?? null;
-        if ($quotedText === null && !empty($body['quoted_wa_id'])) {
-            $quotedText = Repository::findMessageTextByWaId((string) $body['quoted_wa_id']);
+        // Y su FOTO: el cliente suele responder a una imagen ("podría optar por
+        // esta opción?"), y el texto de una imagen es solo el marcador "[image]".
+        $quotedMediaUrl = null;
+        if (!empty($body['quoted_wa_id'])) {
+            $citado = Repository::findQuotedByWaId((string) $body['quoted_wa_id']);
+            if ($citado !== null) {
+                $quotedText = $quotedText ?? $citado['text'];
+                $quotedMediaUrl = $citado['media_url'];
+            }
+        }
+        // De qué anuncio viene el lead. Llega SOLO en el primer mensaje: si no
+        // se guarda ahora, el asesor abre "¡Hola! Quiero más información." sin
+        // saber que lo trajo un anuncio de desayunos.
+        if (!empty($body['referral']) && is_array($body['referral'])) {
+            Repository::setConversationAd($ids['conversationId'], $body['referral']);
         }
         $messageId = null;
         if (!empty($body['content'])) {
@@ -117,6 +130,7 @@ try {
                 'waMessageId' => $body['wa_message_id'] ?? null,
                 'mediaUrl' => $body['media_url'] ?? null,
                 'quotedText' => $quotedText,
+                'quotedMediaUrl' => $quotedMediaUrl,
             ]);
         }
         $conv = Repository::getConversation($ids['conversationId']);
@@ -159,6 +173,15 @@ try {
                     'sale' => isset($conv['sale']) && $conv['sale'] !== null
                         ? json_decode((string) $conv['sale'], true)
                         : null,
+                    // De qué anuncio vino el lead. Sin esto el asesor abre un
+                    // "¡Hola! Quiero más información." sin saber qué lo provocó.
+                    'ad' => !empty($conv['ad_source_id']) ? [
+                        'source_type' => $conv['ad_source_type'],
+                        'source_id' => $conv['ad_source_id'],
+                        'headline' => $conv['ad_headline'],
+                        'body' => $conv['ad_body'],
+                        'url' => $conv['ad_source_url'],
+                    ] : null,
                     'contact' => [
                         'wa_id' => $conv['wa_id'],
                         'name' => $conv['nombre_contact'],
@@ -193,6 +216,11 @@ try {
                         'media_kind' => $kind,
                         'media_external' => (bool) $isExternal,
                         'quoted_text' => $msg['quoted_text'],
+                        // La foto citada, resuelta igual que la del mensaje:
+                        // clave de storage o URL absoluta del catálogo.
+                        'quoted_media_url' => $msg['quoted_media_url'],
+                        'quoted_media_external' => !empty($msg['quoted_media_url'])
+                            && preg_match('#^https?://#i', (string) $msg['quoted_media_url']) === 1,
                         'wa_message_id' => $msg['wa_message_id'],
                         'created_at' => Repository::iso($msg['fecha_creacion']),
                     ];
@@ -225,6 +253,7 @@ try {
                 'mediaUrl' => $mediaUrl,
                 // Si el asesor respondió citando, el hilo debe mostrar la cita.
                 'quotedText' => $body['quoted_text'] ?? null,
+                'quotedMediaUrl' => $body['quoted_media_url'] ?? null,
             ]);
             Http::jsonOk(['ok' => true, 'message_id' => $messageId]);
         }
@@ -458,9 +487,12 @@ try {
         // Cloud API para que el cliente la vea en su WhatsApp, y se guarda en el
         // hilo del CRM para que el resto del equipo sepa a qué se respondía.
         $replyToWaId = trim((string) ($body['reply_to_wa_id'] ?? '')) ?: null;
-        $replyQuoted = $replyToWaId !== null
-            ? Repository::findMessageTextByWaId($replyToWaId)
+        $replyCitado = $replyToWaId !== null
+            ? Repository::findQuotedByWaId($replyToWaId)
             : null;
+        $replyQuoted = $replyCitado['text'] ?? null;
+        // El asesor también cita fotos (las suyas o las del cliente).
+        $replyQuotedMedia = $replyCitado['media_url'] ?? null;
 
         $outboxId = Repository::enqueueOutbox([
             'conversationId' => $convId,
@@ -503,6 +535,7 @@ try {
             'filename' => (string) ($body['filename'] ?? ''),
             'reply_to_wa_id' => $replyToWaId,
             'quoted_text' => $replyQuoted,
+            'quoted_media_url' => $replyQuotedMedia,
         ], JSON_UNESCAPED_UNICODE);
 
         $ch = curl_init($agentUrl . '/internal/outbox/send');

@@ -99,6 +99,14 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    productos sin pasar por el modelo. Dos menús como máximo y luego fotos: quien ya
    sabe lo que quiere no vuelve tras el tercer formulario. Ver
    `tests/test_menu_taxonomia.py`.
+   **El nivel se deduce del mensaje, nunca se asume.** La primera versión de esto
+   reescribía SIEMPRE con las categorías padre, y a un cliente que preguntó "¿Cuáles
+   son las opciones de flores disponibles?" le contestó con desayunos, peluches y
+   cestas: le borró de la respuesta lo único que había pedido. Si `match_category`
+   ve que ya nombró una categoría, el menú es el de SUS hijas (y si no tiene hijas
+   —Cestas, Peluches— van productos directos, sin menú). Ese matcher devuelve `None`
+   ante la duda a propósito: "quiero un regalo" NO es Regalos para Bebé y "arreglos"
+   es ambiguo entre Florales y Fúnebres.
 5. **Un paso determinista que no entiende NO puede repetirse igual.** La FSM del
    cierre era una función pura de `(paso, texto)`: al no entender devolvía los mismos
    bytes, y los devolvía para siempre. Una clienta recibió cuatro veces "No pude
@@ -180,6 +188,29 @@ python -m pytest tests/ -q       # 444 pasan, 2 skip, offline
   firma — sin él cualquiera inyecta mensajes), `WATCHDOG_ENABLED=1`, `ALERT_WHATSAPP`.
 - **CRM PHP**: hosting de Don Regalo, carpeta [`crm/`](crm/). El verde de venta
   cerrada, el sonido del handoff y los emojis viven aquí — hay que subir el CRM aparte.
+
+**De qué anuncio viene el lead.** Muchos chats abren con "¡Hola! Quiero más
+información.": no lo escribe el cliente, es el *mensaje predefinido* de un anuncio de
+Click-to-WhatsApp, y **toda la campaña comparte el mismo texto** (siete anuncios
+"PORTADA …" en DESAYUNOS | VENTAS), así que por el mensaje no se distingue cuál fue.
+Meta lo dice en un `referral` adjunto **solo al primer mensaje**; llegaba al webhook y
+se tiraba entero. Ahora `parser` lo captura, `upsert_inbound` lo manda y
+`Repository::setConversationAd` lo fija en `crm_conversations` — **una vez y sin
+pisar**: si el cliente vuelve meses después desde otro anuncio, el lead sigue siendo
+de quien lo trajo. El asesor lo ve al abrir el chat (tarjeta `ad-card`, con el copy
+que el cliente leyó antes de escribir). Ojo: **no es recuperable hacia atrás**, solo
+de la migración `007` en adelante. El *nombre* del anuncio ("PORTADA FAMILIA") NO
+viene en el payload — eso exige cruzar `source_id` con la Marketing API, que es
+también la única vía para saber si vino de Facebook o de Instagram.
+
+**Citar es texto Y foto.** El asesor manda un ramo, el cliente responde a ESA foto
+("podría optar por esta opción?") y la cita salía como el literal `[image]`: justo en
+el turno en que el lead elige, el vendedor era el único que no veía qué. El texto de
+una imagen sin caption ES ese marcador, así que guardar solo `quoted_text` no bastaba;
+ahora `Repository::findQuotedByWaId` devuelve texto **y** `media_url`, y se persiste en
+`quoted_media_url` (migración `008`). Cubre los dos sentidos —cliente citando y asesor
+citando— porque ambos pasan por ese resolvedor. La cita se **copia**, no se referencia:
+si el mensaje original se borra, debe seguir mostrando lo que el cliente vio.
 
 **Las migraciones SQL van primero.** [`crm/sql/`](crm/sql/) se corre a mano contra el
 MySQL del hosting, y el orden importa: SQL → CRM PHP → agente. Al revés, el agente

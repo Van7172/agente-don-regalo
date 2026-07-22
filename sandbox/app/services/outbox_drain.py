@@ -35,6 +35,7 @@ async def deliver_outbox(
     filename: str = "",
     reply_to_wa_id: str | None = None,
     quoted_text: str | None = None,
+    quoted_media_url: str | None = None,
 ) -> dict[str, Any]:
     """Envía a Meta y persiste el mensaje en el CRM. Lanza si falla.
 
@@ -116,6 +117,7 @@ async def deliver_outbox(
             wa_message_id=wa_mid,
             media_url=media_key,
             quoted_text=quoted_text,
+            quoted_media_url=quoted_media_url,
         )
         await crm_http.set_mode(conversation_id, "HUMAN")
 

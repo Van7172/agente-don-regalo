@@ -58,6 +58,7 @@
     fileInput: document.getElementById("file-input"),
     btnAttach: document.getElementById("btn-attach"),
     saleCard: document.getElementById("sale-card"),
+    adCard: document.getElementById("ad-card"),
     btnRecord: document.getElementById("btn-record"),
     msgMenu: document.getElementById("msg-menu"),
     replyBar: document.getElementById("reply-bar"),
@@ -426,16 +427,34 @@
    */
   function quotedMarkup(m) {
     const quoted = String(m.quoted_text || "").trim();
-    if (!quoted) return "";
+    // La foto citada. El asesor manda un ramo, el cliente responde a ESA foto
+    // ("podría optar por esta opción?") y antes aquí salía el literal "[image]":
+    // justo cuando el lead elige, el vendedor no veía qué había elegido. Si el
+    // asesor mandó varias fotos seguidas, era imposible de reconstruir.
+    const thumbSrc = mediaSrc({
+      media_url: m.quoted_media_url,
+      media_external: m.quoted_media_external,
+    });
+    const thumb = thumbSrc
+      ? `<a class="quoted-thumb" href="${esc(thumbSrc)}" target="_blank" rel="noopener">
+           <img src="${esc(thumbSrc)}" alt="Imagen citada" loading="lazy" />
+         </a>`
+      : "";
+
     // La cita de un producto trae la URL de la foto delante: no aporta al asesor.
     const clean = quoted
       .split("\n")
       .filter((line) => !/^\s*https?:\/\/\S+\s*$/.test(line))
       .join(" ")
       .trim();
-    if (!clean) return "";
-    const short = clean.length > 140 ? `${clean.slice(0, 137)}…` : clean;
-    return `<div class="quoted">${esc(short)}</div>`;
+    // Con miniatura, "[image]" sobra: la imagen ya dice lo que era.
+    const texto = clean && !isPlaceholder(clean) ? clean : thumb ? "Foto" : "";
+    if (!texto && !thumb) return "";
+
+    const short = texto.length > 140 ? `${texto.slice(0, 137)}…` : texto;
+    return `<div class="quoted${thumb ? " has-thumb" : ""}">
+      ${thumb}${short ? `<span class="quoted-txt">${esc(short)}</span>` : ""}
+    </div>`;
   }
 
   function bubble(m) {
@@ -606,6 +625,37 @@
     }
   }
 
+  /**
+   * De qué anuncio vino el lead.
+   *
+   * Varios clientes abren con "¡Hola! Quiero más información." y el asesor no
+   * sabe por qué: no lo escribió el cliente, es el mensaje predefinido de un
+   * anuncio de Click-to-WhatsApp. Y como toda la campaña comparte el mismo
+   * texto, por el mensaje es imposible saber cuál. Aquí se dice, con el copy
+   * que el cliente SÍ vio antes de escribir — que es el contexto que hacía
+   * falta: si vio "DESAYUNOS SORPRESA", viene por desayunos.
+   */
+  function adCard(ad) {
+    if (!ad) return "";
+    const titular = ad.headline ? esc(String(ad.headline)) : "";
+    const cuerpo = ad.body ? esc(String(ad.body)) : "";
+    const enlace = ad.url
+      ? `<a class="ad-link" href="${esc(String(ad.url))}" target="_blank" rel="noopener noreferrer">ver anuncio</a>`
+      : "";
+    return `
+      <div class="ad-card">
+        <div class="ad-head">📣 Vino de un anuncio ${enlace}</div>
+        ${titular ? `<div class="ad-headline">${titular}</div>` : ""}
+        ${cuerpo ? `<div class="ad-body">${cuerpo}</div>` : ""}
+      </div>`;
+  }
+
+  function repaintAdCard(ad) {
+    if (!el.adCard) return;
+    el.adCard.innerHTML = adCard(ad);
+    el.adCard.hidden = !ad;
+  }
+
   async function markSaleDelivered() {
     if (selectedId == null || !lastThread?.conv?.sale) return;
     const confirmed = window.confirm(
@@ -673,6 +723,7 @@
       el.saleCard.innerHTML = saleCard(conv.sale);
       el.saleCard.hidden = !conv.sale;
     }
+    repaintAdCard(conv.ad);
     el.chatBody.classList.toggle("is-sold", !!conv.sale);
 
     el.chatAvatar.className = `avatar ${avatarClass(conv.contact?.wa_id || conv.id)}`;

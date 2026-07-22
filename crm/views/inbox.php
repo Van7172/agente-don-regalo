@@ -96,6 +96,11 @@
         <!-- Venta cerrada por el agente: el pedido, ya listo, para que el
              vendedor no lo reconstruya leyendo el hilo. -->
         <div class="sale-card-wrap" id="sale-card" hidden></div>
+
+        <!-- El anuncio que trajo el lead. "¡Hola! Quiero más información." no lo
+             escribió el cliente: es el mensaje predefinido de un anuncio, y
+             varios anuncios comparten el mismo texto. Aquí se dice cuál fue. -->
+        <div class="ad-card-wrap" id="ad-card" hidden></div>
         <div class="thread" id="thread"></div>
 
         <!-- Bot al mando: sin composer, hay que tomar la conversación -->

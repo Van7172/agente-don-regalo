@@ -168,6 +168,9 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
         # este" respondiendo a un producto llegaba sin referencia — el bot volvía
         # a preguntar cuál de todos.
         quoted_wa_id=msg.quoted_wa_id,
+        # Solo llega en el primer mensaje del lead: si no se pasa aquí, el
+        # asesor nunca sabrá de qué anuncio vino.
+        referral=msg.referral,
     )
     quoted_text = (data.get("quoted_text") or "").strip() or None
     conv = data.get("conversation") or {}

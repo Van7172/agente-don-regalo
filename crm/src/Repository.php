@@ -135,6 +135,8 @@ final class Repository
         return Database::fetchOne(
             'SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support, c.last_message_at,
+                    c.ad_source_type, c.ad_source_id, c.ad_headline,
+                    c.ad_body, c.ad_source_url,
                     ct.wa_id, ct.nombre_contact,
                     s.valor_setting AS sale
              FROM crm_conversations c
@@ -152,7 +154,8 @@ final class Repository
         $limit = max(1, min(500, $limit));
         return Database::fetchAll(
             "SELECT id_message, id_conversation, direction_message, sender_type, role_message,
-                    wa_message_id, content_message, media_url, quoted_text, fecha_creacion
+                    wa_message_id, content_message, media_url,
+                    quoted_text, quoted_media_url, fecha_creacion
              FROM crm_messages
              WHERE id_conversation = :conversationId
              ORDER BY id_message ASC
@@ -169,21 +172,40 @@ final class Repository
      * mensajes. Sin resolverlo, un "quiero este" citando un producto llegaba sin
      * referencia y el bot volvía a preguntar cuál de todos.
      */
-    public static function findMessageTextByWaId(string $waMessageId): ?string
+    /**
+     * El mensaje citado: su texto Y su medio.
+     *
+     * Antes esto devolvía solo el texto, y el texto de una imagen sin caption es
+     * el marcador `[image]`. El cliente respondía a una foto señalando "podría
+     * optar por esta opción?" y el asesor veía `[image]`: justo en el momento en
+     * que el lead elige, el vendedor se quedaba sin saber qué había elegido.
+     *
+     * @return array{text: ?string, media_url: ?string}|null
+     */
+    public static function findQuotedByWaId(string $waMessageId): ?array
     {
         if ($waMessageId === '') {
             return null;
         }
         $row = Database::fetchOne(
-            'SELECT content_message FROM crm_messages
+            'SELECT content_message, media_url FROM crm_messages
              WHERE wa_message_id = :waId
              ORDER BY id_message DESC LIMIT 1',
             ['waId' => $waMessageId]
         );
-        if (!$row || $row['content_message'] === null) {
+        if (!$row) {
             return null;
         }
-        return mb_substr((string) $row['content_message'], 0, 400);
+        $text = $row['content_message'] !== null
+            ? mb_substr((string) $row['content_message'], 0, 400)
+            : null;
+        $media = (string) ($row['media_url'] ?? '');
+        return ['text' => $text, 'media_url' => $media !== '' ? $media : null];
+    }
+
+    public static function findMessageTextByWaId(string $waMessageId): ?string
+    {
+        return self::findQuotedByWaId($waMessageId)['text'] ?? null;
     }
 
     /** Ventana del filtro anti-duplicados del hilo, en segundos. */
@@ -242,6 +264,44 @@ final class Repository
         return $row ? (int) $row['id_message'] : null;
     }
 
+    /**
+     * Guarda de qué anuncio vino el lead. Se fija UNA vez y no se pisa.
+     *
+     * Meta manda el `referral` solo con el primer mensaje de la conversación,
+     * así que en la práctica esto se ejecuta una vez. La guarda de
+     * `ad_source_id IS NULL` es por si el cliente vuelve a escribir desde otro
+     * anuncio meses después: el lead es de quien lo trajo la primera vez, y
+     * sobrescribirlo le cambiaría la atribución al asesor bajo los pies.
+     */
+    public static function setConversationAd(int $conversationId, array $referral): void
+    {
+        $sourceId = (string) ($referral['source_id'] ?? '');
+        if ($sourceId === '') {
+            return; // sin id no hay anuncio que atribuir
+        }
+        Database::exec(
+            'UPDATE crm_conversations
+                SET ad_source_type = :type,
+                    ad_source_id   = :sourceId,
+                    ad_headline    = :headline,
+                    ad_body        = :body,
+                    ad_source_url  = :url,
+                    ad_ctwa_clid   = :clid,
+                    ad_captured_at = NOW()
+              WHERE id_conversation = :id
+                AND ad_source_id IS NULL',
+            [
+                'id' => $conversationId,
+                'type' => $referral['source_type'] ?? null,
+                'sourceId' => $sourceId,
+                'headline' => $referral['headline'] ?? null,
+                'body' => $referral['body'] ?? null,
+                'url' => $referral['source_url'] ?? null,
+                'clid' => $referral['ctwa_clid'] ?? null,
+            ]
+        );
+    }
+
     public static function addMessage(array $input): int
     {
         $duplicate = self::findDuplicateMessage($input);
@@ -258,10 +318,10 @@ final class Repository
         $id = Database::execute(
             'INSERT INTO crm_messages
               (id_conversation, direction_message, sender_type, role_message, wa_message_id,
-               content_message, media_url, quoted_text, raw_message)
+               content_message, media_url, quoted_text, quoted_media_url, raw_message)
              VALUES
               (:conversationId, :direction, :senderType, :role, :waMessageId,
-               :content, :mediaUrl, :quotedText, :raw)',
+               :content, :mediaUrl, :quotedText, :quotedMediaUrl, :raw)',
             [
                 'conversationId' => $input['conversationId'],
                 'direction' => $input['direction'],
@@ -271,6 +331,9 @@ final class Repository
                 'content' => $input['content'],
                 'mediaUrl' => $input['mediaUrl'] ?? null,
                 'quotedText' => $input['quotedText'] ?? null,
+                // La foto que el cliente señaló al responder: sin esto la cita
+                // de una imagen sale como el literal "[image]".
+                'quotedMediaUrl' => $input['quotedMediaUrl'] ?? null,
                 'raw' => isset($input['raw']) ? json_encode($input['raw'], JSON_UNESCAPED_UNICODE) : null,
             ]
         );

@@ -16,6 +16,9 @@ class InboundMessage:
     mime_type: str | None = None
     caption: str = ""
     quoted_wa_id: str | None = None  # context.id del mensaje citado
+    # De qué anuncio viene el lead (Click-to-WhatsApp). Meta lo adjunta SOLO al
+    # primer mensaje de la conversación: si no se captura aquí, se pierde.
+    referral: dict[str, Any] | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -72,6 +75,12 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[InboundMessage]:
                 context = msg.get("context") or {}
                 quoted_wa_id = context.get("id")
 
+                # Anuncio de origen. Puede venir suelto o dentro de `context`
+                # según el tipo de mensaje, así que se miran los dos sitios.
+                referral = msg.get("referral") or context.get("referral")
+                if not isinstance(referral, dict) or not referral:
+                    referral = None
+
                 out.append(
                     InboundMessage(
                         wa_id=wa_id,
@@ -83,6 +92,7 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[InboundMessage]:
                         mime_type=mime,
                         caption=caption or "",
                         quoted_wa_id=quoted_wa_id,
+                        referral=referral,
                         raw=msg,
                     )
                 )
