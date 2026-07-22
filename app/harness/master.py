@@ -24,7 +24,13 @@ from app.harness.checkout import (
     resolve_chosen_product,
     wants_checkout,
 )
-from app.harness.contracts import AgentResult, EscalateReason, Product, Turn
+from app.harness.contracts import (
+    AgentResult,
+    EscalateReason,
+    Product,
+    Turn,
+    extract_products,
+)
 from app.harness.coverage import resolve_coverage
 from app.harness.invariants import check_reply
 from app.harness.orders import create_from_state as create_temporal_order
@@ -35,6 +41,13 @@ from app.harness.render import render_product_list
 from app.harness.router import classify
 from app.harness.state import ConversationState, load_state, save_state
 from app.harness.stock import is_available, unavailable_message
+from app.harness.taxonomy import (
+    MAX_MENU_DEPTH,
+    as_state,
+    parse_navegacion,
+    render_menu,
+    resolve_option,
+)
 from app.harness.trace import Trace
 from app.prompts.compose import build_system
 from app.prompts.playbooks import WELCOME
@@ -121,6 +134,11 @@ def _reduce(state: ConversationState, result: AgentResult) -> ConversationState:
                 {"id_producto": p.id_producto, "nombre": p.nombre}
                 for p in result.artifacts
             ],
+            # Ya hay productos en pantalla: el menú anterior dejó de estar
+            # vigente y su numeración ahora es la de los productos. Sin esto,
+            # un "2" sobre el listado se resolvería contra el menú viejo.
+            "recent_options": [],
+            "menu_depth": 0,
         })
 
     if result.escalate is not None:
@@ -294,8 +312,91 @@ async def _handle(
     if intent == "product_detail":
         return await _handle_detail(turn, state, **ctx)
 
+    # ── Catálogo: si responde a un menú NUESTRO, se resuelve en código ──
+    if intent == "catalog_search":
+        respondido = await _answer_menu(turn, state)
+        if respondido is not None:
+            return respondido
+
     # ── Resto: especialista LLM con toolset acotado ───────────────
     return await _run_specialty(intent, turn, state, **ctx)
+
+
+async def _answer_menu(turn: Turn, state: ConversationState) -> AgentResult | None:
+    """El cliente eligió una opción del menú que le ofrecimos. Sin LLM.
+
+    El modelo no puede resolver esto de forma fiable porque el menú lo escribió
+    él: a Yudith le ofreció siete tipos de planta (existen tres) y, al elegir
+    uno, seis productos inventados. Si la numeración la pone el código, el "7"
+    del cliente es un slug, y con un slug ya no hay nada que preguntar.
+
+    Devuelve `None` si esto no aplica (no había menú, o no está claro a qué
+    opción se refiere): entonces manda el especialista de siempre.
+    """
+    # Dentro del cierre un "2" es un horario, no una categoría. El menú no
+    # debería seguir vivo a esas alturas, pero no se adivina sobre el pedido.
+    if state.checkout_step not in ("idle", ""):
+        return None
+
+    options = state.recent_options or []
+    if not options:
+        return None
+    chosen = resolve_option(turn.text, options)
+    if chosen is None:
+        return None
+
+    hijos = chosen.get("hijos") or []
+    nombre = chosen["nombre"]
+
+    # Un segundo menú solo si hay hijas REALES y aún queda paso. Las categorías
+    # sin hijas (Cestas, Peluches) van directas a productos, como el playbook
+    # ya pedía y el modelo no siempre hacía.
+    if hijos and state.menu_depth < MAX_MENU_DEPTH:
+        return AgentResult(
+            user_facing=render_menu(
+                hijos,
+                f"¡Buena elección! 🎁 Dentro de *{nombre}* tenemos esto. "
+                "Responde con el número:",
+            ),
+            state_patch={
+                "recent_options": as_state(hijos),
+                "menu_depth": state.menu_depth + 1,
+            },
+        )
+
+    # Con el slug en la mano no se pregunta más: productos.
+    productos = await _productos_de(chosen["slug"])
+    if not productos:
+        # Sin stock en esa rama, el modelo busca alternativas con contexto.
+        log.info("[catalog] %s (%s) no devolvió productos", nombre, chosen["slug"])
+        return None
+
+    return AgentResult(
+        user_facing=compose_product_reply(
+            f"¡Genial! Te muestro nuestros *{nombre}* 🎁", productos
+        ),
+        artifacts=productos,
+        state_patch={"recent_options": [], "menu_depth": 0},
+    )
+
+
+async def _productos_de(slug: str) -> list[Product]:
+    """Los productos REALES de una categoría, por su slug de la taxonomía."""
+    try:
+        payload = json.loads(await execute_tool("catalogo_categoria", {"slug": slug}))
+    except Exception as err:
+        log.warning("[catalog] no pude traer los productos de %s: %s", slug, err)
+        return []
+    return extract_products(payload)
+
+
+async def _taxonomia() -> list[dict]:
+    """Las categorías padre reales. `explorar_catalogo` ya viene cacheado."""
+    try:
+        return parse_navegacion(json.loads(await execute_tool("explorar_catalogo", {})))
+    except Exception as err:
+        log.warning("[catalog] no pude traer la taxonomía: %s", err)
+        return []
 
 
 async def _handle_escalate(
@@ -565,9 +666,64 @@ async def _run_specialty(
     if spec.name in ("catalog", "detail") and result.artifacts:
         result.user_facing = compose_product_reply(result.user_facing, result.artifacts)
 
+    # El modelo ofreció un menú de categorías en vez de productos. Se le deja
+    # (a veces toca preguntar), pero la lista la reescribe el código: así los
+    # nombres son los reales y la numeración es la que luego sabemos resolver.
+    if spec.name == "catalog" and not result.artifacts:
+        await _own_the_menu(result, state)
+
     _capture_choice(spec.name, turn, state, result)
 
     return result
+
+
+async def _own_the_menu(result: AgentResult, state: ConversationState) -> None:
+    """Reescribe el menú del modelo con la taxonomía real, y lo recuerda.
+
+    Dos motivos, los dos vistos en producción. Uno: los nombres inventados
+    ("Plantas de interior", "Terrarios y kokedamas") mandan al cliente a pedir
+    cosas que no vendemos. Dos, y más sutil: si la numeración la pone el modelo
+    y no la guardamos, el "7" del cliente vuelve a depender de que el modelo
+    recuerde su propio menú. Guardarla es lo que permite que el turno siguiente
+    lo resuelva `_answer_menu` sin preguntar otra vez.
+    """
+    if not _looks_like_menu(result.user_facing):
+        return
+    options = await _taxonomia()
+    if not options:
+        return
+
+    intro = _intro_of(result.user_facing) or "¡Perfecto! 🎁 ¿Qué te interesa?"
+    result.user_facing = render_menu(options, f"{intro} Responde con el número:")
+    result.state_patch = {
+        **result.state_patch,
+        "recent_options": as_state(options),
+        "menu_depth": 1,
+    }
+
+
+_MENU_LINE = re.compile(r"^\s*\d+\s*[).\-]\s*\S", re.M)
+
+
+def _looks_like_menu(reply: str | None) -> bool:
+    """¿Es una lista numerada de opciones? Tres o más renglones numerados.
+
+    Con menos no lo tocamos: "1) Ver fotos 2) Ver otras opciones" es una
+    pregunta legítima del modelo, no un menú de categorías que debamos suplantar.
+    """
+    return bool(reply) and len(_MENU_LINE.findall(reply)) >= 3
+
+
+def _intro_of(reply: str | None) -> str:
+    """La frase del modelo antes de la lista; el tono suyo, los datos nuestros."""
+    if not reply:
+        return ""
+    cabeza = _MENU_LINE.split(reply)[0] if reply else ""
+    primera = (cabeza or reply).strip().splitlines()
+    linea = primera[0].strip() if primera else ""
+    # Sin la coletilla de "responde con el número", que la añadimos nosotros.
+    linea = re.sub(r"\s*responde con el n[uú]mero\s*:?\s*$", "", linea, flags=re.I)
+    return linea.rstrip(":").strip()
 
 
 def _capture_choice(

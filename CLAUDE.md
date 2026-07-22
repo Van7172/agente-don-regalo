@@ -87,6 +87,18 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    prompt se desactualiza Y le da al modelo de dónde extrapolar: inventó "desayuno
    clásico/premium", "globos y kits". Una sola puerta a la taxonomía; nada de
    `listar_categorias` compitiendo.
+   Corolario (22-07): **el menú tampoco lo escribe el modelo.** Tenerlo prohibido en
+   el playbook no bastó — a una clienta le ofreció siete "tipos de planta" (existen
+   tres: Orquideas, Suculentas, Terrarios) y luego seis terrarios inventados, con
+   descripción y sin precio, y acabó ofreciéndole un asesor para enseñarle fotos de
+   un producto que no existe: cuatro menús, cero productos, veinte minutos. Ahora la
+   lista la arma [`taxonomy.render_menu`](app/harness/taxonomy.py) desde el payload y
+   **la numeración es del código**, que es lo que permite resolver el "7" del cliente
+   sin preguntarle: `master._answer_menu` lo traduce a slug y, si esa rama no tiene
+   hijas o ya se gastaron los dos menús (`MAX_MENU_DEPTH`), llama a la API y muestra
+   productos sin pasar por el modelo. Dos menús como máximo y luego fotos: quien ya
+   sabe lo que quiere no vuelve tras el tercer formulario. Ver
+   `tests/test_menu_taxonomia.py`.
 5. **Un paso determinista que no entiende NO puede repetirse igual.** La FSM del
    cierre era una función pura de `(paso, texto)`: al no entender devolvía los mismos
    bytes, y los devolvía para siempre. Una clienta recibió cuatro veces "No pude

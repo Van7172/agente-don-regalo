@@ -61,6 +61,15 @@ class ConversationState:
     # y se fue ("ya no deseo el pedido por q no entienden"). Con el contador cada
     # reintento cambia de texto y el tercero cede el chat a un humano.
     step_retries: int = 0
+    # El último menú de categorías que se le ofreció al cliente, con el slug de
+    # cada opción y en el MISMO orden en que se numeró. Sin esto, el "7" del
+    # cliente no significa nada para el código y había que fiarse de que el
+    # modelo recordara su propio menú — que fue justo lo que falló.
+    recent_options: list[dict] = field(default_factory=list)
+    # Cuántos menús seguidos lleva sin ver un solo producto. A los dos, se
+    # muestran productos con lo que haya: preguntar una tercera vez es como se
+    # pierde a quien ya sabía lo que quería.
+    menu_depth: int = 0
     shown_product_ids: list[int] = field(default_factory=list)
     # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
     # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".

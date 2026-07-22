@@ -1,0 +1,442 @@
+{
+ "success": true,
+ "message": "OK",
+ "data": {
+  "instrucciones_agente": [
+   "Usa SOLO los nombres y slugs de este payload para ofrecer opciones al cliente.",
+   "No inventes subtipos (ej. desayuno dulce/salado/gourmet) si no aparecen aquí.",
+   "Flujo sugerido: 1) categoría padre → 2) subcategoría o landing → 3) GET /productos/buscar con categoria, filtro o landing.",
+   "categorias.subcategorias = hijos reales en BD (ej. Desayunos Criollos).",
+   "categorias.landings = cruces SEO categoría×filtro (ej. Desayunos de Cumpleaños). Usar query landing=slug.",
+   "filtros = facetas transversales (para hombre, girasoles, etc.). Usar query filtro=slug.",
+   "ocasiones = etiquetas de productos_ocasiones (id_ocasion). Usar query ocasion=id."
+  ],
+  "categorias": [
+   {
+    "id_categoria": 1,
+    "nombre": "Arreglos Florales",
+    "url_categoria": "arreglos-florales",
+    "es_temporal": false,
+    "subcategorias": [
+     {
+      "id_categoria": 15,
+      "nombre": "Arreglos Florales Variados",
+      "url_categoria": "arreglos-florales-variados",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 14,
+      "nombre": "Arreglos en Canasta",
+      "url_categoria": "en-canasta",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 13,
+      "nombre": "Arreglos Florales con Peluches",
+      "url_categoria": "arreglos-florales-con-peluche",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 7,
+      "nombre": "Cajas",
+      "url_categoria": "cajas",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 25,
+      "nombre": "Corporativos",
+      "url_categoria": "corporativos",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 8,
+      "nombre": "Ramos",
+      "url_categoria": "ramos-de-flores",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 6,
+      "nombre": "Floreros",
+      "url_categoria": "floreros",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 106,
+      "nombre": "Arreglos Florales de Navidad",
+      "url_categoria": "arreglos-florales-de-navidad",
+      "es_temporal": false
+     }
+    ],
+    "landings": [
+     {
+      "id_categoria_filtro": 6,
+      "nombre": "Arreglos Florales de Aniversario",
+      "slug_landing": "arreglos-florales-de-aniversario",
+      "id_categoria": 1,
+      "nombre_categoria": "Arreglos Florales",
+      "url_categoria": "arreglos-florales",
+      "id_filtro": 6,
+      "nombre_filtro": "Regalos para Aniversario",
+      "url_filtro": "aniversario",
+      "como_buscar": "GET /productos/buscar?landing=arreglos-florales-de-aniversario"
+     },
+     {
+      "id_categoria_filtro": 5,
+      "nombre": "Arreglos Florales de Cumpleaños",
+      "slug_landing": "arreglos-florales-de-cumpleanos",
+      "id_categoria": 1,
+      "nombre_categoria": "Arreglos Florales",
+      "url_categoria": "arreglos-florales",
+      "id_filtro": 5,
+      "nombre_filtro": "Regalos para Cumpleaños",
+      "url_filtro": "cumpleanos",
+      "como_buscar": "GET /productos/buscar?landing=arreglos-florales-de-cumpleanos"
+     },
+     {
+      "id_categoria_filtro": 9,
+      "nombre": "Arreglos Florales para Nacimiento",
+      "slug_landing": "arreglos-florales-para-nacimiento",
+      "id_categoria": 1,
+      "nombre_categoria": "Arreglos Florales",
+      "url_categoria": "arreglos-florales",
+      "id_filtro": 13,
+      "nombre_filtro": "Regalos para Nacimientos",
+      "url_filtro": "nacimiento",
+      "como_buscar": "GET /productos/buscar?landing=arreglos-florales-para-nacimiento"
+     }
+    ]
+   },
+   {
+    "id_categoria": 2,
+    "nombre": "Desayunos",
+    "url_categoria": "desayunos",
+    "es_temporal": false,
+    "subcategorias": [
+     {
+      "id_categoria": 9,
+      "nombre": "Desayunos Criollos",
+      "url_categoria": "desayunos-criollos",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 11,
+      "nombre": "Desayunos de Amor",
+      "url_categoria": "desayunos-de-amor",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 10,
+      "nombre": "Desayunos Light",
+      "url_categoria": "desayunos-light",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 12,
+      "nombre": "Desayunos Temáticos",
+      "url_categoria": "desayunos-tematicos",
+      "es_temporal": false
+     }
+    ],
+    "landings": [
+     {
+      "id_categoria_filtro": 4,
+      "nombre": "Desayunos de Cumpleaños",
+      "slug_landing": "desayunos-de-cumpleanos",
+      "id_categoria": 2,
+      "nombre_categoria": "Desayunos",
+      "url_categoria": "desayunos",
+      "id_filtro": 5,
+      "nombre_filtro": "Regalos para Cumpleaños",
+      "url_filtro": "cumpleanos",
+      "como_buscar": "GET /productos/buscar?landing=desayunos-de-cumpleanos"
+     },
+     {
+      "id_categoria_filtro": 10,
+      "nombre": "Desayunos para Niños",
+      "slug_landing": "desayunos-delivery-para-ninos",
+      "id_categoria": 2,
+      "nombre_categoria": "Desayunos",
+      "url_categoria": "desayunos",
+      "id_filtro": 14,
+      "nombre_filtro": "Regalos para Niños",
+      "url_filtro": "regalos-para-ninos",
+      "como_buscar": "GET /productos/buscar?landing=desayunos-delivery-para-ninos"
+     }
+    ]
+   },
+   {
+    "id_categoria": 16,
+    "nombre": "Arreglos Fúnebres",
+    "url_categoria": "arreglos-funebres",
+    "es_temporal": false,
+    "subcategorias": [
+     {
+      "id_categoria": 19,
+      "nombre": "Cruces Fúnebres",
+      "url_categoria": "cruces-funebres",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 17,
+      "nombre": "Lágrimas Fúnebres",
+      "url_categoria": "lagrimas-funebres",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 18,
+      "nombre": "Coronas Fúnebres",
+      "url_categoria": "coronas-para-difuntos",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 20,
+      "nombre": "Mantos Fúnebres",
+      "url_categoria": "mantos-funebres",
+      "es_temporal": false
+     }
+    ],
+    "landings": []
+   },
+   {
+    "id_categoria": 5,
+    "nombre": "Peluches",
+    "url_categoria": "peluches",
+    "es_temporal": false,
+    "subcategorias": [],
+    "landings": []
+   },
+   {
+    "id_categoria": 61,
+    "nombre": "Regalos para Bebé",
+    "url_categoria": "regalo-para-bebe",
+    "es_temporal": false,
+    "subcategorias": [],
+    "landings": []
+   },
+   {
+    "id_categoria": 3,
+    "nombre": "Cestas",
+    "url_categoria": "cestas",
+    "es_temporal": false,
+    "subcategorias": [],
+    "landings": []
+   },
+   {
+    "id_categoria": 26,
+    "nombre": "Plantas",
+    "url_categoria": "plantas",
+    "es_temporal": false,
+    "subcategorias": [
+     {
+      "id_categoria": 30,
+      "nombre": "Orquideas",
+      "url_categoria": "orquideas",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 31,
+      "nombre": "Suculentas",
+      "url_categoria": "suculentas",
+      "es_temporal": false
+     },
+     {
+      "id_categoria": 29,
+      "nombre": "Terrarios",
+      "url_categoria": "terrarios",
+      "es_temporal": false
+     }
+    ],
+    "landings": []
+   }
+  ],
+  "filtros": [
+   {
+    "id_filtro": 1,
+    "url_filtro": "destinatario",
+    "nombre": "Destinatario",
+    "subfiltros": [
+     {
+      "id_filtro": 2,
+      "nombre": "Regalos Para Hombre",
+      "url_filtro": "para-hombre"
+     },
+     {
+      "id_filtro": 3,
+      "nombre": "Regalos Para Mujer",
+      "url_filtro": "para-mujer"
+     },
+     {
+      "id_filtro": 14,
+      "nombre": "Regalos para Niños",
+      "url_filtro": "regalos-para-ninos"
+     }
+    ]
+   },
+   {
+    "id_filtro": 8,
+    "url_filtro": "flores",
+    "nombre": "Flores",
+    "subfiltros": [
+     {
+      "id_filtro": 9,
+      "nombre": "Girasoles",
+      "url_filtro": "girasoles"
+     },
+     {
+      "id_filtro": 10,
+      "nombre": "Liliums",
+      "url_filtro": "liliums"
+     },
+     {
+      "id_filtro": 15,
+      "nombre": "Orquideas",
+      "url_filtro": "orquideas"
+     },
+     {
+      "id_filtro": 11,
+      "nombre": "Rosas",
+      "url_filtro": "rosas"
+     },
+     {
+      "id_filtro": 12,
+      "nombre": "Tulipanes",
+      "url_filtro": "tulipanes"
+     }
+    ]
+   },
+   {
+    "id_filtro": 4,
+    "url_filtro": "ocasion",
+    "nombre": "Ocasion",
+    "subfiltros": [
+     {
+      "id_filtro": 7,
+      "nombre": "Condolencias",
+      "url_filtro": "condolencias"
+     },
+     {
+      "id_filtro": 6,
+      "nombre": "Regalos para Aniversario",
+      "url_filtro": "aniversario"
+     },
+     {
+      "id_filtro": 5,
+      "nombre": "Regalos para Cumpleaños",
+      "url_filtro": "cumpleanos"
+     },
+     {
+      "id_filtro": 13,
+      "nombre": "Regalos para Nacimientos",
+      "url_filtro": "nacimiento"
+     }
+    ]
+   }
+  ],
+  "ocasiones": [
+   {
+    "id_ocasion": 7,
+    "nombre": "Otros",
+    "descripcion": "",
+    "como_buscar": "GET /productos/buscar?ocasion=7"
+   },
+   {
+    "id_ocasion": 1,
+    "nombre": "Cumpleaños",
+    "descripcion": "Regalos para cumpleaños",
+    "como_buscar": "GET /productos/buscar?ocasion=1"
+   },
+   {
+    "id_ocasion": 2,
+    "nombre": "Aniversario",
+    "descripcion": "Regalos para aniversario",
+    "como_buscar": "GET /productos/buscar?ocasion=2"
+   },
+   {
+    "id_ocasion": 3,
+    "nombre": "Felicitación",
+    "descripcion": "Regalos para Felicitación",
+    "como_buscar": "GET /productos/buscar?ocasion=3"
+   },
+   {
+    "id_ocasion": 4,
+    "nombre": "Nacimiento",
+    "descripcion": "Regalos para Nacimiento",
+    "como_buscar": "GET /productos/buscar?ocasion=4"
+   },
+   {
+    "id_ocasion": 5,
+    "nombre": "Agradecimiento",
+    "descripcion": "",
+    "como_buscar": "GET /productos/buscar?ocasion=5"
+   },
+   {
+    "id_ocasion": 6,
+    "nombre": "Negocios",
+    "descripcion": "",
+    "como_buscar": "GET /productos/buscar?ocasion=6"
+   }
+  ],
+  "landings": [
+   {
+    "id_categoria_filtro": 6,
+    "nombre": "Arreglos Florales de Aniversario",
+    "slug_landing": "arreglos-florales-de-aniversario",
+    "id_categoria": 1,
+    "nombre_categoria": "Arreglos Florales",
+    "url_categoria": "arreglos-florales",
+    "id_filtro": 6,
+    "nombre_filtro": "Regalos para Aniversario",
+    "url_filtro": "aniversario",
+    "como_buscar": "GET /productos/buscar?landing=arreglos-florales-de-aniversario"
+   },
+   {
+    "id_categoria_filtro": 5,
+    "nombre": "Arreglos Florales de Cumpleaños",
+    "slug_landing": "arreglos-florales-de-cumpleanos",
+    "id_categoria": 1,
+    "nombre_categoria": "Arreglos Florales",
+    "url_categoria": "arreglos-florales",
+    "id_filtro": 5,
+    "nombre_filtro": "Regalos para Cumpleaños",
+    "url_filtro": "cumpleanos",
+    "como_buscar": "GET /productos/buscar?landing=arreglos-florales-de-cumpleanos"
+   },
+   {
+    "id_categoria_filtro": 9,
+    "nombre": "Arreglos Florales para Nacimiento",
+    "slug_landing": "arreglos-florales-para-nacimiento",
+    "id_categoria": 1,
+    "nombre_categoria": "Arreglos Florales",
+    "url_categoria": "arreglos-florales",
+    "id_filtro": 13,
+    "nombre_filtro": "Regalos para Nacimientos",
+    "url_filtro": "nacimiento",
+    "como_buscar": "GET /productos/buscar?landing=arreglos-florales-para-nacimiento"
+   },
+   {
+    "id_categoria_filtro": 4,
+    "nombre": "Desayunos de Cumpleaños",
+    "slug_landing": "desayunos-de-cumpleanos",
+    "id_categoria": 2,
+    "nombre_categoria": "Desayunos",
+    "url_categoria": "desayunos",
+    "id_filtro": 5,
+    "nombre_filtro": "Regalos para Cumpleaños",
+    "url_filtro": "cumpleanos",
+    "como_buscar": "GET /productos/buscar?landing=desayunos-de-cumpleanos"
+   },
+   {
+    "id_categoria_filtro": 10,
+    "nombre": "Desayunos para Niños",
+    "slug_landing": "desayunos-delivery-para-ninos",
+    "id_categoria": 2,
+    "nombre_categoria": "Desayunos",
+    "url_categoria": "desayunos",
+    "id_filtro": 14,
+    "nombre_filtro": "Regalos para Niños",
+    "url_filtro": "regalos-para-ninos",
+    "como_buscar": "GET /productos/buscar?landing=desayunos-delivery-para-ninos"
+   }
+  ]
+ }
+}
