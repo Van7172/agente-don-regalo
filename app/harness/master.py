@@ -44,6 +44,7 @@ from app.harness.stock import is_available, unavailable_message
 from app.harness.taxonomy import (
     MAX_MENU_DEPTH,
     as_state,
+    match_category,
     parse_navegacion,
     render_menu,
     resolve_option,
@@ -670,14 +671,16 @@ async def _run_specialty(
     # (a veces toca preguntar), pero la lista la reescribe el código: así los
     # nombres son los reales y la numeración es la que luego sabemos resolver.
     if spec.name == "catalog" and not result.artifacts:
-        await _own_the_menu(result, state)
+        await _own_the_menu(result, turn, state)
 
     _capture_choice(spec.name, turn, state, result)
 
     return result
 
 
-async def _own_the_menu(result: AgentResult, state: ConversationState) -> None:
+async def _own_the_menu(
+    result: AgentResult, turn: Turn, state: ConversationState
+) -> None:
     """Reescribe el menú del modelo con la taxonomía real, y lo recuerda.
 
     Dos motivos, los dos vistos en producción. Uno: los nombres inventados
@@ -686,6 +689,13 @@ async def _own_the_menu(result: AgentResult, state: ConversationState) -> None:
     y no la guardamos, el "7" del cliente vuelve a depender de que el modelo
     recuerde su propio menú. Guardarla es lo que permite que el turno siguiente
     lo resuelva `_answer_menu` sin preguntar otra vez.
+
+    **El nivel se deduce del mensaje, no se asume.** La primera versión de esto
+    reescribía SIEMPRE con las categorías padre, y a un cliente que preguntó
+    "¿Cuáles son las opciones de flores disponibles?" le contestó con desayunos,
+    peluches y cestas: le borró de la respuesta lo único que había pedido. Si ya
+    nombró una categoría, el menú es el de SUS hijas — y si esa categoría no
+    tiene hijas, no hay nada que preguntar y se muestran productos.
     """
     if not _looks_like_menu(result.user_facing):
         return
@@ -693,12 +703,31 @@ async def _own_the_menu(result: AgentResult, state: ConversationState) -> None:
     if not options:
         return
 
+    # ¿El cliente ya dijo de qué categoría habla? Entonces no se le vuelve a
+    # preguntar por la categoría.
+    padre = match_category(turn.text, options)
+    if padre is not None and not padre["hijos"]:
+        # Cestas, Peluches, Regalos para Bebé: sin hijas, un menú sobra.
+        productos = await _productos_de(padre["slug"])
+        if productos:
+            result.artifacts = productos
+            result.user_facing = compose_product_reply(
+                f"¡Genial! Te muestro nuestros *{padre['nombre']}* 🎁", productos
+            )
+            result.state_patch = {
+                **result.state_patch, "recent_options": [], "menu_depth": 0,
+            }
+            return
+
+    nivel = padre["hijos"] if padre is not None and padre["hijos"] else options
+    profundidad = 2 if nivel is not options else 1
+
     intro = _intro_of(result.user_facing) or "¡Perfecto! 🎁 ¿Qué te interesa?"
-    result.user_facing = render_menu(options, f"{intro} Responde con el número:")
+    result.user_facing = render_menu(nivel, f"{intro} Responde con el número:")
     result.state_patch = {
         **result.state_patch,
-        "recent_options": as_state(options),
-        "menu_depth": 1,
+        "recent_options": as_state(nivel),
+        "menu_depth": profundidad,
     }
 
 
@@ -721,9 +750,19 @@ def _intro_of(reply: str | None) -> str:
     cabeza = _MENU_LINE.split(reply)[0] if reply else ""
     primera = (cabeza or reply).strip().splitlines()
     linea = primera[0].strip() if primera else ""
-    # Sin la coletilla de "responde con el número", que la añadimos nosotros.
-    linea = re.sub(r"\s*responde con el n[uú]mero\s*:?\s*$", "", linea, flags=re.I)
+    # Sin la coletilla de "elige el número" / "responde con el número": la
+    # ponemos nosotros al final, y sin quitarla salía duplicada de verdad
+    # ("¿Qué tipo de flores buscas? Elige el número Responde con el número:").
+    linea = _COLETILLA.sub("", linea)
     return linea.rstrip(":").strip()
+
+
+_COLETILLA = re.compile(
+    r"[\s,.;:]*(?:responde|contesta|elige|escoge|indica|dime|selecciona)"
+    r"(?:me)?\s+(?:con\s+)?(?:el\s+|la\s+|tu\s+)?"
+    r"(?:n[uú]mero|opci[oó]n)\s*:?\s*$",
+    re.I,
+)
 
 
 def _capture_choice(

@@ -135,6 +135,56 @@ def resolve_option(text: str, options: list[dict]) -> dict | None:
     return None
 
 
+# Palabras que en una tienda de regalos no distinguen nada: casi todo mensaje
+# las trae. Sin esta lista, "quiero un regalo" cae en "Regalos para Bebé".
+_GENERICOS = frozenset({
+    "regalo", "regalos", "detalle", "detalles", "sorpresa", "sorpresas",
+    "opcion", "opciones", "producto", "productos", "precio", "precios",
+})
+
+
+# Conectores que no distinguen una categoría de otra.
+_STOPWORDS = frozenset({"de", "del", "la", "el", "los", "las", "y", "para", "con"})
+
+
+def _tokens(s: str) -> frozenset[str]:
+    """Palabras significativas, sin tildes, puntuación ni conectores."""
+    return frozenset(
+        w for w in re.split(r"[^\w]+", _norm(s)) if w and w not in _STOPWORDS
+    )
+
+
+def _raiz(palabra: str) -> str:
+    """Las 4 primeras letras. El cliente dice "flores"; la categoría se llama
+    "Arreglos **Florales**", y ninguna forma contiene a la otra."""
+    return palabra[:4]
+
+
+def match_category(text: str, options: list[dict]) -> dict | None:
+    """¿El cliente ya nombró una categoría? "flores" → Arreglos Florales.
+
+    Existe porque preguntarle "¿qué categoría te interesa?" a quien acaba de
+    decir "flores" es hacerle repetir lo que ya dijo — y encima ofreciéndole
+    desayunos y peluches, que no tienen nada que ver con lo que pidió.
+
+    Devuelve `None` si hay dudas. Un "arreglos" a secas casa con Florales y con
+    Fúnebres: ahí preguntar es lo correcto, y equivocarse sería grave.
+    """
+    consulta = _tokens(text) - _GENERICOS
+    if not consulta:
+        return None
+
+    hits = [
+        o for o in options
+        if any(
+            len(a) >= 4 and len(b) >= 4 and _raiz(a) == _raiz(b)
+            for a in consulta
+            for b in _tokens(o["nombre"]) - _GENERICOS
+        )
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def as_state(options: list[dict]) -> list[dict]:
     """Lo mínimo que hay que recordar del menú para resolver la respuesta."""
     return [

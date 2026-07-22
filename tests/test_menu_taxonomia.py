@@ -208,7 +208,7 @@ async def test_el_menu_del_modelo_se_reescribe_con_la_taxonomia_real(sin_red):
             "1) Flores y arreglos\n2) Desayunos gourmet\n3) Peluches y cajas regalo"
         )
     )
-    await master._own_the_menu(result, ConversationState())
+    await master._own_the_menu(result, _turn("quiero información"), ConversationState())
 
     # Los nombres inventados desaparecen; entran los reales, completos.
     assert "Flores y arreglos" not in result.user_facing
@@ -224,12 +224,95 @@ async def test_el_menu_del_modelo_se_reescribe_con_la_taxonomia_real(sin_red):
 
 
 @pytest.mark.asyncio
+async def test_si_el_cliente_ya_dijo_flores_no_se_le_ofrecen_desayunos(sin_red):
+    """Regresión propia (Miguel, 22-07), causada por la primera versión de esto.
+
+    Preguntó "¿Cuáles son las opciones de flores disponibles?" y el sistema le
+    reescribió el menú con las SIETE categorías padre: desayunos, peluches,
+    cestas, plantas… Le borró de la respuesta lo único que había pedido, y le
+    hizo elegir otra vez algo que ya había elegido.
+    """
+    from app.harness.contracts import AgentResult
+
+    result = AgentResult(user_facing="¿Qué tipo de flores buscas?\n1) A\n2) B\n3) C")
+    await master._own_the_menu(
+        result, _turn("¿Cuáles son las opciones de flores disponibles?"),
+        ConversationState(),
+    )
+
+    # Nada que no sean flores. Se compara la ENTRADA del menú (") Peluches") y
+    # no la palabra suelta: "Arreglos Florales con Peluches" sí es una hija
+    # legítima de flores y no debe hacer fallar el test.
+    for ajeno in ("Desayunos", "Peluches", "Cestas", "Plantas", "Regalos para Bebé"):
+        assert f") {ajeno}" not in result.user_facing, f"{ajeno} no es una flor"
+    # Y sí las hijas reales, incluidas las ocasiones.
+    assert "Ramos" in result.user_facing
+    assert "Arreglos Florales de Cumpleaños" in result.user_facing
+    assert result.state_patch["menu_depth"] == 2, "ya se gastó un paso: el cliente eligió"
+
+
+@pytest.mark.asyncio
+async def test_una_categoria_sin_hijas_va_directa_a_productos(sin_red):
+    """Cestas no tiene subcategorías: preguntar otra vez es hacer perder el tiempo."""
+    from app.harness.contracts import AgentResult
+
+    result = AgentResult(user_facing="¿Qué te enseño?\n1) A\n2) B\n3) C")
+    await master._own_the_menu(
+        result, _turn("quiero unas cestas"), ConversationState()
+    )
+
+    assert result.artifacts, "sin hijas que ofrecer, tocan productos"
+    assert result.state_patch["menu_depth"] == 0
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "¡Hola! Quiero más información",   # no concreta nada
+        "quiero un regalo",                # "regalo" no es una categoría
+        "busco arreglos",                  # ambiguo: Florales y Fúnebres
+    ],
+)
+@pytest.mark.asyncio
+async def test_si_no_nombro_una_categoria_clara_se_ofrecen_las_padre(texto, sin_red):
+    from app.harness.contracts import AgentResult
+
+    result = AgentResult(user_facing="¿Qué te interesa?\n1) A\n2) B\n3) C")
+    await master._own_the_menu(result, _turn(texto), ConversationState())
+
+    assert "1) Arreglos Florales" in result.user_facing
+    assert "7) Plantas" in result.user_facing
+    assert result.state_patch["menu_depth"] == 1
+
+
+def test_match_category_no_confunde_un_regalo_generico_con_regalos_para_bebe(taxonomia):
+    """"quiero un regalo" casaba con "Regalos para Bebé" por la palabra suelta."""
+    from app.harness.taxonomy import match_category
+
+    assert match_category("quiero un regalo", taxonomia) is None
+    assert match_category("busco arreglos", taxonomia) is None, "Florales y Fúnebres"
+    assert match_category("flores", taxonomia)["slug"] == "arreglos-florales"
+    assert match_category("algo para un bebé", taxonomia)["slug"] == "regalo-para-bebe"
+    assert match_category("un desayuno sorpresa", taxonomia)["slug"] == "desayunos"
+
+
+def test_la_coletilla_del_numero_no_se_duplica():
+    """Salió al cliente: "…buscas? Elige el número Responde con el número:"."""
+    assert master._intro_of(
+        "¿Qué tipo de flores buscas? Elige el número\n\n1) A\n2) B\n3) C"
+    ) == "¿Qué tipo de flores buscas?"
+    assert master._intro_of(
+        "¿Cuál prefieres? Responde con el número:\n1) A\n2) B\n3) C"
+    ) == "¿Cuál prefieres?"
+
+
+@pytest.mark.asyncio
 async def test_una_respuesta_sin_menu_no_se_toca(sin_red):
     """Solo se suplantan menús. Una frase normal sale tal cual."""
     from app.harness.contracts import AgentResult
 
     result = AgentResult(user_facing="¿Para qué ocasión es el regalo? 😊")
-    await master._own_the_menu(result, ConversationState())
+    await master._own_the_menu(result, _turn("quiero información"), ConversationState())
 
     assert result.user_facing == "¿Para qué ocasión es el regalo? 😊"
     assert not result.state_patch
