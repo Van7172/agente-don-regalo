@@ -394,6 +394,17 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   font-size: 11px; white-space: nowrap;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
+.rail-chip .chip-dismiss {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin: 0 -4px 0 2px; padding: 0;
+  border: 0; border-radius: 50%;
+  background: transparent; color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  cursor: pointer; line-height: 1; font-size: 14px;
+}
+.rail-chip .chip-dismiss:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
 
 /* — 3 paneles — */
 .inbox-panes { flex: 1; display: flex; min-height: 0; }

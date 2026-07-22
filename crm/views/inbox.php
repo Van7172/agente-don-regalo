@@ -81,6 +81,9 @@
             </svg>
             Tomar conversación
           </button>
+          <button type="button" class="btn btn-secondary" id="btn-dismiss-help" hidden title="Saca el chat de la cola de atención sin devolverlo al bot">
+            Quitar de la cola
+          </button>
           <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Don Regalo</button>
           <button type="button" class="icon-btn icon-btn-outline" id="btn-lead" title="Resumen del lead" aria-label="Resumen del lead">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

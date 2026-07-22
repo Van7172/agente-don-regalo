@@ -40,6 +40,7 @@
     chatState: document.getElementById("chat-state-label"),
     btnBack: document.getElementById("btn-back"),
     btnHuman: document.getElementById("btn-human"),
+    btnDismissHelp: document.getElementById("btn-dismiss-help"),
     btnAi: document.getElementById("btn-ai"),
     btnAiBanner: document.getElementById("btn-ai-banner"),
     keepHuman: document.getElementById("keep-human"),
@@ -345,8 +346,17 @@
     btn.innerHTML = `
       <span class="live-dot"></span>
       <span class="chip-name">${esc(displayName(c))}</span>
-      <span class="chip-meta">${esc(waitLabel(c.last_message_at))}</span>`;
-    btn.addEventListener("click", () => select(c.id));
+      <span class="chip-meta">${esc(waitLabel(c.last_message_at))}</span>
+      <span class="chip-dismiss" role="button" tabindex="0" title="Quitar de la cola" aria-label="Quitar de la cola">×</span>`;
+    btn.addEventListener("click", (e) => {
+      if (e.target.closest(".chip-dismiss")) {
+        e.preventDefault();
+        e.stopPropagation();
+        dismissHelp(c.id);
+        return;
+      }
+      select(c.id);
+    });
     return btn;
   }
 
@@ -673,8 +683,10 @@
 
     // El bot solo cede el turno en modo HUMAN; 'help' sigue siendo AI.
     const isHuman = conv.mode === "HUMAN";
+    const needsHelp = !!conv.human_support;
     el.btnHuman.hidden = isHuman;
     el.btnAi.hidden = !isHuman;
+    if (el.btnDismissHelp) el.btnDismissHelp.hidden = !needsHelp;
     el.composerWrap.hidden = !isHuman;
     el.aiBanner.hidden = isHuman;
 
@@ -1091,6 +1103,25 @@
     }
   }
 
+  /** Saca el chat de la cola AYUDA sin cambiar AI/HUMAN ni cerrar la conversación. */
+  async function dismissHelp(conversationId) {
+    const id = conversationId ?? selectedId;
+    if (id == null) return;
+    try {
+      await api(`/conversations/${id}/mode`, {
+        method: "PATCH",
+        body: JSON.stringify({ human_support: false }),
+      });
+      listSig = "";
+      const refresh = [loadList()];
+      if (selectedId === id) refresh.push(loadThread());
+      await Promise.all(refresh);
+      showError("");
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
   async function setKeepHuman(on) {
     if (selectedId == null) return;
     try {
@@ -1371,6 +1402,9 @@
 
   el.btnHuman.addEventListener("click", () => setMode("HUMAN"));
   el.btnTake.addEventListener("click", () => setMode("HUMAN"));
+  if (el.btnDismissHelp) {
+    el.btnDismissHelp.addEventListener("click", () => dismissHelp());
+  }
   el.btnAi.addEventListener("click", () => setMode("AI", { human_support: false, keep_human: false }));
   if (el.btnAiBanner) {
     el.btnAiBanner.addEventListener("click", () =>
