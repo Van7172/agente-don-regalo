@@ -19,6 +19,11 @@ function opsRequires(string $source, string $needle, string $message): void
 }
 
 $client = opsSource('src/OperationsClient.php');
+if (strncmp($client, '<?php', 5) !== 0) {
+    throw new RuntimeException(
+        'OperationsClient.php debe comenzar exactamente en <?php, sin BOM ni espacios'
+    );
+}
 opsRequires($client, '/internal/operations', 'El CRM no consulta el snapshot del agente');
 opsRequires($client, 'X-Agent-Token:', 'La consulta debe autenticarse servidor a servidor');
 opsRequires($client, 'CURLOPT_TIMEOUT', 'La caída del agente no debe colgar el CRM');
