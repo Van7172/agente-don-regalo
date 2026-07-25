@@ -53,6 +53,17 @@ class Settings:
 
         self.pdf_max_chars: int = int(os.getenv("PDF_MAX_CHARS", "30000"))
         self.buffer_seconds: float = float(os.getenv("BUFFER_SECONDS", "2.5"))
+        # El webhook entrega cada mensaje a una cola acotada y responde de
+        # inmediato. Un worker conserva el orden por defecto.
+        self.inbound_queue_maxsize: int = max(
+            1, int(os.getenv("INBOUND_QUEUE_MAXSIZE", "500"))
+        )
+        self.inbound_queue_workers: int = max(
+            1, int(os.getenv("INBOUND_QUEUE_WORKERS", "1"))
+        )
+        self.inbound_queue_shutdown_seconds: float = max(
+            0.1, float(os.getenv("INBOUND_QUEUE_SHUTDOWN_SECONDS", "20"))
+        )
         self.typing_seconds_per_char: float = float(
             os.getenv("TYPING_SECONDS_PER_CHAR", "0.01")
         )
@@ -78,6 +89,14 @@ class Settings:
         self.kb_limit: int = int(os.getenv("KB_LIMIT", "3"))
         self.kb_min_score: float = float(os.getenv("KB_MIN_SCORE", "0.5"))
         self.cache_ttl_seconds: float = float(os.getenv("CACHE_TTL_SECONDS", "3600"))
+        # Protección común de dependencias externas. Tras varios fallos seguidos
+        # se evita insistir durante una pausa y luego se permite una sola prueba.
+        self.circuit_breaker_failure_threshold: int = max(
+            1, int(os.getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5"))
+        )
+        self.circuit_breaker_recovery_seconds: float = max(
+            0.0, float(os.getenv("CIRCUIT_BREAKER_RECOVERY_SECONDS", "30"))
+        )
         self.donregalo_api_base: str = os.getenv(
             "DONREGALO_API_BASE", "https://donregalo.pe/clienteApiApp/api"
         )

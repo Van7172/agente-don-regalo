@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 
@@ -21,8 +22,10 @@ import httpx
 
 from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import looks_like_coverage
-from app.harness.policies import is_small_talk
+from app.guardrails import is_small_talk
 from app.harness.state import ConversationState
+from app.observability import audit_event, record_operation
+from app.resilience import circuit_breaker
 
 log = logging.getLogger(__name__)
 
@@ -268,35 +271,59 @@ async def classify_with_llm(text: str) -> Classification | None:
     from app.config import settings
 
     if not settings.openai_api_key:
+        record_operation("openai.router", "unavailable")
         return None
 
     from app.prompts.playbooks import ORCHESTRATOR
 
+    started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-                json={
-                    "model": settings.router_model,
-                    "messages": [
-                        {"role": "system", "content": ORCHESTRATOR},
-                        {"role": "user", "content": (text or "")[:500]},
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0,
-                },
-            )
-            r.raise_for_status()
-            data = json.loads(r.json()["choices"][0]["message"]["content"])
+        async def _request() -> dict:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                r = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                    json={
+                        "model": settings.router_model,
+                        "messages": [
+                            {"role": "system", "content": ORCHESTRATOR},
+                            {"role": "user", "content": (text or "")[:500]},
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0,
+                    },
+                )
+                r.raise_for_status()
+                return json.loads(r.json()["choices"][0]["message"]["content"])
+
+        data = await circuit_breaker("openai.router").call(_request)
     except Exception as err:
         # El router nunca puede tumbar un turno: si el LLM falla, mandan las reglas.
+        latency_ms = (time.monotonic() - started) * 1000
+        record_operation("openai.router", "error", duration_ms=latency_ms)
+        audit_event(
+            "openai.request",
+            "error",
+            backend="openai",
+            operation="router",
+            latency_ms=latency_ms,
+            error_type=type(err).__name__,
+        )
         log.warning("[router] clasificador LLM no disponible: %s", err)
         return None
 
     intent = str(data.get("intent") or "").strip()
     if intent not in VALID_INTENTS:
-        log.warning("[router] el LLM devolvió una intención desconocida: %r", intent)
+        latency_ms = (time.monotonic() - started) * 1000
+        record_operation("openai.router", "invalid", duration_ms=latency_ms)
+        audit_event(
+            "openai.request",
+            "invalid",
+            backend="openai",
+            operation="router",
+            latency_ms=latency_ms,
+        )
+        log.warning("[router] el LLM devolvió una intención desconocida")
         return None
 
     try:
@@ -304,4 +331,13 @@ async def classify_with_llm(text: str) -> Classification | None:
     except (TypeError, ValueError):
         confidence = 0.6
 
+    latency_ms = (time.monotonic() - started) * 1000
+    record_operation("openai.router", "ok", duration_ms=latency_ms)
+    audit_event(
+        "openai.request",
+        "ok",
+        backend="openai",
+        operation="router",
+        latency_ms=latency_ms,
+    )
     return Classification(intent, min(max(confidence, 0.0), 1.0), "llm")

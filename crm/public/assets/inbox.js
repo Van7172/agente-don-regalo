@@ -40,7 +40,6 @@
     chatState: document.getElementById("chat-state-label"),
     btnBack: document.getElementById("btn-back"),
     btnHuman: document.getElementById("btn-human"),
-    btnDismissHelp: document.getElementById("btn-dismiss-help"),
     btnAi: document.getElementById("btn-ai"),
     btnAiBanner: document.getElementById("btn-ai-banner"),
     keepHuman: document.getElementById("keep-human"),
@@ -348,12 +347,12 @@
       <span class="live-dot"></span>
       <span class="chip-name">${esc(displayName(c))}</span>
       <span class="chip-meta">${esc(waitLabel(c.last_message_at))}</span>
-      <span class="chip-dismiss" role="button" tabindex="0" title="Quitar de la cola" aria-label="Quitar de la cola">×</span>`;
+      <span class="chip-dismiss" role="button" tabindex="0" title="Devolver a Don Regalo" aria-label="Devolver a Don Regalo">×</span>`;
     btn.addEventListener("click", (e) => {
       if (e.target.closest(".chip-dismiss")) {
         e.preventDefault();
         e.stopPropagation();
-        dismissHelp(c.id);
+        returnToBot(c.id);
         return;
       }
       select(c.id);
@@ -732,12 +731,13 @@
     el.chatDot.className = `dot-sm is-${status}`;
     el.chatState.textContent = `${STATUS_META[status].label} · ${conv.contact?.wa_id || ""}`;
 
-    // El bot solo cede el turno en modo HUMAN; 'help' sigue siendo AI.
+    // Ojo: en producción (CRM_MODE=external) el handoff hace `set_mode(HUMAN)`,
+    // que enciende modo HUMAN, `human_support` y apaga `bot_active` de una vez.
+    // Así que un chat de la cola de atención NO está en AI, está en HUMAN con el
+    // bot callado — que es por lo que basta este flag para el composer.
     const isHuman = conv.mode === "HUMAN";
-    const needsHelp = !!conv.human_support;
     el.btnHuman.hidden = isHuman;
     el.btnAi.hidden = !isHuman;
-    if (el.btnDismissHelp) el.btnDismissHelp.hidden = !needsHelp;
     el.composerWrap.hidden = !isHuman;
     el.aiBanner.hidden = isHuman;
 
@@ -1154,14 +1154,26 @@
     }
   }
 
-  /** Saca el chat de la cola AYUDA sin cambiar AI/HUMAN ni cerrar la conversación. */
-  async function dismissHelp(conversationId) {
+  /**
+   * La × de la franja: "Devolver a Don Regalo", sin abrir el chat.
+   *
+   * Antes esto apagaba solo `human_support`, y eso no era un estado: el chat
+   * salía de la franja pero seguía en modo HUMAN y mudo, asignado a un asesor
+   * que ya había terminado — hasta que el releaser lo pasaba a AI a los 20 min
+   * por su cuenta. O sea que el bot lo retomaba igual, pero tarde y sin que
+   * nadie lo hubiera decidido.
+   *
+   * Manda exactamente lo mismo que el botón "Devolver a Don Regalo"; lo único
+   * que aporta es despachar la cola sin entrar chat por chat. Y quien SÍ quiere
+   * quedarse la conversación tiene «Mantener humano», que frena al releaser.
+   */
+  async function returnToBot(conversationId) {
     const id = conversationId ?? selectedId;
     if (id == null) return;
     try {
       await api(`/conversations/${id}/mode`, {
         method: "PATCH",
-        body: JSON.stringify({ human_support: false }),
+        body: JSON.stringify({ mode: "AI", human_support: false, keep_human: false }),
       });
       listSig = "";
       const refresh = [loadList()];
@@ -1453,9 +1465,6 @@
 
   el.btnHuman.addEventListener("click", () => setMode("HUMAN"));
   el.btnTake.addEventListener("click", () => setMode("HUMAN"));
-  if (el.btnDismissHelp) {
-    el.btnDismissHelp.addEventListener("click", () => dismissHelp());
-  }
   el.btnAi.addEventListener("click", () => setMode("AI", { human_support: false, keep_human: false }));
   if (el.btnAiBanner) {
     el.btnAiBanner.addEventListener("click", () =>

@@ -3,14 +3,45 @@ Punto de entrada único para ejecutar cualquier herramienta del agente.
 """
 import json
 import logging
+import time
 import unicodedata
 
 import httpx
 
 from app.config import settings
+from app.observability import audit_event, record_operation
 from app.tools import catalog, mcp_client, search
 
 log = logging.getLogger(__name__)
+
+
+def _tool_backend(name: str) -> str:
+    if settings.donregalo_use_mcp and name in mcp_client.SUPPORTED:
+        return "mcp_preferred"
+    if name in _CATALOG_TOOLS:
+        return "rest"
+    return "local"
+
+
+def _observe_tool(
+    name: str,
+    outcome: str,
+    started: float,
+    *,
+    status_code: int | None = None,
+    error_type: str | None = None,
+) -> None:
+    latency_ms = (time.monotonic() - started) * 1000
+    record_operation(f"tool.{name}", outcome, duration_ms=latency_ms)
+    audit_event(
+        "tool.execute",
+        outcome,
+        tool=name,
+        backend=_tool_backend(name),
+        latency_ms=latency_ms,
+        status_code=status_code,
+        error_type=error_type,
+    )
 
 
 def _pick(name: str, default_fn):
@@ -199,8 +230,7 @@ async def _semantic_fallback(
     if drop_category:
         args.pop("categoria_slug", None)
     log.info(
-        "[tool] fallback semantico q=%r drop_category=%s (%s)",
-        q[:80],
+        "[tool] fallback semantico drop_category=%s (%s)",
         drop_category,
         reason,
     )
@@ -214,6 +244,7 @@ async def _semantic_fallback(
 
 async def execute_tool(name: str, args: dict) -> str:
     """Ejecuta una herramienta y devuelve el resultado como string JSON."""
+    started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             if name == "buscar_productos":
@@ -345,10 +376,29 @@ async def execute_tool(name: str, args: dict) -> str:
                 result = await search.buscar_conocimiento(args or {})
             else:
                 result = {"error": f"Herramienta desconocida: {name}"}
+        outcome = "ok"
+        if isinstance(result, dict) and result.get("blocked"):
+            outcome = "blocked"
+        elif isinstance(result, dict) and result.get("error"):
+            outcome = "error"
+        _observe_tool(name, outcome, started)
         return json.dumps(result, ensure_ascii=False)
     except httpx.HTTPStatusError as e:
+        _observe_tool(
+            name,
+            "http_error",
+            started,
+            status_code=e.response.status_code,
+            error_type=type(e).__name__,
+        )
         log.error("Tool %s HTTP %s: %s", name, e.response.status_code, e)
         return json.dumps({"error": f"HTTP {e.response.status_code}", "tool": name})
     except Exception as e:
+        _observe_tool(
+            name,
+            "error",
+            started,
+            error_type=type(e).__name__,
+        )
         log.error("Tool %s error: %s", name, e)
         return json.dumps({"error": str(e), "tool": name})

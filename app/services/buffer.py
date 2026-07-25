@@ -423,7 +423,11 @@ async def _flush_external(
             log.info("[OUT] conversation=%s handoff", conversation_id)
             return
         if reply:
-            log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
+            log.info(
+                "[OUT] conversation=%s reply_chars=%s",
+                conversation_id,
+                len(reply),
+            )
             await _send_reply_segments(wa_id, conversation_id, reply, persist)
         else:
             # Antes escalábamos a HUMAN ante cualquier None (timeout, max rounds,
@@ -480,7 +484,11 @@ async def _flush_local(
                 log.info("[OUT] conversation=%s handoff", conversation_id)
                 return
             if reply:
-                log.info("[OUT] conversation=%s reply=%r", conversation_id, reply[:200])
+                log.info(
+                    "[OUT] conversation=%s reply_chars=%s",
+                    conversation_id,
+                    len(reply),
+                )
                 await _send_reply_segments(wa_id, conversation_id, reply, persist)
             else:
                 log.warning("[OUT] conversation=%s sin respuesta; recovery suave", conversation_id)

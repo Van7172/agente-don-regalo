@@ -24,11 +24,14 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
 
 from app.config import settings
+from app.observability import audit_event, record_operation
+from app.resilience import circuit_breaker
 from app.tools import adapters, catalog
 from app.tools.image_validation import valid_products
 
@@ -156,7 +159,11 @@ async def _ensure_initialized(client: httpx.AsyncClient) -> None:
     setattr(client, "_donregalo_mcp_initialized", True)
 
 
-async def _call(client: httpx.AsyncClient, tool: str, arguments: dict) -> dict:
+async def _call_unobserved(
+    client: httpx.AsyncClient,
+    tool: str,
+    arguments: dict,
+) -> dict:
     """Ejecuta `tools/call` y devuelve el `result` (con content/structuredContent/isError).
 
     Lanza McpError ante error de transporte, JSON-RPC `error`, o falta de `result`.
@@ -176,6 +183,37 @@ async def _call(client: httpx.AsyncClient, tool: str, arguments: dict) -> dict:
     result = body.get("result")
     if not isinstance(result, dict):
         raise McpError("respuesta MCP sin `result`")
+    return result
+
+
+async def _call(client: httpx.AsyncClient, tool: str, arguments: dict) -> dict:
+    started = time.monotonic()
+    try:
+        result = await circuit_breaker("mcp").call(
+            lambda: _call_unobserved(client, tool, arguments)
+        )
+    except Exception as error:
+        latency_ms = (time.monotonic() - started) * 1000
+        record_operation("mcp.call", "error", duration_ms=latency_ms)
+        audit_event(
+            "mcp.call",
+            "error",
+            backend="mcp",
+            tool=tool,
+            latency_ms=latency_ms,
+            error_type=type(error).__name__,
+        )
+        raise
+    latency_ms = (time.monotonic() - started) * 1000
+    outcome = "business_error" if result.get("isError") else "ok"
+    record_operation("mcp.call", outcome, duration_ms=latency_ms)
+    audit_event(
+        "mcp.call",
+        outcome,
+        backend="mcp",
+        tool=tool,
+        latency_ms=latency_ms,
+    )
     return result
 
 
@@ -319,7 +357,7 @@ async def explorar_catalogo(client: httpx.AsyncClient, args: dict):
             raise McpError(_text(result))
         return _navigation_payload(result.get("structuredContent") or {})
     except Exception as err:
-        log.warning("[mcp] explorar_catalogo degradó a HTTP (%s)", err)
+        log.warning("[mcp] explorar_catalogo degradó a HTTP (%s)", type(err).__name__)
         return await catalog.explorar_catalogo(client, args)
 
 
@@ -327,13 +365,13 @@ async def buscar_productos(client: httpx.AsyncClient, args: dict):
     try:
         result = await _call(client, "donregalo_buscar_productos", _buscar_args(args))
         if result.get("isError"):
-            log.info("[mcp] buscar_productos isError: %s", _text(result)[:120])
+            log.info("[mcp] buscar_productos isError")
             return {"data": [], "total": 0}
         rate = await adapters.usd_pen_rate(client)
         payload = _list_payload(result.get("structuredContent") or {}, rate)
         return await _validated_list(client, payload)
     except Exception as err:
-        log.warning("[mcp] buscar_productos degradó a HTTP (%s)", err)
+        log.warning("[mcp] buscar_productos degradó a HTTP (%s)", type(err).__name__)
         return await catalog.buscar_productos(client, args)
 
 
@@ -364,7 +402,7 @@ async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
                 )
         return payload
     except Exception as err:
-        log.warning("[mcp] catalogo_categoria degradó a HTTP (%s)", err)
+        log.warning("[mcp] catalogo_categoria degradó a HTTP (%s)", type(err).__name__)
         return await catalog.catalogo_categoria(client, args)
 
 
@@ -373,13 +411,13 @@ async def detalle_producto(client: httpx.AsyncClient, args: dict):
         pid = int(args["id_producto"])
         result = await _call(client, "donregalo_detalle_producto", {"id": pid})
         if result.get("isError"):
-            log.info("[mcp] detalle %s isError: %s", pid, _text(result)[:120])
+            log.info("[mcp] detalle %s isError", pid)
             return {"data": {}}
         rate = await adapters.usd_pen_rate(client)
         payload = _detail_payload(result.get("structuredContent") or {}, rate)
         return await _validated_detail(client, payload)
     except Exception as err:
-        log.warning("[mcp] detalle_producto degradó a HTTP (%s)", err)
+        log.warning("[mcp] detalle_producto degradó a HTTP (%s)", type(err).__name__)
         return await catalog.detalle_producto(client, args)
 
 
@@ -396,7 +434,7 @@ async def productos_por_ocasion(client: httpx.AsyncClient, args: dict):
         payload = _list_payload(result.get("structuredContent") or {}, rate)
         return await _validated_list(client, payload)
     except Exception as err:
-        log.warning("[mcp] productos_por_ocasion degradó a HTTP (%s)", err)
+        log.warning("[mcp] productos_por_ocasion degradó a HTTP (%s)", type(err).__name__)
         return await catalog.productos_por_ocasion(client, args)
 
 
@@ -411,7 +449,7 @@ async def productos_destacados(client: httpx.AsyncClient, _args: dict):
         payload = _list_payload(result.get("structuredContent") or {}, rate)
         return await _validated_list(client, payload)
     except Exception as err:
-        log.warning("[mcp] productos_destacados degradó a HTTP (%s)", err)
+        log.warning("[mcp] productos_destacados degradó a HTTP (%s)", type(err).__name__)
         return await catalog.productos_destacados(client, _args)
 
 
@@ -426,7 +464,7 @@ async def productos_oferta(client: httpx.AsyncClient, _args: dict):
         payload = _list_payload(result.get("structuredContent") or {}, rate)
         return await _validated_list(client, payload)
     except Exception as err:
-        log.warning("[mcp] productos_oferta degradó a HTTP (%s)", err)
+        log.warning("[mcp] productos_oferta degradó a HTTP (%s)", type(err).__name__)
         return await catalog.productos_oferta(client, _args)
 
 
@@ -437,7 +475,7 @@ async def metodos_pago(client: httpx.AsyncClient, _args: dict):
             raise McpError(_text(result))
         return _payment_payload(result.get("structuredContent") or {})
     except Exception as err:
-        log.warning("[mcp] metodos_pago degradó a HTTP (%s)", err)
+        log.warning("[mcp] metodos_pago degradó a HTTP (%s)", type(err).__name__)
         return await catalog.metodos_pago(client, _args)
 
 
@@ -454,7 +492,7 @@ async def rastrear_pedido(client: httpx.AsyncClient, args: dict):
             return {"success": False, "message": _text(result), "data": None}
         return {"success": True, "message": "OK", "data": result.get("structuredContent") or {}}
     except Exception as err:
-        log.warning("[mcp] rastrear_pedido degradó a HTTP (%s)", err)
+        log.warning("[mcp] rastrear_pedido degradó a HTTP (%s)", type(err).__name__)
         return await catalog.rastrear_pedido(client, args)
 
 
@@ -474,7 +512,7 @@ async def productos_activos(
             raise McpError("respuesta MCP de activos sin `activos` array")
         return {int(pid) for pid in activos}
     except Exception as err:
-        log.warning("[mcp] productos_activos degradó a HTTP (%s)", err)
+        log.warning("[mcp] productos_activos degradó a HTTP (%s)", type(err).__name__)
         return await catalog.productos_activos(client, normalized)
 
 

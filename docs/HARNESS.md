@@ -16,10 +16,10 @@ Webhook Meta → buffer
         ORQUESTADOR  (harness/master.py)
         único que escribe estado · no habla con el cliente
                  │
-   ┌─────────────┼──────────────┐
-   ▼             ▼              ▼
- router      especialistas    políticas
- (intención) (registry.py)   (policies.py)
+   ┌─────────────┼──────────────────┐
+   ▼             ▼                  ▼
+ router      especialistas      GUARDRAILS
+ (intención) (registry.py)   (app/guardrails)
                  │
                  ▼
               tools → Renderer → WhatsApp
@@ -102,12 +102,29 @@ Los tests de `test_adapters.py` corren contra **payloads reales grabados** en
 `tests/fixtures/api/`. El test viejo de cobertura inventaba la forma del payload y
 por eso pasaba en verde mientras la función estaba rota en producción.
 
+## Módulo independiente de guardrails
+
+`app/guardrails/` es la única fuente de verdad para las protecciones que
+atraviesan especialistas:
+
+- `conversation.py`: saludo/cortesía, política de handoff, pago y
+  deduplicación de artifacts.
+- `response.py`: invariantes, severidad, bloqueo de precios inventados o medios
+  inexistentes y reconstrucción segura de la respuesta.
+- `guard_reply(...)`: fachada runtime que evalúa y sanea antes de reducir estado
+  o enviar a WhatsApp.
+
+`harness/policies.py` y `harness/invariants.py` son wrappers de compatibilidad;
+el runtime no los importa. Las validaciones propias de una frontera permanecen
+con su dueño: imágenes en `tools/image_validation.py`, categorías en
+`tools/executor.py` y PII de conocimiento en `services/knowledge.py`.
+
 ## Qué es determinista y qué es LLM
 
 Cobertura y cierre **no llaman al LLM**: son `harness/coverage.py` y
 `harness/checkout.py`. Las reglas de negocio (cuándo procede un handoff, qué
 productos no repetir, si un precio salió de una tool) son funciones puras en
-`harness/policies.py` — se testean sin red y en milisegundos.
+`app/guardrails/` — se testean sin red y en milisegundos.
 
 ## El listado de productos lo compone el código
 
@@ -131,9 +148,12 @@ determinista (`playbooks.WELCOME`): se presenta, y no gasta una llamada al LLM.
 ## Evals: la red de regresión
 
 Cada turno del orquestador emite un `Trace` (intención, agente, tools, ids de
-producto, handoff, violaciones, latencia) como una línea JSON en el log.
+producto, handoff, violaciones, latencia) como una línea JSON en el log. La línea
+incluye el `trace_id`, pero no el texto del cliente ni valores del checkout; solo
+registra la longitud de entrada y las claves de estado modificadas. Ver
+[`OBSERVABILIDAD.md`](OBSERVABILIDAD.md).
 
-Las **invariantes** (`harness/invariants.py`) son funciones puras sobre
+Las **invariantes** (`guardrails/response.py`) son funciones puras sobre
 `(estado, respuesta, artifacts)`. Cada una nació de un incidente real:
 
 | Invariante | El incidente |

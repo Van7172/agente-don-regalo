@@ -9,7 +9,7 @@ from typing import Any
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
 from app.harness.orders import display_fecha, lima_today, normalize_fecha
-from app.harness.policies import is_courtesy_text
+from app.guardrails import is_courtesy_text
 from app.harness.state import ConversationState
 
 __all__ = [

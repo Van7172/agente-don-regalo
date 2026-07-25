@@ -46,8 +46,7 @@ async def deliver_outbox(
     if settings.whatsapp_dry_run:
         log.warning(
             "[OUTBOX] WHATSAPP_DRY_RUN=1 — el mensaje NO llegará al WhatsApp real "
-            "(wa_id=%s outbox=%s)",
-            wa_id,
+            "(outbox=%s)",
             outbox_id,
         )
 
@@ -72,9 +71,8 @@ async def deliver_outbox(
 
     media_key = media_path
     log.info(
-        "[OUTBOX] send type=%s to=%s outbox=%s conv=%s dry_run=%s media=%s",
+        "[OUTBOX] send type=%s outbox=%s conv=%s dry_run=%s media=%s",
         msg_type,
-        wa_id,
         outbox_id,
         conversation_id,
         settings.whatsapp_dry_run,

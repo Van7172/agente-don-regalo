@@ -19,6 +19,13 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.guardrails import (
+    dedupe_artifacts,
+    guard_reply,
+    handoff_policy,
+    latest_user_text,
+    sanitize_reply,
+)
 from app.harness.checkout import (
     advance_checkout,
     resolve_chosen_product,
@@ -32,9 +39,7 @@ from app.harness.contracts import (
     extract_products,
 )
 from app.harness.coverage import resolve_coverage
-from app.harness.invariants import check_reply
 from app.harness.orders import create_from_state as create_temporal_order
-from app.harness.policies import dedupe_artifacts, handoff_policy, latest_user_text
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
@@ -56,6 +61,9 @@ from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
 from app.tools.executor import execute_tool
 
 log = logging.getLogger(__name__)
+
+# Alias de compatibilidad para extensiones/tests anteriores a `app.guardrails`.
+_degrade_unsafe_reply = sanitize_reply
 
 
 # El bot OFRECIENDO un asesor: una pregunta que menciona a una persona del equipo
@@ -224,24 +232,19 @@ async def run_master(
             ),
         )
 
-    # Las invariantes se miden ANTES de reducir: comparan lo que trae este turno
-    # contra lo que el cliente ya había visto.
-    violations = check_reply(
+    # La barrera de salida corre ANTES de reducir y antes de enviar al cliente.
+    guarded = guard_reply(
         result.user_facing, state=state, artifacts=result.artifacts
     )
+    violations = list(guarded.violations)
 
-    # Detectar no basta: lo grave no sale al cliente (ver `_degrade_unsafe_reply`).
-    if result.user_facing is not None:
-        seguro = _degrade_unsafe_reply(
-            result.user_facing, violations, result.artifacts
+    if guarded.blocked:
+        log.warning(
+            "[GUARDRAIL] conversation=%s respuesta degradada por %s",
+            conversation_id,
+            [str(v) for v in violations],
         )
-        if seguro != result.user_facing:
-            log.warning(
-                "[INVARIANTE] conversation=%s respuesta degradada por %s",
-                conversation_id,
-                [str(v) for v in violations],
-            )
-            result.user_facing = seguro
+        result.user_facing = guarded.reply
 
     state = _reduce(state, result)
 
@@ -811,43 +814,6 @@ def _capture_choice(
 # cliente da por bueno, o un medio de pago que no existe. Las demás
 # (`image_urls_on_own_line`, repetidos) solo pueden venir del listado, que ya arma
 # el código y es fiable por construcción: registrarlas basta.
-_BLOCKING_RULES = frozenset({"prices_are_sourced", "no_cash_on_delivery"})
-
-# Respaldo cuando el turno no tiene productos que preservar (prosa pura). No cita
-# ninguna cifra —que es justo lo que se degradó— y no promete traer a un asesor:
-# eso dispararía `_promises_handoff`, y Don Regalo no puede consultar y volver.
-_SAFE_FALLBACK = (
-    "Para no darte un dato equivocado, prefiero confirmártelo bien 🙏 "
-    "El pago es siempre por adelantado (Yape/Plin, transferencia bancaria o "
-    "tarjeta). ¿Te comparto los precios exactos del regalo que te interesa?"
-)
-
-
-def _degrade_unsafe_reply(
-    reply: str | None, violations: list, artifacts: list
-) -> str | None:
-    """Ante una violación grave, no enviar la prosa del modelo tal cual.
-
-    Hasta ahora las invariantes eran solo observacionales: `check_reply` dejaba la
-    violación en la traza y la respuesta salía igual. Es decir, el fallo más caro
-    del negocio —un precio que el modelo se inventó— quedaba registrado *después*
-    de que el cliente ya lo había leído.
-
-    La degradación aprovecha que la respuesta es de dos piezas
-    (`compose_product_reply`): la intro la escribe el modelo, el listado lo arma el
-    código desde `artifacts`. Lo contaminado solo puede ser la intro, así que se
-    tira la intro y se conserva el listado, que trae los precios reales. Sin
-    productos que preservar, cae al respaldo fijo.
-    """
-    rotas = {v.rule for v in violations} & _BLOCKING_RULES
-    if not rotas:
-        return reply
-
-    if artifacts:
-        return render_product_list([_as_dict(p) for p in artifacts])
-    return _SAFE_FALLBACK
-
-
 # Una línea que lleva una URL de imagen, la escriba el modelo como la escriba.
 _IMG_LINE = re.compile(r"https?://\S+\.(?:jpe?g|png|webp|gif)", re.I)
 # Viñeta de producto: "• 🎁 *Nombre* — S/149.60 ($44.00)".

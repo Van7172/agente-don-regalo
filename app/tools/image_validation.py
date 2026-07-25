@@ -111,9 +111,8 @@ async def is_valid_image(
         return True
     except Exception as exc:
         log.warning(
-            "[imagen-invalida] producto=%s url=%s motivo=%s",
+            "[imagen-invalida] producto=%s motivo=%s",
             product_id,
-            url,
             exc,
         )
         return False

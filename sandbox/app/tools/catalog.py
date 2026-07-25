@@ -8,6 +8,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.resilience import circuit_breaker
 from app.tools import adapters
 from app.tools.image_validation import valid_products
 
@@ -33,9 +34,12 @@ async def _cached_get(client: httpx.AsyncClient, url: str) -> object:
 
 
 async def get(client: httpx.AsyncClient, url: str, params: dict | None = None):
-    r = await client.get(url, params=params)
-    r.raise_for_status()
-    return r.json()
+    async def _request():
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        return r.json()
+
+    return await circuit_breaker("catalog.rest").call(_request)
 
 
 # ─── Implementaciones de herramientas ────────────────────────────────────────
@@ -238,9 +242,12 @@ async def productos_activos(
 
 
 async def rastrear_pedido(client: httpx.AsyncClient, args: dict):
-    r = await client.post(
-        f"{settings.donregalo_api_base}/pedidos/rastrear",
-        json={"email": args.get("email", ""), "codigo": args.get("codigo", "")},
-    )
-    r.raise_for_status()
-    return r.json()
+    async def _request():
+        r = await client.post(
+            f"{settings.donregalo_api_base}/pedidos/rastrear",
+            json={"email": args.get("email", ""), "codigo": args.get("codigo", "")},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    return await circuit_breaker("catalog.rest").call(_request)

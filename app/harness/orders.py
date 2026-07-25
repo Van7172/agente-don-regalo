@@ -250,16 +250,14 @@ async def create_from_state(
         data = resp.get("data") if isinstance(resp, dict) else None
         if data:
             log.info(
-                "[pedido-temporal] creado id=%s distrito=%s",
+                "[pedido-temporal] creado id=%s",
                 data.get("id_pedido_temporal"),
-                data.get("nombre_distrito"),
             )
         return data or (resp if isinstance(resp, dict) else None)
     except httpx.HTTPStatusError as err:
         log.warning(
-            "[pedido-temporal] la API rechazó el pedido (HTTP %s): %s",
+            "[pedido-temporal] la API rechazó el pedido (HTTP %s)",
             err.response.status_code,
-            err.response.text[:300],
         )
         return None
     except Exception as err:

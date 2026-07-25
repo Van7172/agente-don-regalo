@@ -15,6 +15,12 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.observability import (
+    audit_event,
+    current_trace_id,
+    record_operation,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -46,8 +52,39 @@ class Trace:
         return data
 
     def emit(self) -> None:
-        """Una línea por turno, en JSON, para poder agregarla después."""
+        """Una línea segura por turno, sin mensajes ni datos del checkout."""
         payload = self.to_dict()
-        payload["user_text"] = payload["user_text"][:120]
+        user_text = str(payload.pop("user_text", "") or "")
+        state_patch = payload.pop("state_patch", {}) or {}
+        handoff_reason = str(payload.pop("handoff_reason", "") or "")
+        payload["trace_id"] = current_trace_id()
+        payload["input_chars"] = len(user_text)
+        payload["state_patch_keys"] = sorted(str(key) for key in state_patch)
+        payload["handoff_reason_present"] = bool(handoff_reason)
+
+        outcome = (
+            "guardrail_blocked"
+            if self.violations
+            else "handoff"
+            if self.escalated
+            else "ok"
+        )
+        record_operation(
+            "harness.turn",
+            outcome,
+            duration_ms=self.latency_ms,
+        )
+        audit_event(
+            "harness.turn",
+            outcome,
+            conversation_id=self.conversation_id,
+            intent=self.intent,
+            agent=self.agent,
+            router=self.router,
+            tool_count=len(self.tools),
+            product_count=len(self.product_ids),
+            violation_count=len(self.violations),
+            latency_ms=self.latency_ms,
+        )
         level = logging.WARNING if self.violations else logging.INFO
         log.log(level, "[trace] %s", json.dumps(payload, ensure_ascii=False))

@@ -17,6 +17,14 @@ from app.crm import http_client as crm_http
 from app.harness import master as master_mod
 from app.harness import state as state_mod
 from app.services import buffer as buffer_mod
+from app.resilience import reset_circuit_breakers
+
+
+@pytest.fixture(autouse=True)
+def circuitos_limpios():
+    reset_circuit_breakers()
+    yield
+    reset_circuit_breakers()
 
 
 @pytest.fixture(autouse=True)

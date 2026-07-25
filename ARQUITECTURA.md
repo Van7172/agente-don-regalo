@@ -20,11 +20,14 @@ Cliente WhatsApp
       │
       ▼
  Meta Cloud API
-      │  webhook (200 inmediato + trabajo en background)
+      │  webhook (aceptación inmediata)
       ▼
  app/  (raíz del repo → EasyPanel, uvicorn app.main:app)
+      ├─ cola inbound acotada → worker
       ├─ buffer de mensajes
       ├─ HARNESS: orquestador → especialista → tools
+      ├─ resiliencia: circuit breakers + degradación segura
+      ├─ observabilidad: trace_id + métricas + auditoría segura
       ├─ fillers de latencia (salvo saludos simples)
       └─ CRM_MODE=external ──HTTP+token──► crm (hosting Don Regalo)
                                               ├─ MySQL local (crm_* + usuarios)
@@ -41,6 +44,42 @@ Cliente WhatsApp
 | **Catálogo / pedidos** | `DONREGALO_API_BASE` → `clienteApiApp/api` | Productos, distritos, tipo de cambio, pedidos temporales |
 | `sandbox/` | Espejo de la raíz | Se sincroniza; **no** es el deploy |
 
+### Cola de entrada
+
+[`app/services/inbound_queue.py`](app/services/inbound_queue.py) desacopla el POST
+de Meta del procesamiento del agente. La cola es FIFO, acotada y deduplica los
+`wamid` mientras están pendientes. Si no puede aceptar un trabajo, el webhook
+devuelve `503` para que Meta lo reintente; nunca confirma un mensaje que se perdió.
+
+El apagado espera los trabajos en curso y `/health` expone profundidad, aceptados,
+procesados, fallos, duplicados y rechazos. Hoy la cola vive dentro del proceso:
+para varias réplicas o persistencia entre reinicios debe cambiarse el backend por
+Redis/RabbitMQ sin mover la responsabilidad al webhook.
+
+### Observabilidad y auditoría
+
+[`app/observability/`](app/observability/) propaga un `trace_id` desde el webhook
+hasta el arnés y registra latencia/resultado de OpenAI, herramientas, MCP y CRM.
+Los eventos usan una lista cerrada de metadatos: no guardan mensajes, prompts,
+respuestas, teléfonos, direcciones, tokens ni argumentos de tools.
+
+`GET /metrics`, protegido con `X-Agent-Token`, expone agregados compatibles con
+Prometheus; las líneas `[audit]` son JSON para el recolector de logs. Contratos,
+privacidad, alertas y retención:
+[`docs/OBSERVABILIDAD.md`](docs/OBSERVABILIDAD.md).
+
+### Resiliencia
+
+[`app/resilience/`](app/resilience/) protege OpenAI, embeddings, MCP, REST del
+catálogo, CRM y Qdrant mediante circuit breakers independientes. Tras cinco
+fallos consecutivos, el circuito abre durante 30 segundos y luego permite una
+sola prueba. Una recuperación lo cierra; otro fallo reinicia la pausa.
+
+Los respaldos no se mezclan: MCP puede abrir y degradar a REST mientras REST
+permanece sano; el router degrada a reglas. Estados y fallos consecutivos se
+publican en `/health` y `/metrics`. Configuración y operación:
+[`docs/RESILIENCIA.md`](docs/RESILIENCIA.md).
+
 ---
 
 ## 2. El harness (arquitectura del agente)
@@ -52,9 +91,9 @@ percibir → clasificar → delegar → reducir → persistir
 ```
 
 ```
-Webhook Meta → buffer
-                 │
-                 ▼
+Webhook Meta → cola inbound → worker → buffer
+                                      │
+                                      ▼
         ORQUESTADOR  (harness/master.py)
         único que escribe estado · NO habla con el cliente
                  │
@@ -225,6 +264,9 @@ El estado de la conversación del harness vive hoy como blob JSON en `settings`
 | `OPENAI_API_KEY` / `OPENAI_MODEL` / `ROUTER_MODEL` | LLM principal y clasificador del router |
 | `QDRANT_URL` / `QDRANT_API_KEY` / `QDRANT_COLLECTION` | Búsqueda semántica |
 | `WATCHDOG_ENABLED` / `ALERT_WHATSAPP` | Vigía de conversaciones sin respuesta y avisos |
+| `INBOUND_QUEUE_MAXSIZE` | Máximo de mensajes pendientes; al llenarse Meta recibe `503` |
+| `INBOUND_QUEUE_WORKERS` | Workers inbound; `1` conserva el orden por defecto |
+| `INBOUND_QUEUE_SHUTDOWN_SECONDS` | Tiempo para drenar trabajos durante el apagado |
 
 ---
 
@@ -286,6 +328,9 @@ diff -rq app sandbox/app --exclude=__pycache__
 | Tools (esquemas) | `app/tools/definitions.py` |
 | Tools (HTTP catálogo) | `app/tools/catalog.py`, `search.py`, `executor.py`, `adapters.py` |
 | Loop LLM / fillers | `app/services/agent.py` |
+| Cola y workers inbound | `app/services/inbound_queue.py` |
+| Observabilidad y auditoría | `app/observability/`, `docs/OBSERVABILIDAD.md` |
+| Resiliencia y circuit breakers | `app/resilience/`, `docs/RESILIENCIA.md` |
 | Buffer / flush CRM | `app/services/buffer.py` |
 | Cliente HTTP CRM | `app/crm/http_client.py` |
 | API CRM (PHP) | `crm/public/api/index.php` |

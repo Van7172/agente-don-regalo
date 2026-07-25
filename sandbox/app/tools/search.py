@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
+from app.resilience import circuit_breaker
 from app.tools.image_validation import valid_products
 
 log = logging.getLogger(__name__)
@@ -59,15 +60,18 @@ def get_qdrant():
 
 async def embed(texts: list[str]) -> list[list[float]]:
     """Embebe una lista de textos con OpenAI en una sola llamada."""
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.post(
-            "https://api.openai.com/v1/embeddings",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={"model": settings.embed_model, "input": texts},
-        )
-        r.raise_for_status()
-        data = sorted(r.json()["data"], key=lambda d: d["index"])
-        return [d["embedding"] for d in data]
+    async def _request() -> list[list[float]]:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                json={"model": settings.embed_model, "input": texts},
+            )
+            r.raise_for_status()
+            data = sorted(r.json()["data"], key=lambda d: d["index"])
+            return [d["embedding"] for d in data]
+
+    return await circuit_breaker("openai.embeddings").call(_request)
 
 
 async def embed_query(text: str) -> list[float]:
@@ -238,7 +242,9 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
             with_payload=True,
         ).points
 
-    hits = await asyncio.to_thread(_search)
+    hits = await circuit_breaker("qdrant").call(
+        lambda: asyncio.to_thread(_search)
+    )
 
     terms = _keyword_terms(q)
     candidatos = []
@@ -294,7 +300,9 @@ async def productos_similares(client: httpx.AsyncClient, args: dict):
             with_payload=True,
         ).points
 
-    hits = await asyncio.to_thread(_query)
+    hits = await circuit_breaker("qdrant").call(
+        lambda: asyncio.to_thread(_query)
+    )
     if hits is None:
         return {"error": f"No se encontró el producto {pid} en el índice.", "tool": "productos_similares"}
 
@@ -322,18 +330,20 @@ async def buscar_conocimiento(args: dict):
     vector = await embed_query(q)
 
     def _search():
-        try:
-            return qc.query_points(
-                collection_name=settings.kb_collection,
-                query=vector,
-                limit=settings.kb_limit,
-                with_payload=True,
-            ).points
-        except Exception as e:
-            log.info("[KB] consulta sin resultados (%s)", e)
-            return []
+        return qc.query_points(
+            collection_name=settings.kb_collection,
+            query=vector,
+            limit=settings.kb_limit,
+            with_payload=True,
+        ).points
 
-    hits = await asyncio.to_thread(_search)
+    try:
+        hits = await circuit_breaker("qdrant").call(
+            lambda: asyncio.to_thread(_search)
+        )
+    except Exception as error:
+        log.info("[KB] consulta sin resultados (%s)", error)
+        hits = []
 
     resultados = []
     for h in hits:

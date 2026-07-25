@@ -81,9 +81,12 @@
             </svg>
             Tomar conversación
           </button>
-          <button type="button" class="btn btn-secondary" id="btn-dismiss-help" hidden title="Saca el chat de la cola de atención sin devolverlo al bot">
-            Quitar de la cola
-          </button>
+          <!-- Aquí hubo un "Quitar de la cola" que sacaba el chat de la franja
+               SIN devolvérselo al bot. No era un estado: dejaba el chat en modo
+               HUMAN y mudo, fuera de la vista y asignado a un asesor que ya
+               había terminado, hasta que el releaser lo pasaba a AI a los 20 min
+               por su cuenta. Quien de verdad quiere quedarse el chat tiene
+               «Mantener humano», que sí frena al releaser. -->
           <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Don Regalo</button>
           <button type="button" class="icon-btn icon-btn-outline" id="btn-lead" title="Resumen del lead" aria-label="Resumen del lead">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

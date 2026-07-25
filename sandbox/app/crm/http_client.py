@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
 
 import httpx
 
 from app.config import settings
+from app.observability import audit_event, record_operation
+from app.resilience import circuit_breaker
 
 log = logging.getLogger(__name__)
 
@@ -34,28 +37,34 @@ def _auth_headers() -> dict[str, str]:
 async def upload_media(data: bytes, filename: str, mime: str) -> str:
     """Guarda bytes en el CRM y devuelve la clave de almacenamiento."""
     url = f"{settings.crm_base_url.rstrip('/')}/api/media"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        res = await client.post(
-            url,
-            headers=_auth_headers(),
-            files={"file": (filename, data, mime)},
-        )
-        if res.status_code >= 400:
-            log.error("[CRM-HTTP] upload_media -> %s body=%s", res.status_code, (res.text or "")[:300])
-        res.raise_for_status()
-        return str(res.json()["key"])
+    async def _send() -> str:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            res = await client.post(
+                url,
+                headers=_auth_headers(),
+                files={"file": (filename, data, mime)},
+            )
+            if res.status_code >= 400:
+                log.error("[CRM-HTTP] upload_media -> %s", res.status_code)
+            res.raise_for_status()
+            return str(res.json()["key"])
+
+    return await circuit_breaker("crm").call(_send)
 
 
 async def fetch_media(key: str) -> tuple[bytes, str]:
     """Descarga un medio guardado en el CRM. Devuelve (bytes, mime)."""
     url = f"{settings.crm_base_url.rstrip('/')}/media.php"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        res = await client.get(url, headers=_auth_headers(), params={"f": key})
-        if res.status_code >= 400:
-            log.error("[CRM-HTTP] fetch_media -> %s body=%s", res.status_code, (res.text or "")[:300])
-        res.raise_for_status()
-        mime = res.headers.get("content-type", "application/octet-stream").split(";")[0]
-        return res.content, mime
+    async def _send() -> tuple[bytes, str]:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            res = await client.get(url, headers=_auth_headers(), params={"f": key})
+            if res.status_code >= 400:
+                log.error("[CRM-HTTP] fetch_media -> %s", res.status_code)
+            res.raise_for_status()
+            mime = res.headers.get("content-type", "application/octet-stream").split(";")[0]
+            return res.content, mime
+
+    return await circuit_breaker("crm").call(_send)
 
 
 async def _request(
@@ -66,18 +75,56 @@ async def _request(
     params: Optional[dict] = None,
 ) -> dict[str, Any]:
     url = f"{settings.crm_base_url.rstrip('/')}{path}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        res = await client.request(method, url, headers=_headers(), json=json, params=params)
-        if res.status_code >= 400:
-            log.error(
-                "[CRM-HTTP] %s %s -> %s body=%s",
-                method,
-                url,
-                res.status_code,
-                (res.text or "")[:500],
-            )
-        res.raise_for_status()
-        return res.json()
+    started = time.monotonic()
+    status_code: int | None = None
+    try:
+        async def _send() -> dict[str, Any]:
+            nonlocal status_code
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                res = await client.request(
+                    method,
+                    url,
+                    headers=_headers(),
+                    json=json,
+                    params=params,
+                )
+                status_code = res.status_code
+                if res.status_code >= 400:
+                    log.error(
+                        "[CRM-HTTP] %s %s -> %s",
+                        method,
+                        path,
+                        res.status_code,
+                    )
+                res.raise_for_status()
+                return res.json()
+
+        data = await circuit_breaker("crm").call(_send)
+    except Exception as error:
+        latency_ms = (time.monotonic() - started) * 1000
+        record_operation("crm.http", "error", duration_ms=latency_ms)
+        audit_event(
+            "crm.http",
+            "error",
+            backend="crm",
+            operation=f"{method}_{path}",
+            latency_ms=latency_ms,
+            status_code=status_code,
+            error_type=type(error).__name__,
+        )
+        raise
+
+    latency_ms = (time.monotonic() - started) * 1000
+    record_operation("crm.http", "ok", duration_ms=latency_ms)
+    audit_event(
+        "crm.http",
+        "ok",
+        backend="crm",
+        operation=f"{method}_{path}",
+        latency_ms=latency_ms,
+        status_code=status_code,
+    )
+    return data
 
 
 async def upsert_inbound(

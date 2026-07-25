@@ -15,8 +15,12 @@ Cliente WhatsApp
   sandbox/app (FastAPI)
        │
        ├─► channels/whatsapp   (parse + send Graph API)
+       ├─► inbound_queue       (cola acotada + workers + deduplicación pendiente)
        ├─► crm                 (local SQLite O CRM_MODE=external → crm)
        ├─► agent/services      (buffer, LLM loop, tools, fillers)
+       ├─► guardrails          (handoff + invariantes + saneamiento)
+       ├─► resilience          (circuit breakers + degradación rápida)
+       ├─► observability       (trace_id + métricas + auditoría segura)
        ├─► Qdrant              (productos + conocimiento)
        └─► API donregalo.pe    (catálogo real)
        │
@@ -29,8 +33,12 @@ Cliente WhatsApp
 | Capa | Paquete | Responsabilidad |
 |---|---|---|
 | Canal | `app.channels.whatsapp` | Verify webhook, inbound Meta, send text/image, citas `context` |
+| Cola inbound | `app.services.inbound_queue` | Aceptación rápida, backpressure, workers y apagado ordenado |
 | CRM | `app.crm` | Persistencia, labels `bot_active` / `human_support`, API inbox |
 | Agente | `app.services` + `app.tools` + `app.prompts` | Buffer, LLM, tools, Qdrant |
+| Guardrails | `app.guardrails` | Políticas deterministas de conversación y salida segura |
+| Resiliencia | `app.resilience` | Circuit breakers de OpenAI, MCP, REST, CRM y Qdrant |
+| Observabilidad | `app.observability` | Correlación, métricas Prometheus y auditoría sin PII |
 | Panel | `web/` | Bandeja mínima para asesores |
 
 ## Multi-tenant (diseño, single-tenant en v1)

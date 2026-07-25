@@ -4,7 +4,7 @@ WhatsApp Cloud API y hace el handoff vía CRM.
 
 Devuelve un `AgentResult`, no un `str`: el orquestador necesita saber qué
 productos citó el especialista para poder reducir el estado. Las reglas de
-negocio (cuándo un handoff procede) viven en `harness/policies.py`, no aquí.
+protección (cuándo un handoff procede) viven en `app/guardrails`, no aquí.
 """
 from __future__ import annotations
 
@@ -20,12 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.crm import repository as repo
 from app.harness.contracts import AgentResult, EscalateReason, Product, extract_products
-from app.harness.policies import (
+from app.guardrails import (
     handoff_policy,
     is_payment_reason,
     is_small_talk,
     should_discard_handoff,
 )
+from app.observability import audit_event, record_operation
+from app.resilience import circuit_breaker
 from app.services.messenger import notify_team, send_message, set_typing
 from app.tools import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS, execute_tool
 
@@ -45,31 +47,66 @@ _LLM_MAX_ATTEMPTS = 4
 _LLM_BACKOFF_CAP = 8.0
 
 
-async def _chat_completion(client: httpx.AsyncClient, payload: dict) -> dict:
+def _observe_llm(
+    outcome: str,
+    started: float,
+    attempt: int,
+    *,
+    error_type: str | None = None,
+) -> None:
+    latency_ms = (time.monotonic() - started) * 1000
+    record_operation("openai.specialist", outcome, duration_ms=latency_ms)
+    audit_event(
+        "openai.request",
+        outcome,
+        backend="openai",
+        operation="specialist",
+        processed_count=attempt,
+        latency_ms=latency_ms,
+        error_type=error_type,
+    )
+
+
+async def _chat_completion_unprotected(
+    client: httpx.AsyncClient, payload: dict
+) -> dict:
     """POST a OpenAI reintentando errores pasajeros. Lanza si no hay forma."""
     delay = 1.0
+    started = time.monotonic()
 
     for attempt in range(1, _LLM_MAX_ATTEMPTS + 1):
-        r = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+        try:
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+        except Exception as error:
+            _observe_llm(
+                "error",
+                started,
+                attempt,
+                error_type=type(error).__name__,
+            )
+            raise
         if r.status_code == 200:
+            _observe_llm("ok", started, attempt)
             return r.json()
 
         body = r.text[:300]
 
         # Sin saldo no se arregla esperando: escala ya en vez de hacer aguardar al cliente.
         if "insufficient_quota" in body:
-            log.error("[LLM] cuota de OpenAI agotada: %s", body)
+            _observe_llm("quota", started, attempt)
+            log.error("[LLM] cuota de OpenAI agotada")
             r.raise_for_status()
 
         if r.status_code not in _LLM_RETRY_STATUS or attempt == _LLM_MAX_ATTEMPTS:
-            log.error("[LLM] %s definitivo (intento %s): %s", r.status_code, attempt, body)
+            _observe_llm("error", started, attempt)
+            log.error("[LLM] %s definitivo (intento %s)", r.status_code, attempt)
             r.raise_for_status()
 
         retry_after = r.headers.get("retry-after")
@@ -80,13 +117,21 @@ async def _chat_completion(client: httpx.AsyncClient, payload: dict) -> dict:
         wait = min(wait, _LLM_BACKOFF_CAP)
 
         log.warning(
-            "[LLM] %s (intento %s/%s); reintento en %.1fs: %s",
-            r.status_code, attempt, _LLM_MAX_ATTEMPTS, wait, body,
+            "[LLM] %s (intento %s/%s); reintento en %.1fs",
+            r.status_code, attempt, _LLM_MAX_ATTEMPTS, wait,
         )
         await asyncio.sleep(wait)
         delay = min(delay * 2, _LLM_BACKOFF_CAP)
 
+    _observe_llm("error", started, _LLM_MAX_ATTEMPTS)
     raise RuntimeError("unreachable")  # pragma: no cover
+
+
+async def _chat_completion(client: httpx.AsyncClient, payload: dict) -> dict:
+    """Una solicitud lógica (incluidos sus reintentos) cuenta como un intento."""
+    return await circuit_breaker("openai.specialist").call(
+        lambda: _chat_completion_unprotected(client, payload)
+    )
 
 _HANDOFF_WAIT_MSG = (
     "¡Claro! Te conecto con un asesor de nuestro equipo 🙏 "
@@ -342,7 +387,7 @@ async def run_specialist(
                         args = json.loads(call["function"].get("arguments") or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    log.info("[TOOL] %s args=%s", fn, args)
+                    log.info("[TOOL] %s arg_keys=%s", fn, sorted(args))
 
                     if fn == "escalar_a_humano":
                         motivo = args.get("motivo") or "no especificado"
@@ -352,10 +397,8 @@ async def run_specialist(
                         decision = handoff_policy(messages)
                         if not decision.allow:
                             log.info(
-                                "[HANDOFF] descartado conversation=%s motivo_modelo=%s motivo_guard=%s",
+                                "[HANDOFF] descartado conversation=%s",
                                 conversation_id,
-                                motivo,
-                                decision.reason[:80],
                             )
                             messages.append({
                                 "role": "tool",
@@ -367,7 +410,7 @@ async def run_specialist(
                             })
                             continue
 
-                        log.info("[HANDOFF] conversation=%s motivo=%s", conversation_id, motivo)
+                        log.info("[HANDOFF] conversation=%s ejecutado", conversation_id)
                         escalate = await perform_handoff(
                             wa_id=wa_id,
                             conversation_id=conversation_id,
@@ -415,7 +458,7 @@ async def run_specialist(
                             args = json.loads(call["function"].get("arguments") or "{}")
                         except json.JSONDecodeError:
                             args = {}
-                        log.info("[TOOL] %s args=%s", fn, args)
+                        log.info("[TOOL] %s arg_keys=%s", fn, sorted(args))
                         tools_used.append(fn)
                         result = await execute_tool(fn, args)
                         return call["id"], result

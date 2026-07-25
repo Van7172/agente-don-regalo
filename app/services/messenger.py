@@ -179,7 +179,7 @@ async def send_message(
         data = await whatsapp_client.send_text(wa_id, content, reply_to=reply_to)
         return (data.get("messages") or [{}])[0].get("id")
     except Exception as e:
-        log.error("Error enviando texto a %s: %s", wa_id, e)
+        log.error("Error enviando texto: %s", e)
         return None
 
 
@@ -230,7 +230,7 @@ async def send_image(wa_id: str, image_url: str, caption: str = "") -> str | Non
         data = await whatsapp_client.send_image_url(wa_id, image_url, caption)
         return (data.get("messages") or [{}])[0].get("id")
     except Exception as e:
-        log.error("Error enviando imagen a %s (%s): %s — reintento upload", wa_id, image_url[:80], e)
+        log.error("Error enviando imagen: %s — reintento upload", e)
         try:
             data_bytes, filename, mime = await _download_and_prepare(image_url)
             media_id = await whatsapp_client.upload_media(data_bytes, mime, filename)

@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -16,12 +16,23 @@ from app.channels.whatsapp.webhook import router as whatsapp_router
 from app.config import settings
 from app.crm.api import router as crm_router
 from app.db import init_db
+from app.observability import install_logging_context, render_prometheus
+from app.resilience import (
+    circuit_breakers_snapshot,
+    render_circuit_breaker_prometheus,
+)
+from app.services.inbound_queue import (
+    inbound_queue_stats,
+    start_inbound_queue,
+    stop_inbound_queue,
+)
 from app.services.outbox_poller import start_outbox_drain, stop_outbox_drain
 from app.services.watchdog import start_watchdog, stop_watchdog
 
+install_logging_context()
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
+    format="%(asctime)s %(levelname)s trace=%(trace_id)s %(message)s",
 )
 log = logging.getLogger(__name__)
 
@@ -57,11 +68,15 @@ async def lifespan(_app: FastAPI):
             "[BOOT] MCP Don Regalo inactivo; las lecturas usarán HTTP directo. "
             "Revisa DONREGALO_USE_MCP=1 y DONREGALO_MCP_TOKEN."
         )
+    await start_inbound_queue()
     start_watchdog()
     start_outbox_drain()
-    yield
-    stop_outbox_drain()
-    stop_watchdog()
+    try:
+        yield
+    finally:
+        await stop_inbound_queue()
+        stop_outbox_drain()
+        stop_watchdog()
 
 
 app = FastAPI(title="Agente Don Regalo", lifespan=lifespan)
@@ -87,7 +102,25 @@ async def health():
         "openai_model": settings.openai_model,
         "donregalo_mcp_enabled": settings.donregalo_use_mcp,
         "donregalo_mcp_configured": bool(settings.donregalo_mcp_token),
+        "inbound_queue": inbound_queue_stats(),
+        "observability": {
+            "trace_context": True,
+            "audit": "structured_logs",
+            "metrics": "/metrics",
+        },
+        "circuit_breakers": circuit_breakers_snapshot(),
     }
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics(x_agent_token: str | None = Header(default=None)):
+    expected = settings.agent_internal_token
+    if expected and x_agent_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return Response(
+        content=render_prometheus() + render_circuit_breaker_prometheus(),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 @app.get("/")
