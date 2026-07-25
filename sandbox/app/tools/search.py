@@ -151,13 +151,19 @@ async def _filtrar_activos(client: httpx.AsyncClient, productos: list[dict]) -> 
     la lista sin filtrar: preferimos enseñar de más a romper una búsqueda sana por
     un fallo pasajero.
     """
-    from app.tools.catalog import productos_activos
+    from app.config import settings
+    from app.tools import catalog, mcp_client
 
     ids = [p["id_producto"] for p in productos if p.get("id_producto")]
     if not ids:
         return productos
 
-    activos = await productos_activos(client, ids)
+    validar = (
+        mcp_client.productos_activos
+        if settings.donregalo_use_mcp
+        else catalog.productos_activos
+    )
+    activos = await validar(client, ids)
     if activos is None:
         return productos  # no se pudo verificar
 

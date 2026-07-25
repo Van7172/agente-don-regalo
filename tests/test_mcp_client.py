@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from app.tools import mcp_client
+from app.tools import executor
 
 
 # ── Payload real del MCP (verificado contra producción), recortado ──────────
@@ -147,7 +148,49 @@ def test_oferta_mcp_conserva_precio_anterior_y_descuento():
     assert product["descuento_pct"] == 25
 
 
+def test_navegacion_mcp_se_adapta_al_menu_existente():
+    structured = {
+        "categorias": [{
+            "nombre": "Plantas",
+            "slug": "plantas",
+            "subcategorias": [{"nombre": "Terrarios", "slug": "terrarios"}],
+            "landings": [{"nombre": "Plantas para Mamá", "slug": "plantas-para-mama"}],
+        }],
+        "filtros": [{"grupo": "Destinatario", "opciones": []}],
+        "ocasiones": [{"id": 3, "nombre": "Cumpleaños"}],
+    }
+
+    payload = mcp_client._navigation_payload(structured)
+    category = payload["data"]["categorias"][0]
+    assert category["url_categoria"] == "plantas"
+    assert category["subcategorias"][0]["url_categoria"] == "terrarios"
+    assert category["landings"][0]["slug_landing"] == "plantas-para-mama"
+
+
 # ── Funciones públicas con `_call` stubbeado ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_explorar_catalogo_via_mcp(monkeypatch):
+    async def fake_call(_client, tool, arguments):
+        assert tool == "donregalo_navegacion_catalogo"
+        assert arguments == {"incluir_campanas": True}
+        return {
+            "structuredContent": {
+                "categorias": [],
+                "filtros": [],
+                "ocasiones": [],
+            },
+            "isError": False,
+        }
+
+    monkeypatch.setattr(mcp_client, "_call", fake_call)
+    result = await mcp_client.explorar_catalogo(None, {"incluir_temporales": True})
+    assert result == {
+        "success": True,
+        "message": "OK",
+        "data": {"categorias": [], "filtros": [], "ocasiones": []},
+    }
+
 
 @pytest.mark.asyncio
 async def test_buscar_productos_via_mcp(monkeypatch):
@@ -165,6 +208,23 @@ async def test_buscar_productos_via_mcp(monkeypatch):
     res = await mcp_client.buscar_productos(None, {"categoria": "desayunos"})
     assert res["data"][0]["id_producto"] == 734
     assert res["data"][0]["precio_sol"] == 88.0
+
+
+@pytest.mark.asyncio
+async def test_productos_por_ocasion_reusa_busqueda_mcp(monkeypatch):
+    async def fake_call(_client, tool, arguments):
+        assert tool == "donregalo_buscar_productos"
+        assert arguments == {"ocasion": 2, "limite": mcp_client._IMAGE_CANDIDATE_POOL}
+        return _BUSCAR
+
+    async def fake_rate(_client):
+        return 4.0
+
+    monkeypatch.setattr(mcp_client, "_call", fake_call)
+    monkeypatch.setattr(mcp_client.adapters, "usd_pen_rate", fake_rate)
+
+    result = await mcp_client.productos_por_ocasion(None, {"id_ocasion": 2})
+    assert result["data"][0]["id_producto"] == 734
 
 
 @pytest.mark.asyncio
@@ -207,6 +267,35 @@ async def test_rastrear_mantiene_sobre_rest(monkeypatch):
     res = await mcp_client.rastrear_pedido(None, {"email": "a@b.com", "codigo": "AB12"})
     assert res["success"] is True
     assert res["data"]["codigo"] == "AB12"
+
+
+@pytest.mark.asyncio
+async def test_productos_activos_via_mcp(monkeypatch):
+    async def fake_call(_client, tool, arguments):
+        assert tool == "donregalo_validar_activos"
+        assert arguments == {"ids": [58, 69, 999]}
+        return {
+            "structuredContent": {"activos": [58, 69], "inactivos": [999]},
+            "isError": False,
+        }
+
+    monkeypatch.setattr(mcp_client, "_call", fake_call)
+    assert await mcp_client.productos_activos(None, [999, 69, 58, 58]) == {58, 69}
+
+
+def test_executor_selecciona_mcp_cuando_esta_activo(monkeypatch):
+    async def via_mcp(_client, _args):
+        return {}
+
+    async def via_http(_client, _args):
+        return {}
+
+    monkeypatch.setattr(executor.settings, "donregalo_use_mcp", True)
+    monkeypatch.setitem(mcp_client.SUPPORTED, "explorar_catalogo", via_mcp)
+    assert executor._pick("explorar_catalogo", via_http) is via_mcp
+
+    monkeypatch.setattr(executor.settings, "donregalo_use_mcp", False)
+    assert executor._pick("explorar_catalogo", via_http) is via_http
 
 
 @pytest.mark.asyncio

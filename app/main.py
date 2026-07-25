@@ -50,6 +50,13 @@ async def lifespan(_app: FastAPI):
                 "[BOOT] WHATSAPP_DRY_RUN=1 — los mensajes del asesor se verán en el CRM "
                 "pero NO llegarán a WhatsApp. Pon WHATSAPP_DRY_RUN=0 en EasyPanel."
             )
+    if settings.donregalo_use_mcp:
+        log.info("[BOOT] MCP Don Regalo activo: %s", settings.donregalo_mcp_url)
+    else:
+        log.warning(
+            "[BOOT] MCP Don Regalo inactivo; las lecturas usarán HTTP directo. "
+            "Revisa DONREGALO_USE_MCP=1 y DONREGALO_MCP_TOKEN."
+        )
     start_watchdog()
     start_outbox_drain()
     yield
@@ -78,6 +85,8 @@ async def health():
         "whatsapp_dry_run": settings.whatsapp_dry_run,
         "openai_configured": bool(settings.openai_api_key),
         "openai_model": settings.openai_model,
+        "donregalo_mcp_enabled": settings.donregalo_use_mcp,
+        "donregalo_mcp_configured": bool(settings.donregalo_mcp_token),
     }
 
 

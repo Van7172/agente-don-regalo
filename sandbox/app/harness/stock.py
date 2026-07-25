@@ -14,9 +14,20 @@ import logging
 
 import httpx
 
-from app.tools.catalog import productos_activos
+from app.config import settings
+from app.tools import catalog, mcp_client
 
 log = logging.getLogger(__name__)
+
+
+async def productos_activos(client: httpx.AsyncClient, ids: list[int]):
+    """Selecciona MCP cuando está activo y conserva el fallback HTTP."""
+    validar = (
+        mcp_client.productos_activos
+        if settings.donregalo_use_mcp
+        else catalog.productos_activos
+    )
+    return await validar(client, ids)
 
 
 async def is_available(product_id: int | None) -> bool | None:

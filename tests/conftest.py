@@ -44,6 +44,12 @@ def sin_pedido_temporal(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def sin_mcp_real(monkeypatch):
+    """La configuración de EasyPanel no convierte tests unitarios en smoke remotos."""
+    monkeypatch.setattr(app_settings, "donregalo_use_mcp", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def sin_crm_externo(monkeypatch):
     """El estado vive en memoria, no en el CRM del hosting."""
     monkeypatch.setattr(crm_http, "crm_enabled", lambda: False)

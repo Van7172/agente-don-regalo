@@ -300,7 +300,7 @@ Reemplaza la §3 original ("consumir vía `.mcp.json` para desarrollo"): aquí e
 | Archivo | Cambio |
 |---|---|
 | `app/config.py` | `donregalo_mcp_url`, `donregalo_mcp_token` (**desde env, nunca hardcodeado**), `donregalo_use_mcp` (default `False`; exige token) |
-| `app/tools/mcp_client.py` | **nuevo**. Cliente Streamable HTTP sobre httpx: lifecycle MCP, JSON/SSE, mappers MCP→forma canónica, validación de imágenes y 7 funciones compatibles con `catalog.*` que degradan a HTTP |
+| `app/tools/mcp_client.py` | Cliente Streamable HTTP sobre httpx: lifecycle MCP, JSON/SSE, mappers MCP→forma canónica, validación de imágenes, taxonomía, catálogo, detalle, ocasiones, pagos, rastreo y validación de ids; todo degrada a HTTP |
 | `app/tools/executor.py` | selector `_pick(name, default)`: MCP si el flag está activo y la tool soportada; si no, `catalog` |
 | `tests/test_mcp_client.py` | **nuevo**. 9 tests offline (mappers, isError→vacío, degradado, sobre REST del rastreo) |
 
@@ -310,9 +310,11 @@ Decisiones:
   `id→id_producto` y `en_oferta→tiene_oferta`, y `adapters.products_payload` hace el resto. El
   precio a soles lo calcula el agente con SU tipo de cambio, no el `precio_pen` del MCP: una sola
   fuente de verdad. El resto del harness no nota la diferencia.
-- **Híbrido a propósito.** `distritos_cobertura` (lista completa), `explorar_catalogo` (taxonomía)
-  y `tipo_cambio` siguen en HTTP: el MCP no tiene "lista completa" y enrutarlos rompería el
-  matcher determinista de cobertura y el menú (`taxonomy.render_menu`).
+- **Híbrido a propósito.** La taxonomía, las búsquedas estructuradas, ocasiones,
+  detalle, destacados, ofertas, pagos, rastreo y validación de ids activos usan
+  MCP. `distritos_cobertura` y `tipo_cambio` siguen en HTTP: el primero necesita
+  la lista completa para el matcher determinista y el segundo mantiene una sola
+  conversión canónica para REST, Qdrant y MCP.
 - **Validación defensiva de fotos también en MCP.** Construir una URL no prueba que sea una
   imagen: el consumidor aplica `valid_products` igual que REST; en detalle conserva la ficha y
   limpia solo la foto si está rota.

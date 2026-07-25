@@ -85,14 +85,15 @@ No requiere SQL. Antes de sobrescribir, conservar una copia recuperable de esos 
    DONREGALO_USE_MCP=1
    ```
 
-6. Redeploy del agente y comprobar `/health`.
+6. Redeploy del agente y comprobar `/health`: debe mostrar
+   `donregalo_mcp_enabled: true` y `donregalo_mcp_configured: true`.
 
 ## Resultado esperado
 
 - El smoke termina con `OK: lifecycle, 9 tools, catálogo, detalle, cobertura, ofertas, pagos e imagen`.
 - Si no se proporcionan datos reales de rastreo, muestra un aviso; ese control
   continúa pendiente.
-- `/health` del agente responde correctamente después del redeploy.
+- `/health` confirma que MCP está habilitado y configurado, sin exponer el token.
 - Ante cualquier fallo, mantener o volver a `DONREGALO_USE_MCP=0`.
 
 ## Confirmación

@@ -13,10 +13,11 @@ Tres reglas que gobiernan este módulo:
 2. **Degrada, no calla.** Ante CUALQUIER fallo del MCP (red, protocolo, JSON) se
    cae a la función HTTP equivalente de `catalog`. Un MCP caído no debe tumbar un
    turno — misma filosofía que el claim del outbox.
-3. **El MCP no reemplaza todo.** Cobertura (lista completa de distritos) y
-   taxonomía (`explorar_catalogo`) siguen en HTTP: el MCP solo resuelve por
-   distrito y su navegación tiene otra forma. Enrutarlas aquí rompería el matcher
-   determinista y el menú.
+3. **El MCP no reemplaza todo.** Cobertura sigue en HTTP porque el matcher
+   determinista necesita la lista completa de distritos y la tool MCP resuelve
+   solo un nombre. La navegación sí se adapta aquí a la forma REST que ya consume
+   el menú, y la validación de ids activos usa la tool MCP antes de ofrecer
+   resultados de Qdrant.
 """
 from __future__ import annotations
 
@@ -228,6 +229,37 @@ def _payment_payload(structured: dict) -> dict:
     return adapters.payment_methods_payload({"data": data})
 
 
+def _navigation_payload(structured: dict) -> dict:
+    """Taxonomía MCP → sobre compatible con `/catalogo/navegacion`."""
+    categorias = []
+    for category in structured.get("categorias") or []:
+        if not isinstance(category, dict):
+            continue
+        categorias.append({
+            "nombre": category.get("nombre"),
+            "url_categoria": category.get("slug"),
+            "subcategorias": [
+                {"nombre": sub.get("nombre"), "url_categoria": sub.get("slug")}
+                for sub in category.get("subcategorias") or []
+                if isinstance(sub, dict)
+            ],
+            "landings": [
+                {"nombre": item.get("nombre"), "slug_landing": item.get("slug")}
+                for item in category.get("landings") or []
+                if isinstance(item, dict)
+            ],
+        })
+    return {
+        "success": True,
+        "message": "OK",
+        "data": {
+            "categorias": categorias,
+            "filtros": list(structured.get("filtros") or []),
+            "ocasiones": list(structured.get("ocasiones") or []),
+        },
+    }
+
+
 def _buscar_args(args: dict) -> dict:
     """Args estilo `catalog.buscar_productos` → args de la tool MCP."""
     args = args or {}
@@ -275,6 +307,21 @@ async def _validated_detail(client: httpx.AsyncClient, payload: dict) -> dict:
 # ─── Funciones compatibles con `catalog.*` ───────────────────────────────────
 #
 # Misma firma `(client, args)` y misma salida canónica. Cada una degrada a HTTP.
+
+async def explorar_catalogo(client: httpx.AsyncClient, args: dict):
+    try:
+        result = await _call(
+            client,
+            "donregalo_navegacion_catalogo",
+            {"incluir_campanas": bool((args or {}).get("incluir_temporales"))},
+        )
+        if result.get("isError"):
+            raise McpError(_text(result))
+        return _navigation_payload(result.get("structuredContent") or {})
+    except Exception as err:
+        log.warning("[mcp] explorar_catalogo degradó a HTTP (%s)", err)
+        return await catalog.explorar_catalogo(client, args)
+
 
 async def buscar_productos(client: httpx.AsyncClient, args: dict):
     try:
@@ -336,6 +383,23 @@ async def detalle_producto(client: httpx.AsyncClient, args: dict):
         return await catalog.detalle_producto(client, args)
 
 
+async def productos_por_ocasion(client: httpx.AsyncClient, args: dict):
+    try:
+        result = await _call(
+            client,
+            "donregalo_buscar_productos",
+            {"ocasion": int(args["id_ocasion"]), "limite": _IMAGE_CANDIDATE_POOL},
+        )
+        if result.get("isError"):
+            return {"data": [], "total": 0}
+        rate = await adapters.usd_pen_rate(client)
+        payload = _list_payload(result.get("structuredContent") or {}, rate)
+        return await _validated_list(client, payload)
+    except Exception as err:
+        log.warning("[mcp] productos_por_ocasion degradó a HTTP (%s)", err)
+        return await catalog.productos_por_ocasion(client, args)
+
+
 async def productos_destacados(client: httpx.AsyncClient, _args: dict):
     try:
         result = await _call(
@@ -394,13 +458,34 @@ async def rastrear_pedido(client: httpx.AsyncClient, args: dict):
         return await catalog.rastrear_pedido(client, args)
 
 
+async def productos_activos(
+    client: httpx.AsyncClient, ids: list[int]
+) -> set[int] | None:
+    """Valida ids de Qdrant/estado vía MCP; `None` si tampoco responde REST."""
+    normalized = sorted({int(pid) for pid in ids if pid is not None and int(pid) > 0})
+    if not normalized:
+        return set()
+    try:
+        result = await _call(client, "donregalo_validar_activos", {"ids": normalized})
+        if result.get("isError"):
+            raise McpError(_text(result))
+        activos = (result.get("structuredContent") or {}).get("activos")
+        if not isinstance(activos, list):
+            raise McpError("respuesta MCP de activos sin `activos` array")
+        return {int(pid) for pid in activos}
+    except Exception as err:
+        log.warning("[mcp] productos_activos degradó a HTTP (%s)", err)
+        return await catalog.productos_activos(client, normalized)
+
+
 # Nombres de tool del harness que este módulo sabe resolver por MCP. El resto
-# (explorar_catalogo, distritos_cobertura, tipo_cambio, productos_por_ocasion)
-# se quedan en HTTP a propósito.
+# (`distritos_cobertura`, `tipo_cambio`) se queda en HTTP a propósito.
 SUPPORTED = {
+    "explorar_catalogo":     explorar_catalogo,
     "buscar_productos":     buscar_productos,
     "catalogo_categoria":   catalogo_categoria,
     "detalle_producto":     detalle_producto,
+    "productos_por_ocasion": productos_por_ocasion,
     "productos_destacados": productos_destacados,
     "productos_oferta":     productos_oferta,
     "metodos_pago":         metodos_pago,

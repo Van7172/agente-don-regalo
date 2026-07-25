@@ -1,4 +1,12 @@
 {
+  "donregalo_navegacion_catalogo": {
+    "container": null,
+    "required": [
+      "categorias",
+      "filtros",
+      "ocasiones"
+    ]
+  },
   "donregalo_buscar_productos": {
     "container": "productos",
     "required": [
@@ -66,6 +74,13 @@
       "fecha",
       "entrega",
       "productos"
+    ]
+  },
+  "donregalo_validar_activos": {
+    "container": null,
+    "required": [
+      "activos",
+      "inactivos"
     ]
   }
 }
