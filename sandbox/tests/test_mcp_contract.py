@@ -8,9 +8,14 @@ import subprocess
 
 import pytest
 
+from app.guardrails.parameters import MCP_ARGUMENT_SCHEMAS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONSUMER_CONTRACT = ROOT / "tests" / "fixtures" / "mcp" / "consumer_contract.json"
+PROVIDER_SNAPSHOT = (
+    ROOT / "tests" / "fixtures" / "mcp" / "provider_contract_snapshot.json"
+)
 
 
 def _server_root() -> Path:
@@ -75,3 +80,31 @@ def test_output_schemas_publican_todo_lo_que_consume_python():
         assert schema.get("additionalProperties") is False, (
             f"{name}: el objeto consumido debe cerrar additionalProperties"
         )
+
+
+def test_snapshot_contract_is_mandatory():
+    """Contrato offline obligatorio: nunca depende de un checkout PHP opcional."""
+    consumer = json.loads(CONSUMER_CONTRACT.read_text(encoding="utf-8"))
+    provider = json.loads(PROVIDER_SNAPSHOT.read_text(encoding="utf-8"))
+
+    assert set(consumer) == set(provider)
+    assert set(provider) == set(MCP_ARGUMENT_SCHEMAS)
+
+    for name, snapshot in provider.items():
+        input_schema = MCP_ARGUMENT_SCHEMAS[name]
+        assert input_schema.get("type") == "object"
+        assert input_schema.get("additionalProperties") is False
+
+        agent_keys = set((input_schema.get("properties") or {}).keys())
+        provider_keys = set(snapshot["input_keys"])
+        assert agent_keys <= provider_keys, (
+            f"{name}: el agente podría enviar campos no publicados: "
+            f"{sorted(agent_keys - provider_keys)}"
+        )
+        assert set(input_schema.get("required") or []) == set(
+            snapshot["input_required"]
+        )
+
+        expected_output = consumer[name]
+        assert snapshot["output_container"] == expected_output["container"]
+        assert set(snapshot["output_required"]) == set(expected_output["required"])

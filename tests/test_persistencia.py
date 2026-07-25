@@ -53,7 +53,7 @@ def espias(monkeypatch):
     return estado
 
 
-def _tool_call(name: str) -> dict:
+def _tool_call(name: str, arguments: dict | None = None) -> dict:
     return {
         "choices": [{
             "message": {
@@ -61,7 +61,10 @@ def _tool_call(name: str) -> dict:
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": name, "arguments": json.dumps({"motivo": "pago"})},
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments or {"motivo": "pago"}),
+                    },
                 }],
             }
         }]
@@ -96,7 +99,7 @@ async def test_el_mensaje_de_espera_del_handoff_queda_en_el_crm(espias, monkeypa
 async def test_el_filler_de_tool_queda_en_el_crm(espias, monkeypatch):
     """Antes 'Un momento, ya te ayudo 😊' salía por WhatsApp pero no en el inbox."""
     respuestas = [
-        _tool_call("buscar_semantico"),
+        _tool_call("buscar_semantico", {"q": "desayuno sorpresa"}),
         {"choices": [{"message": {"content": "Aquí tienes 3 opciones", "tool_calls": None}}]},
     ]
 

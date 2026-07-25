@@ -1,0 +1,103 @@
+{
+  "donregalo_navegacion_catalogo": {
+    "input_keys": ["incluir_campanas"],
+    "input_required": [],
+    "output_container": null,
+    "output_required": ["categorias", "filtros", "ocasiones"]
+  },
+  "donregalo_buscar_productos": {
+    "input_keys": [
+      "q",
+      "categoria",
+      "filtro",
+      "landing",
+      "ocasion",
+      "min_precio_pen",
+      "max_precio_pen",
+      "incluir_funebre",
+      "orden",
+      "pagina",
+      "limite"
+    ],
+    "input_required": [],
+    "output_container": "productos",
+    "output_required": [
+      "id",
+      "nombre",
+      "precio_usd",
+      "categoria_slug",
+      "en_oferta",
+      "stock",
+      "imagen_url"
+    ]
+  },
+  "donregalo_detalle_producto": {
+    "input_keys": ["id"],
+    "input_required": ["id"],
+    "output_container": null,
+    "output_required": [
+      "id",
+      "nombre",
+      "descripcion",
+      "precio_usd",
+      "en_oferta",
+      "stock",
+      "categoria_slug",
+      "categoria",
+      "imagen_url"
+    ]
+  },
+  "donregalo_productos_destacados": {
+    "input_keys": ["limite"],
+    "input_required": [],
+    "output_container": "productos",
+    "output_required": [
+      "id",
+      "nombre",
+      "precio_usd",
+      "categoria_slug",
+      "en_oferta",
+      "imagen_url"
+    ]
+  },
+  "donregalo_productos_ofertas": {
+    "input_keys": ["pagina", "limite"],
+    "input_required": [],
+    "output_container": "productos",
+    "output_required": [
+      "id",
+      "nombre",
+      "precio_usd",
+      "precio_antes_usd",
+      "descuento_pct",
+      "categoria_slug",
+      "en_oferta",
+      "imagen_url"
+    ]
+  },
+  "donregalo_metodos_pago": {
+    "input_keys": [],
+    "input_required": [],
+    "output_container": "metodos",
+    "output_required": ["id", "nombre", "descripcion"]
+  },
+  "donregalo_rastrear_pedido": {
+    "input_keys": ["email", "codigo"],
+    "input_required": ["email", "codigo"],
+    "output_container": null,
+    "output_required": [
+      "codigo",
+      "estado",
+      "preparacion",
+      "fecha",
+      "entrega",
+      "productos"
+    ]
+  },
+  "donregalo_validar_activos": {
+    "input_keys": ["ids"],
+    "input_required": ["ids"],
+    "output_container": null,
+    "output_required": ["activos", "inactivos"]
+  }
+}

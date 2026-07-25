@@ -24,7 +24,11 @@ from app.guardrails import (
     handoff_policy,
     is_payment_reason,
     is_small_talk,
+    protect_json_for_model,
+    redact_personal_data,
+    sanitize_tool_result,
     should_discard_handoff,
+    validate_arguments,
 )
 from app.observability import audit_event, record_operation
 from app.resilience import circuit_breaker
@@ -301,6 +305,19 @@ async def run_specialist(
             all_tools.append(MEMORY_TOOL)
         if include_handoff and conversation_id is not None:
             all_tools.append(HUMAN_HANDOFF_TOOL)
+    allowed_tool_names = {
+        str(tool.get("function", {}).get("name") or "")
+        for tool in all_tools
+        if isinstance(tool, dict)
+    }
+    tool_schemas = {
+        str(tool.get("function", {}).get("name") or ""): {
+            **(tool.get("function", {}).get("parameters") or {"type": "object"}),
+            "additionalProperties": False,
+        }
+        for tool in all_tools
+        if isinstance(tool, dict)
+    }
 
     filler_sent = conversation_id in _filler_conversations if conversation_id else True
     early_filler_task: asyncio.Task | None = None
@@ -359,6 +376,85 @@ async def run_specialist(
 
                 messages.append(msg)
 
+                # Defensa en profundidad: aunque la API solo recibe el toolset del
+                # especialista, nunca confiamos en que una llamada devuelta por el
+                # modelo esté autorizada. Toda llamada necesita pertenecer a la
+                # lista enviada en ESTE round.
+                authorized_calls = []
+                for call in tool_calls:
+                    fn = str((call.get("function") or {}).get("name") or "")
+                    if fn in allowed_tool_names:
+                        authorized_calls.append(call)
+                        continue
+                    record_operation("guardrail.tool_authorization", "blocked")
+                    audit_event(
+                        "guardrail.tool_authorization",
+                        "blocked",
+                        conversation_id=conversation_id,
+                        tool=fn or "unknown",
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "content": json.dumps(
+                                {
+                                    "ok": False,
+                                    "blocked": True,
+                                    "error": "herramienta no autorizada para este especialista",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                tool_calls = authorized_calls
+                if not tool_calls:
+                    continue
+
+                # Los argumentos del modelo son entrada no confiable. El esquema
+                # publicado en este mismo round es un contrato cerrado: JSON
+                # objeto, campos requeridos, tipos exactos y sin extras.
+                validated_args_by_id: dict[str, dict] = {}
+                validated_calls = []
+                for call in tool_calls:
+                    fn = str((call.get("function") or {}).get("name") or "")
+                    try:
+                        args = json.loads(
+                            (call.get("function") or {}).get("arguments") or "{}"
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        args = None
+                    validation = validate_arguments(args, tool_schemas[fn])
+                    if validation.valid:
+                        validated_args_by_id[str(call.get("id") or "")] = args
+                        validated_calls.append(call)
+                        continue
+                    record_operation("guardrail.tool_parameters", "blocked")
+                    audit_event(
+                        "guardrail.tool_parameters",
+                        "blocked",
+                        conversation_id=conversation_id,
+                        tool=fn,
+                        violation_count=len(validation.errors),
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "content": json.dumps(
+                                {
+                                    "ok": False,
+                                    "blocked": True,
+                                    "error": "parámetros de herramienta inválidos",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                tool_calls = validated_calls
+                if not tool_calls:
+                    continue
+
                 if not filler_sent and conversation_id is not None:
                     filler = _filler_for_tools(tool_calls)
                     if filler:
@@ -383,10 +479,7 @@ async def run_specialist(
 
                 for call in special:
                     fn = call["function"]["name"]
-                    try:
-                        args = json.loads(call["function"].get("arguments") or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
+                    args = validated_args_by_id[str(call.get("id") or "")]
                     log.info("[TOOL] %s arg_keys=%s", fn, sorted(args))
 
                     if fn == "escalar_a_humano":
@@ -427,6 +520,32 @@ async def run_specialist(
                         )
 
                     if fn == "guardar_datos_cliente":
+                        if isinstance(args.get("nota"), str):
+                            privacy = redact_personal_data(args["nota"])
+                            args["nota"] = privacy.value
+                            if privacy.redacted_count:
+                                record_operation("guardrail.personal_data", "redacted")
+                                audit_event(
+                                    "guardrail.personal_data",
+                                    "redacted",
+                                    conversation_id=conversation_id,
+                                    tool=fn,
+                                    operation="memory_write",
+                                    violation_count=privacy.redacted_count,
+                                )
+                        safe_args_json, removed = sanitize_tool_result(
+                            json.dumps(args, ensure_ascii=False)
+                        )
+                        args = json.loads(safe_args_json)
+                        if removed:
+                            record_operation("guardrail.tool_input", "sanitized")
+                            audit_event(
+                                "guardrail.tool_input",
+                                "sanitized",
+                                conversation_id=conversation_id,
+                                tool=fn,
+                                violation_count=removed,
+                            )
                         if use_external_crm and wa_id:
                             from app.crm import http_client as crm_http
 
@@ -445,6 +564,28 @@ async def run_specialist(
                             await session.commit()
                         else:
                             result = json.dumps({"ok": False, "motivo": "sin session"})
+                        result, removed = sanitize_tool_result(result)
+                        if removed:
+                            record_operation("guardrail.tool_output", "sanitized")
+                            audit_event(
+                                "guardrail.tool_output",
+                                "sanitized",
+                                conversation_id=conversation_id,
+                                tool=fn,
+                                violation_count=removed,
+                            )
+                        privacy = protect_json_for_model(result)
+                        result = privacy.value
+                        if privacy.redacted_count:
+                            record_operation("guardrail.personal_data", "redacted")
+                            audit_event(
+                                "guardrail.personal_data",
+                                "redacted",
+                                conversation_id=conversation_id,
+                                tool=fn,
+                                operation="tool_output",
+                                violation_count=privacy.redacted_count,
+                            )
                         messages.append({
                             "role": "tool",
                             "tool_call_id": call["id"],
@@ -454,13 +595,32 @@ async def run_specialist(
                 if parallel:
                     async def _run_one(call):
                         fn = call["function"]["name"]
-                        try:
-                            args = json.loads(call["function"].get("arguments") or "{}")
-                        except json.JSONDecodeError:
-                            args = {}
+                        args = validated_args_by_id[str(call.get("id") or "")]
                         log.info("[TOOL] %s arg_keys=%s", fn, sorted(args))
                         tools_used.append(fn)
                         result = await execute_tool(fn, args)
+                        result, removed = sanitize_tool_result(result)
+                        if removed:
+                            record_operation("guardrail.tool_output", "sanitized")
+                            audit_event(
+                                "guardrail.tool_output",
+                                "sanitized",
+                                conversation_id=conversation_id,
+                                tool=fn,
+                                violation_count=removed,
+                            )
+                        privacy = protect_json_for_model(result)
+                        result = privacy.value
+                        if privacy.redacted_count:
+                            record_operation("guardrail.personal_data", "redacted")
+                            audit_event(
+                                "guardrail.personal_data",
+                                "redacted",
+                                conversation_id=conversation_id,
+                                tool=fn,
+                                operation="tool_output",
+                                violation_count=privacy.redacted_count,
+                            )
                         return call["id"], result
 
                     results = await asyncio.gather(*[_run_one(c) for c in parallel])

@@ -1,42 +1,86 @@
-# Red de regresión en CI: la misma que se corre en local, sin excusas.
-#
-# Nada de aquí sale a la red: `tests/conftest.py` fuerza `crm_enabled=False` y
-# stubea la API, y el runner de evals usa el corpus determinista. Los evals con
-# clasificador LLM (`--llm`) NO corren aquí: llaman a OpenAI, cuestan dinero y
-# necesitan credenciales.
-name: CI
+name: Production Gate
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-gate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  crm-contracts:
+    name: crm / php-contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          # La misma que el Dockerfile (`python:3.12-slim`), que es lo que corre
-          # en producción. El mínimo real es 3.11: en 3.10 no existe
-          # `asyncio.timeout` y revientan ~9 tests.
+          python-version: "3.12"
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: curl, pdo_mysql
+
+      - name: Sintaxis PHP, JavaScript y contratos del CRM
+        run: python scripts/check_crm.py
+
+  quality-gate:
+    name: quality-gate / production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONHASHSEED: "0"
+      QUALITY_GATE_REPORT: artifacts/quality-gate.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-      - name: Instalar dependencias
+      - name: Instalar dependencias bloqueadas por el repositorio
         run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
 
-      # Antes que los tests: si el espejo divergió, el resto del build se está
-      # midiendo sobre dos versiones distintas del mismo código.
-      - name: El espejo sandbox/ sigue siendo un espejo
-        run: python scripts/check_mirror.py
+      - name: Tests + contrato MCP + evals
+        run: python scripts/quality_gate.py
 
-      - name: Tests
-        run: python -m pytest tests/ -q
+      - name: Publicar evidencia del gate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-${{ github.sha }}
+          path: artifacts/quality-gate.json
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Evals (corpus determinista)
-        run: python -m evals.runner
+  production-image:
+    name: production-image / gated
+    needs: [quality-gate, crm-contracts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # El Dockerfile vuelve a ejecutar el gate en una etapa requerida por la
+      # imagen final. Así un build manual/EasyPanel también falla ante regresión.
+      - name: Construir imagen elegible para producción
+        run: docker build --target runtime -t agente-don-regalo:${{ github.sha }} .

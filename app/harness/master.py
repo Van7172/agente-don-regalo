@@ -20,10 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.guardrails import (
+    SAFE_INJECTION_REPLY,
     dedupe_artifacts,
+    detect_prompt_injection,
     guard_reply,
     handoff_policy,
     latest_user_text,
+    minimize_historical_messages,
+    sanitize_messages_for_model,
     sanitize_reply,
 )
 from app.harness.checkout import (
@@ -55,6 +59,7 @@ from app.harness.taxonomy import (
     resolve_option,
 )
 from app.harness.trace import Trace
+from app.observability import audit_event, record_operation
 from app.prompts.compose import build_system
 from app.prompts.playbooks import WELCOME
 from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
@@ -169,6 +174,57 @@ async def run_master(
     persist=None,
 ) -> str | None:
     turn = perceive(messages)
+
+    # La entrada se evalúa antes del router, el LLM y cualquier herramienta.
+    # Solo se inspecciona el turno actual: los ataques antiguos se sanean abajo,
+    # pero no pueden dejar una conversación bloqueada para siempre.
+    input_guard = detect_prompt_injection(turn.text)
+    if input_guard.blocked:
+        record_operation("guardrail.input", "blocked")
+        audit_event(
+            "guardrail.input",
+            "blocked",
+            conversation_id=conversation_id,
+            risk_level=input_guard.risk,
+            risk_score=input_guard.score,
+            rule_count=len(input_guard.findings),
+        )
+        trace = Trace(
+            conversation_id=conversation_id,
+            intent="security",
+            agent="input_guardrail",
+            router="guardrail",
+            user_text=turn.text,
+            violations=[
+                f"prompt_injection:{rule}" for rule in input_guard.rules
+            ],
+        )
+        trace.done().emit()
+        return SAFE_INJECTION_REPLY
+
+    # Un ataque bloqueado ya quedó persistido en el CRM como mensaje de usuario.
+    # En turnos posteriores no se reenvía al modelo: se sustituye por un marcador.
+    safe_messages, removed = sanitize_messages_for_model(turn.messages)
+    if removed:
+        record_operation("guardrail.history", "sanitized")
+        audit_event(
+            "guardrail.history",
+            "sanitized",
+            conversation_id=conversation_id,
+            violation_count=removed,
+        )
+    safe_messages, redacted_personal_data = minimize_historical_messages(safe_messages)
+    if redacted_personal_data:
+        record_operation("guardrail.personal_data", "redacted")
+        audit_event(
+            "guardrail.personal_data",
+            "redacted",
+            conversation_id=conversation_id,
+            operation="historical_messages",
+            violation_count=redacted_personal_data,
+        )
+    turn.messages = safe_messages
+
     state = (
         await load_state(conversation_id, wa_id=wa_id)
         if conversation_id is not None

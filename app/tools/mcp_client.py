@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.guardrails import ParameterValidationError, validate_mcp_arguments
 from app.observability import audit_event, record_operation
 from app.resilience import circuit_breaker
 from app.tools import adapters, catalog
@@ -169,6 +170,7 @@ async def _call_unobserved(
     Lanza McpError ante error de transporte, JSON-RPC `error`, o falta de `result`.
     Un `isError: true` de negocio NO es excepción: lo inspecciona quien llama.
     """
+    arguments = validate_mcp_arguments(tool, arguments)
     await _ensure_initialized(client)
     request_id = next(_request_ids)
     payload = {
@@ -188,6 +190,18 @@ async def _call_unobserved(
 
 async def _call(client: httpx.AsyncClient, tool: str, arguments: dict) -> dict:
     started = time.monotonic()
+    try:
+        arguments = validate_mcp_arguments(tool, arguments)
+    except ParameterValidationError as error:
+        record_operation("guardrail.mcp_parameters", "blocked")
+        audit_event(
+            "guardrail.mcp_parameters",
+            "blocked",
+            backend="mcp",
+            tool=tool,
+            violation_count=len(error.errors),
+        )
+        raise
     try:
         result = await circuit_breaker("mcp").call(
             lambda: _call_unobserved(client, tool, arguments)

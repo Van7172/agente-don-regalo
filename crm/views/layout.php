@@ -33,6 +33,7 @@ $userName = (string) ($user['name'] ?? '');
       <a href="<?= e(url_to('/')) ?>"<?= $name === 'inbox' ? ' aria-current="page"' : '' ?>>Inbox</a>
       <a href="<?= e(url_to('sales-history.php')) ?>"<?= $name === 'sales-history' ? ' aria-current="page"' : '' ?>>Historial de ventas</a>
       <a href="<?= e(url_to('reports.php')) ?>"<?= $name === 'reports' ? ' aria-current="page"' : '' ?>>Reportes</a>
+      <a href="<?= e(url_to('operations.php')) ?>"<?= $name === 'operations' ? ' aria-current="page"' : '' ?>>Operaciones</a>
     </nav>
 
     <div class="topbar-user">

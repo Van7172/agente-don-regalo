@@ -52,14 +52,20 @@ TOOLS = [
                 "properties": {
                     "q": {
                         "type": "string",
+                        "minLength": 1,
+                        "maxLength": 300,
                         "description": "Lo que el cliente busca, descrito de la forma más rica posible (incluye estilo, ocasión y características que mencionó).",
                     },
                     "id_ocasion": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 7,
                         "description": "Opcional. Filtra por ocasión si el cliente la indicó: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
                     },
                     "precio_max": {
                         "type": "number",
+                        "minimum": 0,
+                        "maximum": 10000,
                         "description": "Opcional. Precio máximo en USD si el cliente dio un presupuesto.",
                     },
                     "incluir_funebre": {
@@ -68,15 +74,20 @@ TOOLS = [
                     },
                     "preferencias": {
                         "type": "string",
+                        "maxLength": 500,
                         "description": "Opcional. Gustos DURABLES del cliente que conoces de su historial (DATOS CONOCIDOS), ej: 'le gustan los girasoles y los colores pastel, prefiere detalles con chocolate'. Se usan para personalizar el ranking sin sobreescribir lo que pide ahora. No inventes: solo lo que realmente sabes del cliente.",
                     },
                     "categoria_slug": {
                         "type": "string",
+                        "format": "slug",
+                        "maxLength": 120,
                         "description": "Opcional. Restringe la búsqueda a una categoría exacta. Úsalo cuando el cliente mencionó explícitamente una categoría, y OBLIGATORIAMENTE cuando busques dentro de una campaña de temporada (día del padre, navidad, etc.). Slugs permanentes: desayunos, arreglos-florales, peluches, plantas, cestas, regalo-para-bebe, arreglos-funebres. Slugs de campaña (rotan, confírmalos con explorar_catalogo): dia-del-padre, dia-de-la-madre, etc.",
                     },
                     "excluir_ids": {
                         "type": "array",
-                        "items": {"type": "integer"},
+                        "items": {"type": "integer", "minimum": 1},
+                        "maxItems": 100,
+                        "uniqueItems": True,
                         "description": "Opcional. id_producto de productos que YA mostraste al cliente en esta conversación. Úsalo cuando el cliente pida 'más opciones', 'otras', 'algo diferente' o 'no lo mismo', para que la búsqueda NO repita lo ya enviado. Junta todos los id_producto que aparecieron en tus resultados anteriores.",
                     },
                 },
@@ -100,6 +111,7 @@ TOOLS = [
                 "properties": {
                     "id_producto": {
                         "type": "integer",
+                        "minimum": 1,
                         "description": "id_producto del producto de referencia (el que le gustó al cliente).",
                     },
                     "incluir_funebre": {
@@ -128,22 +140,31 @@ TOOLS = [
                 "properties": {
                     "q": {
                         "type": "string",
+                        "maxLength": 200,
                         "description": "Opcional. Término de búsqueda por texto (ej: rosas, peluche, desayuno). Puede ir solo o junto a un slug.",
                     },
                     "categoria": {
                         "type": "string",
+                        "format": "slug",
+                        "maxLength": 100,
                         "description": "Opcional. Slug de categoría (`url_categoria`) de `explorar_catalogo`, ej: desayunos, peluches. Si es padre, incluye sus subcategorías.",
                     },
                     "filtro": {
                         "type": "string",
+                        "format": "slug",
+                        "maxLength": 100,
                         "description": "Opcional. Slug de filtro (`url_filtro`) de `explorar_catalogo`, ej: para-hombre, girasoles.",
                     },
                     "landing": {
                         "type": "string",
+                        "format": "slug",
+                        "maxLength": 120,
                         "description": "Opcional. Slug de landing (`url_categoria_filtro`) de `explorar_catalogo`, un cruce curado categoría×filtro, ej: desayunos-de-cumpleanos. Si lo usas, no repitas categoria+filtro.",
                     },
                     "id_ocasion": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 7,
                         "description": "Opcional. Filtra por ocasión: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7. Úsalo si el cliente indicó la ocasión.",
                     },
                     "orden": {
@@ -166,6 +187,9 @@ TOOLS = [
                 "properties": {
                     "slug": {
                         "type": "string",
+                        "format": "slug",
+                        "minLength": 1,
+                        "maxLength": 120,
                         "description": "El slug (url_categoria) de la categoría, ej: arreglos-florales, desayunos, peluches",
                     },
                 },
@@ -199,6 +223,7 @@ TOOLS = [
                 "properties": {
                     "id_producto": {
                         "type": "integer",
+                        "minimum": 1,
                         "description": "El id_producto numérico obtenido de buscar_productos, catalogo_categoria o productos_destacados",
                     },
                 },
@@ -216,6 +241,8 @@ TOOLS = [
                 "properties": {
                     "id_ocasion": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 7,
                         "description": "El id de la ocasión. Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7",
                     },
                 },
@@ -255,8 +282,19 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "email":  {"type": "string", "description": "email del cliente"},
-                    "codigo": {"type": "string", "description": "código del pedido"},
+                    "email": {
+                        "type": "string",
+                        "format": "email",
+                        "maxLength": 254,
+                        "description": "email del cliente",
+                    },
+                    "codigo": {
+                        "type": "string",
+                        "format": "order_code",
+                        "minLength": 2,
+                        "maxLength": 64,
+                        "description": "código del pedido",
+                    },
                 },
                 "required": ["email", "codigo"],
             },
@@ -280,6 +318,8 @@ TOOLS = [
                 "properties": {
                     "q": {
                         "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
                         "description": "La duda o situación del cliente, redactada de forma clara.",
                     },
                 },

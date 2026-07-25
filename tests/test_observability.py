@@ -145,3 +145,39 @@ async def test_endpoint_metrics_y_health_publican_el_contrato():
     with pytest.raises(HTTPException) as error:
         await main.metrics(x_agent_token="incorrecto")
     assert error.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_snapshot_operacional_es_json_seguro_y_requiere_token(monkeypatch):
+    from app import api_internal
+
+    async def queue_snapshot():
+        return {
+            "backend": "redis_streams",
+            "global_pending": 3,
+            "dead_letter": 1,
+            "durable": True,
+        }
+
+    monkeypatch.setattr(
+        api_internal,
+        "inbound_queue_operational_stats",
+        queue_snapshot,
+    )
+    record_operation("inbound.worker", "retry", duration_ms=12)
+
+    snapshot = await api_internal.operations(
+        x_agent_token=api_internal.settings.agent_internal_token
+    )
+
+    assert snapshot["queue"]["global_pending"] == 3
+    assert snapshot["queue"]["dead_letter"] == 1
+    assert snapshot["operations"]["operation_series"]["inbound.worker:retry"]["count"] == 1
+    assert "circuits" in snapshot
+    rendered = json.dumps(snapshot)
+    assert "WHATSAPP_TOKEN" not in rendered
+    assert "DONREGALO_MCP_TOKEN" not in rendered
+
+    with pytest.raises(HTTPException) as error:
+        await api_internal.operations(x_agent_token="incorrecto")
+    assert error.value.status_code == 401

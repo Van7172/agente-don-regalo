@@ -139,8 +139,9 @@ class InboundQueue:
             await asyncio.gather(*self._workers, return_exceptions=True)
             self._workers.clear()
 
-    def stats(self) -> dict[str, int | bool]:
+    def stats(self) -> dict[str, int | bool | str]:
         return {
+            "backend": "local",
             "running": self._running,
             "depth": self._queue.qsize(),
             "maxsize": self._queue.maxsize,
@@ -151,6 +152,14 @@ class InboundQueue:
             "failed": self._failed,
             "duplicates": self._duplicates,
             "rejected": self._rejected,
+        }
+
+    async def operational_stats(self) -> dict[str, int | bool | str]:
+        return {
+            **self.stats(),
+            "durable": False,
+            "global_pending": self._queue.qsize(),
+            "dead_letter": 0,
         }
 
     async def _run_worker(self, index: int) -> None:
@@ -225,22 +234,67 @@ class InboundQueue:
                     self._queue.task_done()
 
 
-_inbound_queue: InboundQueue | None = None
+_inbound_queue: object | None = None
 
 
 async def start_inbound_queue() -> None:
     global _inbound_queue
     if _inbound_queue is not None:
         return
-    queue = InboundQueue(
-        handler=enqueue_inbound,
-        maxsize=settings.inbound_queue_maxsize,
-        workers=settings.inbound_queue_workers,
-    )
+    backend = settings.inbound_queue_backend
+    if backend not in {"local", "redis"}:
+        raise RuntimeError("INBOUND_QUEUE_BACKEND debe ser 'local' o 'redis'")
+    if backend == "redis":
+        if not settings.redis_url:
+            raise RuntimeError(
+                "REDIS_URL es obligatorio cuando INBOUND_QUEUE_BACKEND=redis"
+            )
+        if settings.crm_mode != "external":
+            raise RuntimeError(
+                "CRM_MODE=external es obligatorio con Redis: el estado local "
+                "en memoria no puede compartirse entre réplicas"
+            )
+        from redis.asyncio import Redis
+
+        from app.services.redis_inbound_queue import RedisInboundQueue
+
+        client = Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            health_check_interval=30,
+        )
+
+        async def durable_handler(msg: InboundMessage) -> dict:
+            return await enqueue_inbound(msg, wait_for_completion=True)
+
+        queue = RedisInboundQueue(
+            client=client,
+            handler=durable_handler,
+            stream=settings.redis_stream_key,
+            group=settings.redis_consumer_group,
+            dlq_stream=settings.redis_dlq_stream,
+            maxsize=settings.inbound_queue_maxsize,
+            workers=settings.inbound_queue_workers,
+            block_ms=settings.redis_block_ms,
+            claim_idle_ms=settings.redis_claim_idle_ms,
+            reclaim_seconds=settings.redis_reclaim_seconds,
+            dedupe_ttl_seconds=settings.redis_dedupe_ttl_seconds,
+            lock_ttl_seconds=settings.redis_lock_ttl_seconds,
+            lock_wait_seconds=settings.redis_lock_wait_seconds,
+            max_retries=settings.inbound_max_retries,
+            retry_base_seconds=settings.inbound_retry_base_seconds,
+        )
+    else:
+        queue = InboundQueue(
+            handler=enqueue_inbound,
+            maxsize=settings.inbound_queue_maxsize,
+            workers=settings.inbound_queue_workers,
+        )
     await queue.start()
     _inbound_queue = queue
     log.info(
-        "[INBOUND-QUEUE] lista workers=%s maxsize=%s",
+        "[INBOUND-QUEUE] lista backend=%s workers=%s maxsize=%s",
+        backend,
         settings.inbound_queue_workers,
         settings.inbound_queue_maxsize,
     )
@@ -254,7 +308,7 @@ async def stop_inbound_queue() -> None:
         await queue.stop(timeout=settings.inbound_queue_shutdown_seconds)
 
 
-def submit_inbound(
+async def submit_inbound(
     msg: InboundMessage,
     *,
     trace_id: str | None = None,
@@ -262,12 +316,17 @@ def submit_inbound(
     if _inbound_queue is None:
         record_operation("inbound.submit", "unavailable")
         return QueueSubmission("unavailable")
-    return _inbound_queue.submit(msg, trace_id=trace_id)
+    resolved_trace_id = trace_id or new_trace_id(msg.wa_message_id or None)
+    result = _inbound_queue.submit(msg, trace_id=resolved_trace_id)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
 
 
-def inbound_queue_stats() -> dict[str, int | bool]:
+def inbound_queue_stats() -> dict[str, int | bool | str]:
     if _inbound_queue is None:
         return {
+            "backend": settings.inbound_queue_backend,
             "running": False,
             "depth": 0,
             "maxsize": settings.inbound_queue_maxsize,
@@ -280,3 +339,17 @@ def inbound_queue_stats() -> dict[str, int | bool]:
             "rejected": 0,
         }
     return _inbound_queue.stats()
+
+
+async def inbound_queue_operational_stats() -> dict[str, object]:
+    if _inbound_queue is None:
+        return {
+            **inbound_queue_stats(),
+            "durable": settings.inbound_queue_backend == "redis",
+            "global_pending": 0,
+            "dead_letter": 0,
+        }
+    method = getattr(_inbound_queue, "operational_stats", None)
+    if method is None:
+        return dict(inbound_queue_stats())
+    return await method()

@@ -107,6 +107,23 @@ Redeploy del sandbox.
 4. Bot pide ayuda / modo HUMAN → fila con estilo “AYUDA”
 5. Asesor envía → outbox → WhatsApp (vía agente)
 
+## 7. Panel operacional
+
+1. Abrir `operations.php` y confirmar que el agente aparece **En línea**.
+2. Verificar cola, DLQ, circuitos, latencias, handoffs y outbox.
+
+No requiere una migración SQL adicional. Debes subir:
+
+- `public/operations.php`
+- `public/assets/operations.js`
+- `views/operations.php`
+- `src/OperationsClient.php`
+- las versiones actualizadas de `bootstrap.php`, `src/Repository.php`,
+  `views/layout.php`, `public/api/index.php` y `public/assets/app.css`.
+
+El CRM consulta `GET /internal/operations` del agente usando
+`agent_internal_token`; ese secreto nunca se entrega al navegador.
+
 ## Seguridad
 
 - No abras MySQL remoto al VPS.

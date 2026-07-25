@@ -900,6 +900,153 @@ final class Repository
         );
     }
 
+    /**
+     * Reclama trabajos de embedding con lock transaccional. Los claims que
+     * quedaron huérfanos por reinicio vuelven a pending después de 10 minutos.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function claimEmbeddingJobs(int $limit = 10): array
+    {
+        $limit = max(1, min(50, $limit));
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $pdo->exec(
+                "UPDATE producto_embedding_jobs
+                 SET status = 'pending', claimed_at = NULL
+                 WHERE status = 'processing'
+                   AND claimed_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)"
+            );
+            $rows = $pdo->query(
+                "SELECT id_job, id_producto, reason, attempts
+                 FROM producto_embedding_jobs
+                 WHERE status = 'pending' AND available_at <= NOW()
+                 ORDER BY id_job ASC
+                 LIMIT {$limit}
+                 FOR UPDATE"
+            )->fetchAll();
+            if ($rows) {
+                $ids = array_map('intval', array_column($rows, 'id_job'));
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $stmt = $pdo->prepare(
+                    "UPDATE producto_embedding_jobs
+                     SET status = 'processing', claimed_at = NOW(), attempts = attempts + 1
+                     WHERE id_job IN ({$placeholders}) AND status = 'pending'"
+                );
+                $stmt->execute($ids);
+            }
+            $pdo->commit();
+            return $rows;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    /**
+     * Confirma, elimina o reencola un trabajo reclamado.
+     *
+     * @param array<string,mixed> $input
+     */
+    public static function finishEmbeddingJob(int $jobId, array $input): bool
+    {
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                "SELECT id_job, id_producto, attempts
+                 FROM producto_embedding_jobs
+                 WHERE id_job = ? AND status = 'processing'
+                 FOR UPDATE"
+            );
+            $stmt->execute([$jobId]);
+            $job = $stmt->fetch();
+            if (!$job) {
+                $pdo->rollBack();
+                return false;
+            }
+
+            $status = (string) ($input['status'] ?? '');
+            $productId = (int) $job['id_producto'];
+
+            if ($status === 'done') {
+                $binary = base64_decode((string) ($input['embedding_base64'] ?? ''), true);
+                $dimensions = (int) ($input['dimensions'] ?? 0);
+                if ($binary === false || $dimensions < 1 || strlen($binary) !== $dimensions * 4) {
+                    throw new InvalidArgumentException('Embedding binario inválido');
+                }
+                $upsert = $pdo->prepare(
+                    "INSERT INTO producto_embeddings
+                      (id_producto, idioma, content_hash, embedding_model, dimensions,
+                       embedding, document_version, status, last_error, embedded_at)
+                     VALUES (?, 'es', ?, ?, ?, ?, ?, 'ready', NULL, NOW())
+                     ON DUPLICATE KEY UPDATE
+                       content_hash = VALUES(content_hash),
+                       embedding_model = VALUES(embedding_model),
+                       dimensions = VALUES(dimensions),
+                       embedding = VALUES(embedding),
+                       document_version = VALUES(document_version),
+                       status = 'ready',
+                       last_error = NULL,
+                       embedded_at = NOW()"
+                );
+                $upsert->bindValue(1, $productId, PDO::PARAM_INT);
+                $upsert->bindValue(2, (string) ($input['content_hash'] ?? ''));
+                $upsert->bindValue(3, (string) ($input['embedding_model'] ?? ''));
+                $upsert->bindValue(4, $dimensions, PDO::PARAM_INT);
+                $upsert->bindValue(5, $binary, PDO::PARAM_LOB);
+                $upsert->bindValue(6, max(1, (int) ($input['document_version'] ?? 1)), PDO::PARAM_INT);
+                $upsert->execute();
+                $finalStatus = 'done';
+                $availableAt = null;
+                $errorText = null;
+            } elseif ($status === 'deleted') {
+                $delete = $pdo->prepare(
+                    'DELETE FROM producto_embeddings WHERE id_producto = ?'
+                );
+                $delete->execute([$productId]);
+                $finalStatus = 'done';
+                $availableAt = null;
+                $errorText = null;
+            } elseif ($status === 'retry') {
+                $attempts = (int) $job['attempts'];
+                $finalStatus = $attempts >= 5 ? 'error' : 'pending';
+                $delay = min(900, 15 * (2 ** max(0, $attempts - 1)));
+                $availableAt = (new DateTimeImmutable("+{$delay} seconds"))
+                    ->format('Y-m-d H:i:s');
+                $errorText = substr((string) ($input['error'] ?? 'worker error'), 0, 1000);
+            } else {
+                throw new InvalidArgumentException('Estado de embedding job inválido');
+            }
+
+            $finish = $pdo->prepare(
+                "UPDATE producto_embedding_jobs
+                 SET status = ?, available_at = COALESCE(?, available_at),
+                     claimed_at = NULL,
+                     finished_at = CASE WHEN ? IN ('done', 'error') THEN NOW() ELSE NULL END,
+                     last_error = ?
+                 WHERE id_job = ?"
+            );
+            $finish->execute([
+                $finalStatus,
+                $availableAt,
+                $finalStatus,
+                $errorText,
+                $jobId,
+            ]);
+            $pdo->commit();
+            return true;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
     public static function getUnansweredConversations(int $minSec, int $maxSec): array
     {
         $tenantId = self::ensureTenantId();
@@ -925,6 +1072,83 @@ final class Repository
              ORDER BY lm.fecha_creacion ASC',
             ['tenantId' => $tenantId, 'minSec' => $minSec, 'maxSec' => $maxSec]
         );
+    }
+
+    /** Snapshot local para el panel operacional. No expone mensajes. */
+    public static function operationalOverview(): array
+    {
+        $tenantId = self::ensureTenantId();
+        $handoff = Database::fetchOne(
+            'SELECT
+                SUM(CASE WHEN human_support = 1 AND status_conversation = \'open\' THEN 1 ELSE 0 END) AS pending_handoffs,
+                SUM(CASE WHEN mode_conversation = \'HUMAN\' AND status_conversation = \'open\' THEN 1 ELSE 0 END) AS human_conversations,
+                MAX(CASE WHEN human_support = 1 AND status_conversation = \'open\'
+                    THEN TIMESTAMPDIFF(MINUTE, COALESCE(last_message_at, fecha_actualizacion), NOW())
+                    ELSE 0 END) AS oldest_handoff_minutes
+             FROM crm_conversations
+             WHERE id_tenant = :tenantId',
+            ['tenantId' => $tenantId]
+        ) ?: [];
+
+        $outbox = Database::fetchOne(
+            'SELECT
+                SUM(status_outbox = \'pending\') AS pending,
+                SUM(status_outbox = \'sending\') AS sending,
+                SUM(status_outbox = \'failed\') AS failed,
+                SUM(status_outbox = \'sent\') AS sent,
+                MAX(CASE WHEN status_outbox IN (\'pending\', \'sending\')
+                    THEN TIMESTAMPDIFF(MINUTE, fecha_creacion, NOW())
+                    ELSE 0 END) AS oldest_pending_minutes
+             FROM crm_outbox'
+        ) ?: [];
+
+        $handoffs = Database::fetchAll(
+            'SELECT c.id_conversation, ct.nombre_contact, c.mode_conversation,
+                    c.human_support, c.last_message_at,
+                    TIMESTAMPDIFF(
+                        MINUTE,
+                        COALESCE(c.last_message_at, c.fecha_actualizacion),
+                        NOW()
+                    ) AS waiting_minutes
+             FROM crm_conversations c
+             JOIN crm_contacts ct ON ct.id_contact = c.id_contact
+             WHERE c.id_tenant = :tenantId
+               AND c.status_conversation = \'open\'
+               AND (c.human_support = 1 OR c.mode_conversation = \'HUMAN\')
+             ORDER BY c.human_support DESC,
+                      COALESCE(c.last_message_at, c.fecha_actualizacion) ASC
+             LIMIT 12',
+            ['tenantId' => $tenantId]
+        );
+
+        $failedOutbox = Database::fetchAll(
+            'SELECT o.id_outbox, o.id_conversation, o.type_outbox,
+                    LEFT(o.error_outbox, 300) AS error_outbox, o.fecha_creacion
+             FROM crm_outbox o
+             JOIN crm_conversations c ON c.id_conversation = o.id_conversation
+             WHERE c.id_tenant = :tenantId AND o.status_outbox = \'failed\'
+             ORDER BY o.id_outbox DESC
+             LIMIT 10',
+            ['tenantId' => $tenantId]
+        );
+
+        return [
+            'generated_at' => gmdate('c'),
+            'handoffs' => [
+                'pending' => (int) ($handoff['pending_handoffs'] ?? 0),
+                'human_conversations' => (int) ($handoff['human_conversations'] ?? 0),
+                'oldest_minutes' => (int) ($handoff['oldest_handoff_minutes'] ?? 0),
+                'items' => $handoffs,
+            ],
+            'outbox' => [
+                'pending' => (int) ($outbox['pending'] ?? 0),
+                'sending' => (int) ($outbox['sending'] ?? 0),
+                'failed' => (int) ($outbox['failed'] ?? 0),
+                'sent' => (int) ($outbox['sent'] ?? 0),
+                'oldest_pending_minutes' => (int) ($outbox['oldest_pending_minutes'] ?? 0),
+                'failed_items' => $failedOutbox,
+            ],
+        ];
     }
 
     /** KPIs para la página de reportes. */

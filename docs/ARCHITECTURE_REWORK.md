@@ -15,10 +15,10 @@ Cliente WhatsApp
   sandbox/app (FastAPI)
        │
        ├─► channels/whatsapp   (parse + send Graph API)
-       ├─► inbound_queue       (cola acotada + workers + deduplicación pendiente)
+       ├─► inbound_queue       (local o Redis Streams + workers + deduplicación)
        ├─► crm                 (local SQLite O CRM_MODE=external → crm)
        ├─► agent/services      (buffer, LLM loop, tools, fillers)
-       ├─► guardrails          (handoff + invariantes + saneamiento)
+       ├─► guardrails          (inyección + handoff + invariantes + saneamiento)
        ├─► resilience          (circuit breakers + degradación rápida)
        ├─► observability       (trace_id + métricas + auditoría segura)
        ├─► Qdrant              (productos + conocimiento)
@@ -33,10 +33,13 @@ Cliente WhatsApp
 | Capa | Paquete | Responsabilidad |
 |---|---|---|
 | Canal | `app.channels.whatsapp` | Verify webhook, inbound Meta, send text/image, citas `context` |
-| Cola inbound | `app.services.inbound_queue` | Aceptación rápida, backpressure, workers y apagado ordenado |
+| Cola inbound | `app.services.inbound_queue` + `redis_inbound_queue` | Aceptación rápida, backpressure, Redis Streams, locks, recuperación, reintentos y DLQ |
 | CRM | `app.crm` | Persistencia, labels `bot_active` / `human_support`, API inbox |
 | Agente | `app.services` + `app.tools` + `app.prompts` | Buffer, LLM, tools, Qdrant |
-| Guardrails | `app.guardrails` | Políticas deterministas de conversación y salida segura |
+| Guardrails | `app.guardrails` | Inyección de instrucciones, políticas de conversación y salida segura |
+| Privacidad | `app.guardrails.privacy` | Minimización, redacción y propagación por finalidad |
+| Contratos de tools | `app.guardrails.parameters` | Esquemas cerrados para llamadas del modelo y MCP |
+| Gate de producción | `scripts.quality_gate` + GitHub Actions + Docker | Espejo, contrato MCP, tests y evals obligatorios |
 | Resiliencia | `app.resilience` | Circuit breakers de OpenAI, MCP, REST, CRM y Qdrant |
 | Observabilidad | `app.observability` | Correlación, métricas Prometheus y auditoría sin PII |
 | Panel | `web/` | Bandeja mínima para asesores |

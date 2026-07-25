@@ -10,3 +10,4 @@ aiosqlite
 asyncpg
 pytest
 pytest-asyncio
+redis>=5.0

@@ -253,5 +253,40 @@ async def mark_outbox(outbox_id: int, status: str, error: str | None = None) -> 
     )
 
 
+async def claim_embedding_jobs(limit: int = 10) -> list[dict]:
+    data = await _request(
+        "POST",
+        "/api/embedding-jobs/claim",
+        json={"limit": max(1, min(50, int(limit)))},
+    )
+    return list(data.get("data") or [])
+
+
+async def finish_embedding_job(
+    job_id: int,
+    *,
+    status: str,
+    content_hash: str | None = None,
+    embedding_model: str | None = None,
+    dimensions: int | None = None,
+    document_version: int | None = None,
+    embedding_base64: str | None = None,
+    error: str | None = None,
+) -> None:
+    await _request(
+        "PATCH",
+        f"/api/embedding-jobs/{int(job_id)}",
+        json={
+            "status": status,
+            "content_hash": content_hash,
+            "embedding_model": embedding_model,
+            "dimensions": dimensions,
+            "document_version": document_version,
+            "embedding_base64": embedding_base64,
+            "error": error,
+        },
+    )
+
+
 async def put_setting(key: str, value: str) -> None:
     await _request("PUT", "/api/settings", json={key: value})

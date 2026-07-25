@@ -23,6 +23,7 @@ OpenAI, Qdrant y catálogo real de Don Regalo.
 - WhatsApp Cloud API (Meta)
 - OpenAI + Qdrant
 - CRM PHP desplegado (`CRM_MODE=external`) o SQLite local
+- Redis con AOF cuando se habiliten varias réplicas o cola durable
 
 ## Instalación local
 
@@ -34,6 +35,10 @@ copy .env.example .env
 ```
 
 Edita `.env` (tokens Meta, OpenAI, Qdrant, `CRM_*`).
+
+El modo local no requiere Redis. Para producción con reinicios recuperables o
+varias réplicas consulta
+[`docs/COLA_DURABLE_REDIS.md`](docs/COLA_DURABLE_REDIS.md).
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -99,8 +104,13 @@ El MCP es opt-in: cambia `DONREGALO_USE_MCP=1` únicamente después de completar
 ## Tests
 
 ```bash
-python -m pytest tests/ -q
+python scripts/quality_gate.py
 ```
+
+Este gate ejecuta espejo, contrato MCP obligatorio, suite completa y evals.
+También forma parte del `Dockerfile`, por lo que una regresión impide construir
+la imagen de producción. Configuración de branch protection y operación:
+[`docs/CI_PRODUCTION_GATE.md`](docs/CI_PRODUCTION_GATE.md).
 
 ## Rollback al legacy Chatwoot/Evolution
 

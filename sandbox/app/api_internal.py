@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
 from app.crm import http_client as crm_http
+from app.observability import metrics_snapshot
+from app.resilience import circuit_breakers_snapshot
+from app.services.inbound_queue import inbound_queue_operational_stats
 from app.services.outbox_drain import deliver_outbox
 
 log = logging.getLogger(__name__)
@@ -35,6 +39,20 @@ def _check_token(token: str | None) -> None:
     expected = settings.agent_internal_token
     if expected and token != expected:
         raise HTTPException(401, "Unauthorized")
+
+
+@router.get("/operations")
+async def operations(
+    x_agent_token: str | None = Header(default=None),
+):
+    """Snapshot JSON para el dashboard del CRM; nunca incluye mensajes ni PII."""
+    _check_token(x_agent_token)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "queue": await inbound_queue_operational_stats(),
+        "operations": metrics_snapshot(),
+        "circuits": circuit_breakers_snapshot(),
+    }
 
 
 @router.post("/outbox/send")

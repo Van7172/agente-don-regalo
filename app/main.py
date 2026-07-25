@@ -27,6 +27,10 @@ from app.services.inbound_queue import (
     stop_inbound_queue,
 )
 from app.services.outbox_poller import start_outbox_drain, stop_outbox_drain
+from app.services.product_embedding_worker import (
+    start_embedding_worker,
+    stop_embedding_worker,
+)
 from app.services.watchdog import start_watchdog, stop_watchdog
 
 install_logging_context()
@@ -71,12 +75,14 @@ async def lifespan(_app: FastAPI):
     await start_inbound_queue()
     start_watchdog()
     start_outbox_drain()
+    start_embedding_worker()
     try:
         yield
     finally:
         await stop_inbound_queue()
         stop_outbox_drain()
         stop_watchdog()
+        stop_embedding_worker()
 
 
 app = FastAPI(title="Agente Don Regalo", lifespan=lifespan)
@@ -103,6 +109,19 @@ async def health():
         "donregalo_mcp_enabled": settings.donregalo_use_mcp,
         "donregalo_mcp_configured": bool(settings.donregalo_mcp_token),
         "inbound_queue": inbound_queue_stats(),
+        "distributed_coordination": {
+            "enabled": settings.inbound_queue_backend == "redis",
+            "conversation_lock": (
+                "redis_lease"
+                if settings.inbound_queue_backend == "redis"
+                else "process_local"
+            ),
+            "state_backend": (
+                "crm"
+                if settings.crm_mode == "external"
+                else "process_local"
+            ),
+        },
         "observability": {
             "trace_context": True,
             "audit": "structured_logs",

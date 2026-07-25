@@ -893,6 +893,122 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   padding: 1px 6px; border-radius: 6px;
 }
 
+/* Panel operacional */
+.operations {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px 40px 60px;
+}
+.operations-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+.operations-head h2 { margin: 0 0 4px; }
+.operations-head .lead {
+  margin: 0;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  font-size: 14px;
+}
+.operations-refresh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ops-alert {
+  border: 1px solid #c95d4f;
+  border-left-width: 5px;
+  border-radius: var(--radius-sm);
+  background: #fff0ed;
+  color: #6f271f;
+  padding: 12px 15px;
+  margin-bottom: 18px;
+}
+.ops-alert[hidden] { display: none; }
+.ops-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.ops-kpi {
+  position: relative;
+  overflow: hidden;
+  min-height: 128px;
+  gap: 5px;
+}
+.ops-kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: var(--color-neutral-400);
+}
+.ops-kpi.is-ok::before { background: #4f8555; }
+.ops-kpi.is-warn::before { background: #cf8737; }
+.ops-kpi.is-danger::before { background: #c95d4f; }
+.ops-kpi-value {
+  display: block;
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  font-size: 27px;
+  line-height: 1.15;
+}
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.ops-panel {
+  min-width: 0;
+  padding: 20px 22px 10px;
+}
+.ops-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 13px;
+}
+.ops-panel-head h3 { margin: 2px 0 0; font-size: 21px; }
+.ops-status {
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--color-neutral-200);
+}
+.ops-status.is-ok { color: #285d31; background: #e0f2df; }
+.ops-status.is-danger { color: #762d24; background: #f8dcd7; }
+.ops-status.is-neutral { color: var(--color-neutral-700); }
+.ops-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: var(--color-neutral-200);
+}
+.ops-badge.is-ok { color: #285d31; background: #e0f2df; }
+.ops-badge.is-warn { color: #75460f; background: #f8e6c9; }
+.ops-badge.is-danger { color: #762d24; background: #f8dcd7; }
+.ops-badge.is-neutral { color: var(--color-neutral-700); }
+.ops-panel .table { font-size: 12.5px; }
+.ops-panel .table th { white-space: nowrap; }
+.ops-panel .table td { vertical-align: middle; }
+.ops-empty {
+  padding: 28px 12px !important;
+  text-align: center;
+  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+}
+
 /* ============================================================
    Responsive — bajo 900px el inbox alterna lista / chat
    ============================================================ */
@@ -917,6 +1033,9 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   .topbar-user .who { display: none; }
   .topbar-brand .brand-name, .topbar-brand .brand-kicker { white-space: nowrap; }
   .reports { padding: 24px 16px 48px; }
+  .operations { padding: 24px 16px 48px; }
+  .ops-kpis { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+  .ops-grid { grid-template-columns: 1fr; }
   .bubble { max-width: 82%; }
 }
 
@@ -928,6 +1047,9 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   .brand-logo { width: 104px; height: 28px; }
   .topbar-nav { gap: 2px; }
   .topbar-nav a { padding: 8px 12px; }
+  .operations-head { flex-direction: column; }
+  .operations-refresh { width: 100%; justify-content: space-between; }
+  .ops-kpis { grid-template-columns: 1fr; }
 }
 
 

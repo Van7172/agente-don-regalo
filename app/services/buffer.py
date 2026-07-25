@@ -72,8 +72,17 @@ def _use_external_crm() -> bool:
     return crm_http.crm_enabled()
 
 
-async def enqueue_inbound(msg: InboundMessage) -> dict:
-    """Persiste inbound, aplica gates, encola en buffer."""
+async def enqueue_inbound(
+    msg: InboundMessage,
+    *,
+    wait_for_completion: bool = False,
+) -> dict:
+    """Persiste inbound, aplica gates y encola en el buffer.
+
+    La cola local conserva el comportamiento rápido histórico. Una cola durable
+    puede pedir ``wait_for_completion`` para no confirmar el trabajo hasta que
+    el flush (agente + persistencia de salida) haya terminado.
+    """
     if _already_seen(msg.wa_message_id):
         log.info("[WA-IN] duplicado ignorado id=%s", msg.wa_message_id)
         return {"status": "ignored", "reason": "duplicate"}
@@ -83,8 +92,35 @@ async def enqueue_inbound(msg: InboundMessage) -> dict:
     if msg.message_type == "reaction":
         return await _handle_reaction(msg)
     if _use_external_crm():
-        return await _enqueue_external(msg)
-    return await _enqueue_local(msg)
+        queued = await _enqueue_external(msg)
+    else:
+        queued = await _enqueue_local(msg)
+    # Compatibilidad para adaptadores/tests que sustituyen el backend y
+    # conservan el contrato anterior (solo dict).
+    if isinstance(queued, tuple):
+        result, completion = queued
+    else:
+        result, completion = queued, None
+    if wait_for_completion and completion is not None:
+        try:
+            await completion
+        except BaseException:
+            # Un reintento durable debe poder volver a ejecutar el mensaje. Si
+            # queda marcado en el guardia local, el siguiente intento se
+            # convertiría falsamente en "duplicate" y se perdería la respuesta.
+            if msg.wa_message_id:
+                _seen_wa_message_ids.pop(msg.wa_message_id, None)
+            raise
+    elif completion is not None:
+        # En modo local el webhook no espera el flush. Consumir la excepción
+        # evita warnings de Future sin observar; el task ya registra el error.
+        completion.add_done_callback(_consume_completion)
+    return result
+
+
+def _consume_completion(completion: asyncio.Future[None]) -> None:
+    if not completion.cancelled():
+        completion.exception()
 
 
 async def _handle_reaction(msg: InboundMessage) -> dict:
@@ -154,7 +190,9 @@ async def _archive_media(msg: InboundMessage) -> tuple[str | None, tuple[bytes, 
     return key, (data, mime)
 
 
-async def _enqueue_external(msg: InboundMessage) -> dict:
+async def _enqueue_external(
+    msg: InboundMessage,
+) -> tuple[dict, asyncio.Future[None] | None]:
     media_key, prefetched = await _archive_media(msg)
 
     data = await crm_http.upsert_inbound(
@@ -209,7 +247,7 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
                     else "bot_off"
                 )
                 log.info("[GATE] conversation=%s ignored: %s", conversation_id, reason)
-                return {"status": "ignored", "reason": reason}
+                return {"status": "ignored", "reason": reason}, None
         except Exception as err:
             log.warning("[GATE] releaser error: %s", err)
             reason = (
@@ -218,12 +256,12 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
                 else "bot_off"
             )
             log.info("[GATE] conversation=%s ignored: %s", conversation_id, reason)
-            return {"status": "ignored", "reason": reason}
+            return {"status": "ignored", "reason": reason}, None
 
     paused = await crm_http.get_setting("paused")
     if paused == "1":
         log.info("[GATE] conversation=%s ignored: paused", conversation_id)
-        return {"status": "ignored", "reason": "paused"}
+        return {"status": "ignored", "reason": "paused"}, None
 
     parts = await inbound_to_parts(msg, prefetched)
     if quoted_text:
@@ -231,22 +269,18 @@ async def _enqueue_external(msg: InboundMessage) -> dict:
         prefix = f"[El cliente está respondiendo al mensaje: «{quoted_text}»]\n"
         parts = [{"type": "text", "text": prefix}] + parts
 
-    async with _buffers_lock:
-        buf = _buffers.get(conversation_id)
-        if buf and buf.get("task"):
-            buf["task"].cancel()
-        if not buf:
-            buf = {"parts": [], "contact_id": contact_id, "wa_id": wa_id}
-            _buffers[conversation_id] = buf
-        buf["parts"].extend(parts)
-        buf["contact_id"] = contact_id
-        buf["wa_id"] = wa_id
-        buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
-
-    return {"status": "buffered", "conversation_id": conversation_id}
+    completion = await _append_to_buffer(
+        conversation_id,
+        contact_id=contact_id,
+        wa_id=wa_id,
+        parts=parts,
+    )
+    return {"status": "buffered", "conversation_id": conversation_id}, completion
 
 
-async def _enqueue_local(msg: InboundMessage) -> dict:
+async def _enqueue_local(
+    msg: InboundMessage,
+) -> tuple[dict, asyncio.Future[None] | None]:
     async with SessionLocal() as session:
         tenant = await repo.ensure_default_tenant(session)
         contact = await repo.get_or_create_contact(
@@ -278,7 +312,7 @@ async def _enqueue_local(msg: InboundMessage) -> dict:
         ok, reason = repo.bot_should_reply(conv)
         if not ok:
             log.info("[GATE] conversation=%s ignored: %s", conv.id, reason)
-            return {"status": "ignored", "reason": reason}
+            return {"status": "ignored", "reason": reason}, None
 
         conversation_id = conv.id
         contact_id = contact.id
@@ -289,19 +323,41 @@ async def _enqueue_local(msg: InboundMessage) -> dict:
         prefix = f"[El cliente está respondiendo al mensaje: «{quoted_text}»]\n"
         parts = [{"type": "text", "text": prefix}] + parts
 
+    completion = await _append_to_buffer(
+        conversation_id,
+        contact_id=contact_id,
+        wa_id=wa_id,
+        parts=parts,
+    )
+    return {"status": "buffered", "conversation_id": conversation_id}, completion
+
+
+async def _append_to_buffer(
+    conversation_id: int,
+    *,
+    contact_id: int,
+    wa_id: str,
+    parts: list,
+) -> asyncio.Future[None]:
+    completion: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     async with _buffers_lock:
         buf = _buffers.get(conversation_id)
         if buf and buf.get("task"):
             buf["task"].cancel()
         if not buf:
-            buf = {"parts": [], "contact_id": contact_id, "wa_id": wa_id}
+            buf = {
+                "parts": [],
+                "contact_id": contact_id,
+                "wa_id": wa_id,
+                "waiters": [],
+            }
             _buffers[conversation_id] = buf
         buf["parts"].extend(parts)
         buf["contact_id"] = contact_id
         buf["wa_id"] = wa_id
+        buf.setdefault("waiters", []).append(completion)
         buf["task"] = asyncio.create_task(_flush_after_delay(conversation_id))
-
-    return {"status": "buffered", "conversation_id": conversation_id}
+    return completion
 
 
 async def _flush_after_delay(conversation_id: int) -> None:
@@ -309,7 +365,12 @@ async def _flush_after_delay(conversation_id: int) -> None:
         await asyncio.sleep(settings.buffer_seconds)
     except asyncio.CancelledError:
         return
-    await _flush_buffer(conversation_id)
+    try:
+        await _flush_buffer(conversation_id)
+    except Exception:
+        # El Future asociado conserva la excepción para que Redis reintente. El
+        # task de debounce no debe dejar además una excepción sin observar.
+        log.exception("[BUFFER] flush falló conversation=%s", conversation_id)
 
 
 async def _flush_buffer(conversation_id: int) -> None:
@@ -317,17 +378,31 @@ async def _flush_buffer(conversation_id: int) -> None:
         buf = _buffers.pop(conversation_id, None)
     if not buf or not buf.get("parts"):
         return
+    waiters: list[asyncio.Future[None]] = buf.get("waiters") or []
 
     contact_id = buf["contact_id"]
     wa_id = buf["wa_id"]
     user_content = collapse_parts(buf["parts"])
     if not user_content:
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
         return
 
-    if _use_external_crm():
-        await _flush_external(conversation_id, contact_id, wa_id, user_content)
+    try:
+        if _use_external_crm():
+            await _flush_external(conversation_id, contact_id, wa_id, user_content)
+        else:
+            await _flush_local(conversation_id, contact_id, wa_id, user_content)
+    except BaseException as error:
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_exception(error)
+        raise
     else:
-        await _flush_local(conversation_id, contact_id, wa_id, user_content)
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
 
 async def _build_messages(profile: dict, history: list, user_content) -> list:

@@ -119,7 +119,7 @@ async def _receive_webhook(request: Request):
     duplicates = 0
     rejected = 0
     for msg in messages:
-        submission = submit_inbound(
+        submission = await submit_inbound(
             msg,
             trace_id=new_trace_id(msg.wa_message_id or None),
         )

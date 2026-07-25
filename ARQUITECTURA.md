@@ -26,6 +26,7 @@ Cliente WhatsApp
       ├─ cola inbound acotada → worker
       ├─ buffer de mensajes
       ├─ HARNESS: orquestador → especialista → tools
+      ├─ guardrails: inyección de instrucciones + salida segura
       ├─ resiliencia: circuit breakers + degradación segura
       ├─ observabilidad: trace_id + métricas + auditoría segura
       ├─ fillers de latencia (salvo saludos simples)
@@ -47,14 +48,18 @@ Cliente WhatsApp
 ### Cola de entrada
 
 [`app/services/inbound_queue.py`](app/services/inbound_queue.py) desacopla el POST
-de Meta del procesamiento del agente. La cola es FIFO, acotada y deduplica los
-`wamid` mientras están pendientes. Si no puede aceptar un trabajo, el webhook
-devuelve `503` para que Meta lo reintente; nunca confirma un mensaje que se perdió.
+de Meta del procesamiento del agente. `INBOUND_QUEUE_BACKEND=local` mantiene la
+cola FIFO acotada para desarrollo. `INBOUND_QUEUE_BACKEND=redis` activa Redis
+Streams con consumer groups, deduplicación distribuida, reintentos, DLQ y
+recuperación de pendientes después de reinicios.
 
-El apagado espera los trabajos en curso y `/health` expone profundidad, aceptados,
-procesados, fallos, duplicados y rechazos. Hoy la cola vive dentro del proceso:
-para varias réplicas o persistencia entre reinicios debe cambiarse el backend por
-Redis/RabbitMQ sin mover la responsabilidad al webhook.
+[`app/services/redis_inbound_queue.py`](app/services/redis_inbound_queue.py)
+mantiene un lease renovable derivado del `wa_id`, por lo que dos réplicas no
+procesan simultáneamente la misma conversación. El ACK se emite después del
+flush completo, no al entrar al buffer. El estado del checkout sigue persistido
+en el CRM y el lease serializa su ciclo de lectura y escritura sin duplicar
+permanentemente los datos personales en Redis. Configuración y operación:
+[`docs/COLA_DURABLE_REDIS.md`](docs/COLA_DURABLE_REDIS.md).
 
 ### Observabilidad y auditoría
 
@@ -68,6 +73,45 @@ Prometheus; las líneas `[audit]` son JSON para el recolector de logs. Contratos
 privacidad, alertas y retención:
 [`docs/OBSERVABILIDAD.md`](docs/OBSERVABILIDAD.md).
 
+### Panel operacional
+
+El dashboard autenticado vive en
+[`crm/public/operations.php`](crm/public/operations.php). El CRM agrega sus
+handoffs y outbox desde MySQL y consulta el snapshot sanitizado del agente
+mediante `GET /internal/operations`. Desde allí muestra cola/PEL/DLQ de Redis,
+errores, reintentos, circuit breakers y latencias sin exponer tokens, prompts ni
+contenido de mensajes. La consulta es servidor a servidor con
+`X-Agent-Token`; el navegador actualiza el agregado cada 15 segundos usando su
+sesión del CRM.
+
+### Seguridad contra inyección de instrucciones
+
+[`app/guardrails/input.py`](app/guardrails/input.py) evalúa cada turno antes del
+router, OpenAI y las herramientas. Bloquea sustitución de instrucciones,
+extracción de prompts/secretos, roles privilegiados falsos, coerción de tools e
+instrucciones codificadas. Los ataques históricos y strings maliciosos de tools
+se sanean antes de volver al modelo.
+
+La memoria del cliente se delimita como JSON no confiable y cada llamada de tool
+se autoriza de nuevo contra el toolset del especialista. La auditoría conserva
+reglas y conteos, nunca el contenido. Diseño y pruebas:
+[`docs/SEGURIDAD_PROMPT_INJECTION.md`](docs/SEGURIDAD_PROMPT_INJECTION.md).
+
+### Protección de datos personales y parámetros MCP
+
+[`app/guardrails/privacy.py`](app/guardrails/privacy.py) minimiza la exposición
+de correos, teléfonos, documentos, direcciones y datos de pago en historial,
+perfiles, memoria y resultados de herramientas. El último turno conserva los
+datos necesarios para la finalidad inmediata; el historial anterior se redacta
+antes de volver al modelo.
+
+[`app/guardrails/parameters.py`](app/guardrails/parameters.py) aplica contratos
+cerrados a las llamadas del modelo y vuelve a validar cada payload justo antes
+del transporte MCP. Bloquea tools desconocidas, JSON inválido, campos
+adicionales, tipos, formatos, límites y cardinalidades incorrectas. El rastreo
+permite únicamente correo y código de pedido. Diseño y operación:
+[`docs/PROTECCION_DATOS_Y_VALIDACION_MCP.md`](docs/PROTECCION_DATOS_Y_VALIDACION_MCP.md).
+
 ### Resiliencia
 
 [`app/resilience/`](app/resilience/) protege OpenAI, embeddings, MCP, REST del
@@ -79,6 +123,15 @@ Los respaldos no se mezclan: MCP puede abrir y degradar a REST mientras REST
 permanece sano; el router degrada a reglas. Estados y fallos consecutivos se
 publican en `/health` y `/metrics`. Configuración y operación:
 [`docs/RESILIENCIA.md`](docs/RESILIENCIA.md).
+
+### Gate obligatorio de producción
+
+[`scripts/quality_gate.py`](scripts/quality_gate.py) ejecuta espejo, contrato MCP
+snapshot, tests y evals en modo fail-closed. GitHub Actions exige ese gate antes
+de construir la imagen, y el `Dockerfile` lo vuelve a ejecutar en una etapa de
+la que depende físicamente `runtime`. Una regresión no produce una imagen
+elegible para producción. Operación y branch protection:
+[`docs/CI_PRODUCTION_GATE.md`](docs/CI_PRODUCTION_GATE.md).
 
 ---
 
@@ -330,6 +383,7 @@ diff -rq app sandbox/app --exclude=__pycache__
 | Loop LLM / fillers | `app/services/agent.py` |
 | Cola y workers inbound | `app/services/inbound_queue.py` |
 | Observabilidad y auditoría | `app/observability/`, `docs/OBSERVABILIDAD.md` |
+| Seguridad contra prompt injection | `app/guardrails/input.py`, `docs/SEGURIDAD_PROMPT_INJECTION.md` |
 | Resiliencia y circuit breakers | `app/resilience/`, `docs/RESILIENCIA.md` |
 | Buffer / flush CRM | `app/services/buffer.py` |
 | Cliente HTTP CRM | `app/crm/http_client.py` |

@@ -26,6 +26,7 @@ build/
 # Dumps SQL (no versionar volcados de BD); sí las migraciones del CRM
 *.sql
 !crm/sql/*.sql
+!database/mysql/*.sql
 
 # Artefactos locales de tests
 test_sandbox.db

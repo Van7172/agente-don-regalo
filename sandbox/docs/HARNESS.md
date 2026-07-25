@@ -109,6 +109,12 @@ atraviesan especialistas:
 
 - `conversation.py`: saludo/cortesía, política de handoff, pago y
   deduplicación de artifacts.
+- `input.py`: detección de inyección, saneamiento de historial/resultados y
+  delimitación de contenido no confiable.
+- `privacy.py`: minimización y redacción de PII histórica, perfiles, memoria y
+  resultados antes de volver al modelo.
+- `parameters.py`: validación cerrada de JSON, tipos, límites, formatos y
+  allowlist MCP antes de ejecutar herramientas.
 - `response.py`: invariantes, severidad, bloqueo de precios inventados o medios
   inexistentes y reconstrucción segura de la respuesta.
 - `guard_reply(...)`: fachada runtime que evalúa y sanea antes de reducir estado
@@ -118,6 +124,11 @@ atraviesan especialistas:
 el runtime no los importa. Las validaciones propias de una frontera permanecen
 con su dueño: imágenes en `tools/image_validation.py`, categorías en
 `tools/executor.py` y PII de conocimiento en `services/knowledge.py`.
+
+La barrera de entrada corre antes del router y de cualquier tool. Los perfiles
+persistentes se serializan como JSON no confiable y el loop rechaza llamadas que
+no pertenezcan al toolset del especialista. Diseño y operación:
+[`SEGURIDAD_PROMPT_INJECTION.md`](SEGURIDAD_PROMPT_INJECTION.md).
 
 ## Qué es determinista y qué es LLM
 

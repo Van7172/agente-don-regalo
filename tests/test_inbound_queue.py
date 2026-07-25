@@ -138,11 +138,10 @@ async def test_webhook_confirma_solo_los_trabajos_aceptados(monkeypatch):
     submissions = iter([QueueSubmission("accepted"), QueueSubmission("duplicate")])
     monkeypatch.setattr(webhook, "_valid_signature", lambda *_args: True)
     monkeypatch.setattr(webhook, "parse_webhook_payload", lambda _payload: messages)
-    monkeypatch.setattr(
-        webhook,
-        "submit_inbound",
-        lambda _msg, **_kwargs: next(submissions),
-    )
+    async def fake_submit(_msg, **_kwargs):
+        return next(submissions)
+
+    monkeypatch.setattr(webhook, "submit_inbound", fake_submit)
 
     response = await webhook.receive_webhook(_Request())
 
@@ -157,11 +156,10 @@ async def test_webhook_devuelve_503_si_la_cola_no_puede_aceptar(monkeypatch):
         "parse_webhook_payload",
         lambda _payload: [_message("wamid.full")],
     )
-    monkeypatch.setattr(
-        webhook,
-        "submit_inbound",
-        lambda _msg, **_kwargs: QueueSubmission("full"),
-    )
+    async def fake_submit(_msg, **_kwargs):
+        return QueueSubmission("full")
+
+    monkeypatch.setattr(webhook, "submit_inbound", fake_submit)
 
     with pytest.raises(HTTPException) as error:
         await webhook.receive_webhook(_Request())

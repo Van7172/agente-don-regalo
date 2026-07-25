@@ -64,6 +64,43 @@ class Settings:
         self.inbound_queue_shutdown_seconds: float = max(
             0.1, float(os.getenv("INBOUND_QUEUE_SHUTDOWN_SECONDS", "20"))
         )
+        self.inbound_queue_backend: str = (
+            os.getenv("INBOUND_QUEUE_BACKEND", "local").strip().lower()
+        )
+        self.redis_url: str = os.getenv("REDIS_URL", "").strip()
+        self.redis_stream_key: str = os.getenv(
+            "REDIS_STREAM_KEY", "donregalo:inbound"
+        ).strip()
+        self.redis_consumer_group: str = os.getenv(
+            "REDIS_CONSUMER_GROUP", "donregalo-agents"
+        ).strip()
+        self.redis_dlq_stream: str = os.getenv(
+            "REDIS_DLQ_STREAM", "donregalo:inbound:dlq"
+        ).strip()
+        self.redis_block_ms: int = max(
+            100, int(os.getenv("REDIS_BLOCK_MS", "2000"))
+        )
+        self.redis_claim_idle_ms: int = max(
+            1000, int(os.getenv("REDIS_CLAIM_IDLE_MS", "60000"))
+        )
+        self.redis_reclaim_seconds: float = max(
+            0.1, float(os.getenv("REDIS_RECLAIM_SECONDS", "15"))
+        )
+        self.redis_dedupe_ttl_seconds: int = max(
+            60, int(os.getenv("REDIS_DEDUPE_TTL_SECONDS", "86400"))
+        )
+        self.redis_lock_ttl_seconds: float = max(
+            1.0, float(os.getenv("REDIS_LOCK_TTL_SECONDS", "120"))
+        )
+        self.redis_lock_wait_seconds: float = max(
+            0.1, float(os.getenv("REDIS_LOCK_WAIT_SECONDS", "10"))
+        )
+        self.inbound_max_retries: int = max(
+            1, int(os.getenv("INBOUND_MAX_RETRIES", "3"))
+        )
+        self.inbound_retry_base_seconds: float = max(
+            0.0, float(os.getenv("INBOUND_RETRY_BASE_SECONDS", "1"))
+        )
         self.typing_seconds_per_char: float = float(
             os.getenv("TYPING_SECONDS_PER_CHAR", "0.01")
         )
@@ -85,6 +122,15 @@ class Settings:
         self.embed_model: str = os.getenv("EMBED_MODEL", "text-embedding-3-small")
         self.embed_dim: int = int(os.getenv("EMBED_DIM", "1536"))
         self.semantic_limit: int = int(os.getenv("SEMANTIC_LIMIT", "6"))
+        self.embedding_worker_enabled: bool = (
+            os.getenv("EMBEDDING_WORKER_ENABLED", "0") == "1"
+        )
+        self.embedding_worker_tick_seconds: float = max(
+            2.0, float(os.getenv("EMBEDDING_WORKER_TICK_SECONDS", "30"))
+        )
+        self.embedding_worker_batch: int = max(
+            1, min(50, int(os.getenv("EMBEDDING_WORKER_BATCH", "10")))
+        )
         self.kb_collection: str = os.getenv("KB_COLLECTION", "respuestas_equipo")
         self.kb_limit: int = int(os.getenv("KB_LIMIT", "3"))
         self.kb_min_score: float = float(os.getenv("KB_MIN_SCORE", "0.5"))

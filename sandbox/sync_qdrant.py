@@ -18,6 +18,13 @@ import httpx
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
+from app.services.product_embedding_index import (
+    INDEX_SCHEMA_VERSION,
+    build_embedding_text,
+    build_payload as _build_payload,
+    content_hash,
+    needs_embedding as _needs_embedding,
+)
 
 load_dotenv()
 
@@ -32,26 +39,22 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "productos")
 
 EXPORT_PER_PAGE = 100   # tamaño de página del endpoint export
 EMBED_BATCH     = 64    # cuántos textos embeber por llamada a OpenAI
+def build_payload(p: dict, semantic_hash: str) -> dict:
+    return _build_payload(
+        p,
+        semantic_hash,
+        model=EMBED_MODEL,
+        dimensions=EMBED_DIM,
+    )
 
 
-def build_embedding_text(p: dict) -> str:
-    """Texto que se convierte en vector. Incluye el contexto semántico clave:
-    nombre, categoría, ocasiones y descripción — para que la búsqueda capte la
-    intención (ej: distinguir 'rosas blancas' de nacimiento vs fúnebre)."""
-    partes = [
-        p.get("nombre", ""),
-        f"Categoría: {p.get('categoria', '')}",
-    ]
-    ocasiones = p.get("ocasiones") or []
-    if ocasiones:
-        partes.append("Ocasiones: " + ", ".join(ocasiones))
-    if p.get("descripcion_corta"):
-        partes.append(p["descripcion_corta"])
-    elif p.get("descripcion"):
-        partes.append(p["descripcion"])
-    if p.get("tags"):
-        partes.append("Tags: " + p["tags"])
-    return "\n".join(x for x in partes if x and x.strip())
+def needs_embedding(existing_payload: dict | None, semantic_hash: str) -> bool:
+    return _needs_embedding(
+        existing_payload,
+        semantic_hash,
+        model=EMBED_MODEL,
+        dimensions=EMBED_DIM,
+    )
 
 
 def fetch_all_products() -> list[dict]:
@@ -110,6 +113,25 @@ def ensure_collection(qc: QdrantClient) -> None:
         )
     else:
         print(f"Colección '{QDRANT_COLLECTION}' ya existe.")
+
+
+def fetch_qdrant_payloads(qc: QdrantClient) -> dict[int, dict]:
+    """Carga solo metadatos para decidir altas, cambios y eliminaciones."""
+    existing: dict[int, dict] = {}
+    offset = None
+    while True:
+        records, offset = qc.scroll(
+            collection_name=QDRANT_COLLECTION,
+            limit=1000,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for record in records:
+            existing[int(record.id)] = dict(record.payload or {})
+        if offset is None:
+            break
+    return existing
 
 
 _SLUG_PARENT: dict[str, str] = {
@@ -171,55 +193,65 @@ def main() -> int:
         print("No hay productos para indexar.")
         return 0
 
-    print("Generando embeddings...")
-    texts   = [build_embedding_text(p) for p in productos]
-    vectors = embed_texts(texts)
+    print("Leyendo estado actual de Qdrant...")
+    existing = fetch_qdrant_payloads(qc)
 
-    print("Subiendo a Qdrant...")
+    prepared = []
+    for product in productos:
+        text = build_embedding_text(product)
+        semantic_hash = content_hash(text)
+        payload = build_payload(product, semantic_hash)
+        prepared.append((product, text, payload))
+
+    changed = [
+        item for item in prepared
+        if needs_embedding(existing.get(int(item[0]["id_producto"])), item[2]["content_hash"])
+    ]
+    payload_only = [
+        item for item in prepared
+        if not needs_embedding(
+            existing.get(int(item[0]["id_producto"])),
+            item[2]["content_hash"],
+        )
+        and existing[int(item[0]["id_producto"])].get("payload_hash")
+        != item[2]["payload_hash"]
+    ]
+
+    print(
+        "Cambios detectados: "
+        f"{len(changed)} vector(es), {len(payload_only)} payload(s), "
+        f"{len(prepared) - len(changed) - len(payload_only)} sin cambios."
+    )
+
     points = []
-    for p, vec in zip(productos, vectors):
-        points.append(PointStruct(
-            id=p["id_producto"],
-            vector=vec,
-            payload={
-                "id_producto":   p["id_producto"],
-                "nombre":        p.get("nombre", ""),
-                "precio":        p.get("precio", 0),
-                "categoria":     p.get("categoria", ""),
-                "categoria_slug": _parent_slug(p.get("categoria_slug", "")),
-                "ocasiones_ids": p.get("ocasiones_ids", []),
-                "es_funebre":    bool(p.get("es_funebre", False)),
-                "stock":         p.get("stock", 0),
-                "descripcion_corta": p.get("descripcion_corta", ""),
-                "imagen_url":    p.get("imagen_url"),
-                "url":           p.get("url", ""),
-            },
-        ))
+    if changed:
+        print("Generando embeddings solo para contenido nuevo o modificado...")
+        vectors = embed_texts([text for _, text, _ in changed])
+        for (product, _text, payload), vector in zip(changed, vectors):
+            points.append(PointStruct(
+                id=int(product["id_producto"]),
+                vector=vector,
+                payload=payload,
+            ))
 
     # Upsert en lotes
     for i in range(0, len(points), 100):
         qc.upsert(collection_name=QDRANT_COLLECTION, points=points[i:i + 100])
         print(f"  upsert {min(i + 100, len(points))}/{len(points)}")
 
+    for index, (product, _text, payload) in enumerate(payload_only, start=1):
+        qc.overwrite_payload(
+            collection_name=QDRANT_COLLECTION,
+            payload=payload,
+            points=[int(product["id_producto"])],
+        )
+        if index % 100 == 0 or index == len(payload_only):
+            print(f"  payload {index}/{len(payload_only)}")
+
     # Limpieza: eliminar de Qdrant los productos que ya no existen en la API
     print("Verificando productos obsoletos en Qdrant...")
     api_ids: set[int] = {p["id_producto"] for p in productos}
-    qdrant_ids: set[int] = set()
-    offset = None
-    while True:
-        result, offset = qc.scroll(
-            collection_name=QDRANT_COLLECTION,
-            limit=1000,
-            offset=offset,
-            with_payload=False,
-            with_vectors=False,
-        )
-        for rec in result:
-            qdrant_ids.add(rec.id)
-        if offset is None:
-            break
-
-    stale_ids = qdrant_ids - api_ids
+    stale_ids = set(existing) - api_ids
     if stale_ids:
         from qdrant_client.models import PointIdsList
         print(f"Eliminando {len(stale_ids)} productos obsoletos: {sorted(stale_ids)}")
@@ -230,7 +262,10 @@ def main() -> int:
     else:
         print("Sin productos obsoletos.")
 
-    print(f"[OK] Listo. {len(points)} productos indexados en '{QDRANT_COLLECTION}'.")
+    print(
+        f"[OK] Listo. {len(points)} vector(es) y {len(payload_only)} payload(s) "
+        f"actualizados en '{QDRANT_COLLECTION}'."
+    )
     return 0
 
 

@@ -56,6 +56,9 @@ try {
     if ($method === 'GET' && strpos($path, '/reports') === 0) {
         $needsToken = false;
     }
+    if ($method === 'GET' && $path === '/operations') {
+        $needsToken = false;
+    }
 
     if ($needsToken) {
         Auth::assertInternalToken();
@@ -593,6 +596,42 @@ try {
         Http::jsonOk(['ok' => true]);
     }
 
+    // Outbox RAG: solo agente autenticado. MySQL permanece cerrado a Internet.
+    if ($path === '/embedding-jobs/claim' && $method === 'POST') {
+        $body = Http::readJson();
+        $limit = max(1, min(50, (int) ($body['limit'] ?? 10)));
+        Http::jsonOk([
+            'ok' => true,
+            'data' => Repository::claimEmbeddingJobs($limit),
+        ]);
+    }
+
+    if (preg_match('#^/embedding-jobs/(\d+)$#', $path, $matches)
+        && $method === 'PATCH') {
+        $body = Http::readJson();
+        $status = (string) ($body['status'] ?? '');
+        if (!in_array($status, ['done', 'deleted', 'retry'], true)) {
+            Http::jsonError('invalid embedding job status', 422);
+        }
+        if ($status === 'done') {
+            if (empty($body['content_hash'])
+                || empty($body['embedding_model'])
+                || empty($body['dimensions'])
+                || empty($body['embedding_base64'])) {
+                Http::jsonError('embedding result incomplete', 422);
+            }
+            $binary = base64_decode((string) $body['embedding_base64'], true);
+            if ($binary === false || strlen($binary) !== (int) $body['dimensions'] * 4) {
+                Http::jsonError('embedding payload invalid', 422);
+            }
+        }
+        $updated = Repository::finishEmbeddingJob((int) $matches[1], $body);
+        if (!$updated) {
+            Http::jsonError('embedding job is not processing', 409);
+        }
+        Http::jsonOk(['ok' => true]);
+    }
+
     // Watchdog
     if ($path === '/watchdog/unanswered' && $method === 'GET') {
         Auth::assertInternalToken();
@@ -630,6 +669,13 @@ try {
                 isset($_GET['from']) ? (string) $_GET['from'] : null,
                 isset($_GET['to']) ? (string) $_GET['to'] : null
             ),
+        ]);
+    }
+    if ($path === '/operations' && $method === 'GET') {
+        Http::jsonOk([
+            'ok' => true,
+            'crm' => Repository::operationalOverview(),
+            'agent' => OperationsClient::fetch($config),
         ]);
     }
 
