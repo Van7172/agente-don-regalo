@@ -86,10 +86,15 @@ WHATSAPP_VERIFY_TOKEN=...
 OPENAI_API_KEY=...
 QDRANT_URL=...
 DONREGALO_API_BASE=https://donregalo.pe/clienteApiApp/api
+DONREGALO_MCP_URL=https://www.donregalo.pe/clienteApiApp/mcp/
+DONREGALO_MCP_TOKEN=...
+DONREGALO_USE_MCP=0
 WATCHDOG_ENABLED=0
 ```
 
 Detalle: `.env.example` y [`docs/SANDBOX_Y_CRM_PHP.md`](docs/SANDBOX_Y_CRM_PHP.md).
+El MCP es opt-in: cambia `DONREGALO_USE_MCP=1` únicamente después de completar
+[`docs/MCP_DEPLOY_CHECKLIST.md`](docs/MCP_DEPLOY_CHECKLIST.md).
 
 ## Tests
 

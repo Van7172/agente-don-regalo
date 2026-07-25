@@ -7,9 +7,22 @@ import unicodedata
 
 import httpx
 
-from app.tools import catalog, search
+from app.config import settings
+from app.tools import catalog, mcp_client, search
 
 log = logging.getLogger(__name__)
+
+
+def _pick(name: str, default_fn):
+    """Elige la implementación de una tool: MCP si está activo y soportada, si no HTTP.
+
+    Con `DONREGALO_USE_MCP=0` (por defecto) devuelve siempre la función de `catalog`,
+    así que el comportamiento es idéntico al de antes. Las funciones MCP degradan a
+    HTTP por su cuenta, de modo que un MCP caído nunca tumba un turno.
+    """
+    if settings.donregalo_use_mcp and name in mcp_client.SUPPORTED:
+        return mcp_client.SUPPORTED[name]
+    return default_fn
 
 # `listar_categorias` y `listar_ocasiones` NO están aquí a propósito: ningún toolset
 # las expone (ver `registry.CATALOG_TOOLS`) y dejarlas ejecutables era una segunda
@@ -205,7 +218,7 @@ async def execute_tool(name: str, args: dict) -> str:
         async with httpx.AsyncClient(timeout=20.0) as client:
             if name == "buscar_productos":
                 args = dict(args or {})
-                result = await catalog.buscar_productos(client, args)
+                result = await _pick("buscar_productos", catalog.buscar_productos)(client, args)
                 # LIKE vacío → Qdrant (cubre "ositos panda", typos, sinónimos).
                 if result_product_count(result) == 0:
                     q = (args.get("q") or "").strip()
@@ -228,7 +241,7 @@ async def execute_tool(name: str, args: dict) -> str:
                 args = dict(args or {})
                 slug = (args.get("slug") or "").strip("/")
                 try:
-                    result = await catalog.catalogo_categoria(client, args)
+                    result = await _pick("catalogo_categoria", catalog.catalogo_categoria)(client, args)
                 except httpx.HTTPStatusError as err:
                     # Un slug que no existe devuelve 404. Para el cliente eso es lo
                     # mismo que "no tenemos eso": seguimos y le ofrecemos parecidos.
@@ -251,7 +264,7 @@ async def execute_tool(name: str, args: dict) -> str:
                         result = sem
 
             elif name in _CATALOG_TOOLS:
-                result = await _CATALOG_TOOLS[name](client, args or {})
+                result = await _pick(name, _CATALOG_TOOLS[name])(client, args or {})
 
             elif name == "buscar_semantico":
                 args = dict(args or {})
@@ -300,7 +313,9 @@ async def execute_tool(name: str, args: dict) -> str:
 
                         if result_product_count(result) < _MIN_RESULTS_OK:
                             # La API es la fuente de verdad de la categoría.
-                            api = await catalog.catalogo_categoria(client, {"slug": slug})
+                            api = await _pick("catalogo_categoria", catalog.catalogo_categoria)(
+                                client, {"slug": slug}
+                            )
                             api = enforce_category(api, slug)
                             if result_product_count(api) > result_product_count(result):
                                 log.info("[tool] categoria %s resuelta por la API", slug)

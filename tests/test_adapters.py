@@ -174,6 +174,29 @@ def test_una_oferta_conserva_el_precio_de_lista():
     assert p["precio_lista_usd"] == 40
 
 
+def test_oferta_rest_y_mcp_producen_la_misma_forma_canonica():
+    rest = {
+        "id_producto": 9,
+        "nombre_producto": "Cesta",
+        "precio_original": 40,
+        "precio_oferta": 30,
+        "descuento_pct": 25,
+        "url_categoria": "cestas",
+    }
+    mcp = {
+        "id_producto": 9,
+        "nombre": "Cesta",
+        "precio_usd": 30,
+        "precio_antes_usd": 40,
+        "descuento_pct": 25,
+        "categoria_slug": "cestas",
+        "en_oferta": True,
+    }
+
+    assert adapters.product(rest, RATE) == adapters.product(mcp, RATE)
+    assert adapters.product(rest, RATE)["descuento_pct"] == 25
+
+
 # ── El puente con el harness ──────────────────────────────────────────
 
 def test_los_artifacts_del_harness_ya_traen_nombre_y_precio():

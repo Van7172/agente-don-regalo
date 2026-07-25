@@ -126,13 +126,25 @@ def product(raw: dict[str, Any], rate: float) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         return None
 
-    # `precio_final` ya contempla la oferta; los otros son el precio de lista.
+    # `precio_final` / `precio_oferta` ya contemplan la oferta. El endpoint
+    # REST de ofertas usa `precio_original` + `precio_oferta`, mientras que el
+    # MCP publica `precio_usd` + `precio_antes_usd`: ambas formas deben producir
+    # exactamente el mismo producto canónico.
     precio_usd = (
         _num(raw.get("precio_final"))
         if raw.get("precio_final") is not None
-        else _num(raw.get("precio_producto")) or _num(raw.get("precio")) or _num(raw.get("precio_usd"))
+        else _num(raw.get("precio_oferta"))
+        if raw.get("precio_oferta") is not None
+        else _num(raw.get("precio_usd"))
+        if raw.get("precio_usd") is not None
+        else _num(raw.get("precio_producto")) or _num(raw.get("precio"))
     )
-    lista_usd = _num(raw.get("precio_producto")) or _num(raw.get("precio"))
+    lista_usd = (
+        _num(raw.get("precio_antes_usd"))
+        or _num(raw.get("precio_original"))
+        or _num(raw.get("precio_producto"))
+        or _num(raw.get("precio"))
+    )
 
     categoria = raw.get("categoria")
     if isinstance(categoria, dict):  # forma del detalle: {"url": ..., "nombre": ...}
@@ -168,10 +180,18 @@ def product(raw: dict[str, Any], rate: float) -> dict[str, Any] | None:
         "categoria_slug": categoria_slug,
     }
 
-    if raw.get("tiene_oferta"):
+    tiene_oferta = bool(
+        raw.get("tiene_oferta")
+        or raw.get("en_oferta")
+        or raw.get("precio_oferta") is not None
+    )
+    if tiene_oferta:
         canonical["tiene_oferta"] = True
         canonical["precio_lista_usd"] = lista_usd
         canonical["precio_lista_sol"] = _to_sol(lista_usd, rate)
+        descuento = _num(raw.get("descuento_pct"))
+        if descuento is not None:
+            canonical["descuento_pct"] = descuento
 
     stock = raw.get("stock_producto") if "stock_producto" in raw else raw.get("stock")
     if stock is not None:

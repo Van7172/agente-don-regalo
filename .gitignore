@@ -30,3 +30,6 @@ build/
 # Artefactos locales de tests
 test_sandbox.db
 *.db
+
+# Paquetes locales de despliegue (se regeneran y pueden contener código de otro repo)
+artifacts/

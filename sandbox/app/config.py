@@ -81,6 +81,19 @@ class Settings:
         self.donregalo_api_base: str = os.getenv(
             "DONREGALO_API_BASE", "https://donregalo.pe/clienteApiApp/api"
         )
+        # MCP del catálogo de Don Regalo. Camino alterno para las lecturas de
+        # catálogo/detalle/pagos: mismas respuestas canónicas, pero con imagen_url
+        # viva del servidor. OPT-IN: con `DONREGALO_USE_MCP=0` (por defecto) el bot
+        # sigue con HTTP directo y nada cambia. Si el MCP falla, se degrada a HTTP.
+        self.donregalo_mcp_url: str = os.getenv(
+            "DONREGALO_MCP_URL", "https://www.donregalo.pe/clienteApiApp/mcp/"
+        )
+        # El token NUNCA se hardcodea: sale del entorno. Sin token, no se usa MCP.
+        self.donregalo_mcp_token: str = os.getenv("DONREGALO_MCP_TOKEN", "")
+        self.donregalo_use_mcp: bool = (
+            os.getenv("DONREGALO_USE_MCP", "0") == "1"
+            and bool(os.getenv("DONREGALO_MCP_TOKEN", ""))
+        )
         # Al cerrar una venta, crear el pedido temporal en el panel de donregalo
         # (`POST /pedidos/temporales`). Se puede apagar sin tocar código.
         self.pedido_temporal_enabled: bool = (
