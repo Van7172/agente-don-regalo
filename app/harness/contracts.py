@@ -59,12 +59,27 @@ class EscalateReason:
 
 @dataclass
 class Turn:
-    """Lo que el orquestador percibe del cliente en este turno."""
+    """Lo que el orquestador percibe del cliente en este turno.
+
+    `text` son SOLO las palabras del cliente y `quoted` es el mensaje al que
+    respondió (contexto que pone el sistema, ver `harness.quoting`). Estaban
+    juntos en `text` y todo lo determinista trataba la cita como si la hubiera
+    escrito él: enrutaba por sus palabras y llegó a devolvérsela al cliente.
+    """
 
     text: str = ""
     quoted: str = ""          # producto citado en la respuesta de WhatsApp
     has_media: bool = False
     messages: list = field(default_factory=list)
+
+    @property
+    def text_with_quote(self) -> str:
+        """Para resolver A QUÉ PRODUCTO se refiere: ahí la cita sí es una pista.
+
+        Nunca para redactar ni para enrutar: lo que se cite de vuelta al cliente
+        sale de `text`, que es lo único que él escribió.
+        """
+        return f"{self.quoted}\n{self.text}".strip() if self.quoted else self.text
 
 
 @dataclass(frozen=True)

@@ -136,6 +136,28 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    a propósito, y borrarle el segundo es inventarse una conversación que no ocurrió.
    Hacen falta conversación + dirección + emisor + ventana corta, o un `wamid`
    repetido, que sí es prueba directa.
+7. **Lo que el sistema añade al mensaje NO lo escribió el cliente — y nunca se le
+   enseña.** Cuando alguien responde a un mensaje, el buffer antepone un marcador
+   con la cita (`[El cliente está respondiendo al mensaje: «…»]`) para que el modelo
+   sepa a qué se refiere ese "quiero este". Iba dentro del MISMO string que escribió
+   el cliente, así que todo lo determinista lo leía como suyo. Rocío respondió a una
+   cotización del asesor («… + delivery 15.00 = 150») preguntando si los productos
+   venían dentro de la canasta: la palabra "delivery" —de la CITA— enrutó a
+   cobertura, cobertura no halló distrito en la frase y le devolvió el marcador
+   entero (*No ubico "[El cliente está respondiendo al mensaje: «Brunch de Feliz
+   Cumpleaños modificado»" en nuestra lista… ¿lo buscas en Google Maps?*), en el
+   turno en que estaba cerrando la compra. Ahora `perceive` parte el turno
+   ([`quoting.py`](app/harness/quoting.py)): `turn.text` son SUS palabras —enruta,
+   alimenta el FSM y es lo único que se le cita de vuelta— y `turn.quoted` es
+   contexto, que solo se usa para resolver DE QUÉ PRODUCTO habla
+   (`turn.text_with_quote`). El modelo sigue viendo las dos en `turn.messages`.
+   Corolario, y es la regla general: **un fallo nuestro se deriva, no se narra.** Si
+   un marcador interno (la cita, `[contenido omitido por seguridad]`, una etiqueta de
+   PII, un `[image]`) aparece en la respuesta, `no_internal_context` la descarta
+   entera y `master` cede el chat a un humano. El detector busca solo la APERTURA del
+   marcador: en producción salió cortado a 80 caracteres, sin su `»]`. Y cobertura ya
+   no cita lo que no parece un lugar (`_looks_like_place`): citar la frase entera
+   convertía cualquier desvío en un absurdo. Ver `tests/test_cita_no_es_del_cliente.py`.
 
 ## Evals: la red de regresión
 

@@ -17,6 +17,7 @@ from app.db import SessionLocal
 from app.prompts.compose import profile_block
 from app.services.agent import HANDOFF_DONE
 from app.harness.master import run_master
+from app.harness.quoting import build_quote_marker
 from app.harness.releaser import REENGAGE_MSG, try_release_conversation
 from app.harness.state import load_state, save_state
 from app.services.content import collapse_parts, inbound_to_parts
@@ -266,7 +267,9 @@ async def _enqueue_external(
     parts = await inbound_to_parts(msg, prefetched)
     if quoted_text:
         # Mismo prefijo que el camino local: sin él, "quiero este" no dice cuál.
-        prefix = f"[El cliente está respondiendo al mensaje: «{quoted_text}»]\n"
+        # Es contexto del sistema: `master.perceive` lo separa de lo que escribió
+        # el cliente antes de que lo lea nada determinista (ver `harness.quoting`).
+        prefix = build_quote_marker(quoted_text) + "\n"
         parts = [{"type": "text", "text": prefix}] + parts
 
     completion = await _append_to_buffer(
@@ -320,7 +323,7 @@ async def _enqueue_local(
 
     parts = await inbound_to_parts(msg)
     if quoted_text:
-        prefix = f"[El cliente está respondiendo al mensaje: «{quoted_text}»]\n"
+        prefix = build_quote_marker(quoted_text) + "\n"
         parts = [{"type": "text", "text": prefix}] + parts
 
     completion = await _append_to_buffer(

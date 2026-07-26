@@ -51,15 +51,18 @@ def run_routing() -> list[Result]:
     for case in _load("routing"):
         state = _state(case.get("state"))
         got = classify_intent(case["text"], state)
-        want = case["expect_intent"]
-        out.append(
-            Result(
-                case_id=case["id"],
-                kind="routing",
-                passed=got == want,
-                detail=f"esperaba {want}, obtuvo {got}",
-            )
-        )
+        want = case.get("expect_intent")
+        # `expect_not_intent`: hay mensajes de los que solo sabemos dónde NO
+        # deben acabar. La pregunta de Rocío no era de cobertura; qué es
+        # exactamente lo decide el clasificador LLM, y fijarle una etiqueta aquí
+        # sería congelar una respuesta peor que la que ya da.
+        prohibido = case.get("expect_not_intent")
+        if want is not None:
+            passed, detail = got == want, f"esperaba {want}, obtuvo {got}"
+        else:
+            passed = got != prohibido
+            detail = f"no debía enrutar a {prohibido}, obtuvo {got}"
+        out.append(Result(case_id=case["id"], kind="routing", passed=passed, detail=detail))
     return out
 
 

@@ -32,6 +32,19 @@
   text: "¿Qué zonas cubren el delivery en Lima?"
   expect_intent: coverage
 
+# Regresión (25-07-2026): el cliente dio primero el destino. El router lo mandó
+# al catálogo y el bot enumeró desayunos que nadie había pedido. Un destino
+# explícito se valida antes de descubrir el regalo.
+- id: pedido-para-cercado-de-lima
+  text: "deseo hacer un pedido para cercado de lima"
+  expect_intent: coverage
+
+# La presencia de un distrito no basta por sí sola si se usa como referencia
+# creativa y no como destino de entrega.
+- id: miraflores-no-es-destino
+  text: "quiero flores inspiradas en Miraflores"
+  expect_intent: catalog_search
+
 - id: politica-pago
   text: "¿Cómo pago?"
   expect_intent: policy_faq
@@ -100,3 +113,12 @@
   state:
     checkout_step: date
   expect_intent: checkout
+
+# Regresión (25-07-2026): la clienta respondió a la cotización de un asesor
+# ("… + delivery 15.00 = 150") preguntando qué venía dentro de la canasta. La
+# palabra "delivery" era de la CITA, no suya, y el turno acabó en cobertura, que
+# le devolvió el marcador interno. `perceive` ya entrega el texto sin la cita:
+# esto es ese texto. No es cobertura; qué es exactamente lo decide el LLM.
+- id: pregunta-sobre-el-contenido-citando-una-cotizacion
+  text: "En este caso, como voy a pagar la canasta quisiera que los productos vengan dentro de este"
+  expect_not_intent: coverage

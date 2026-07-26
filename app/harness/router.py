@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.harness.checkout import resolve_chosen_product, wants_checkout
-from app.harness.coverage import looks_like_coverage
+from app.harness.coverage import explicit_delivery_destination, looks_like_coverage
 from app.guardrails import is_small_talk
 from app.harness.state import ConversationState
 from app.observability import audit_event, record_operation
@@ -122,13 +122,22 @@ def classify_intent(text: str, state: ConversationState | None = None) -> Intent
 
 
 def classify_rules(
-    text: str, state: ConversationState | None = None, *, has_media: bool = False
+    text: str,
+    state: ConversationState | None = None,
+    *,
+    has_media: bool = False,
+    quoted: str = "",
 ) -> Classification:
     """Reglas: rápidas y precisas cuando aciertan, mudas cuando no.
 
     Devuelven confianza para que el orquestador sepa si puede fiarse. El caso por
     defecto (catálogo) sale con confianza baja a propósito: era el agujero por el
     que se colaba todo lo que ninguna regla reconocía.
+
+    `text` es SOLO lo que escribió el cliente. La cita (`quoted`) no enruta: una
+    clienta preguntó por el contenido de una canasta respondiendo a una
+    cotización que decía "delivery 15.00" y el turno acabó en cobertura, por una
+    palabra que no era suya. Se usa únicamente para saber DE QUÉ PRODUCTO habla.
     """
     raw = (text or "").strip()
     if not raw:
@@ -190,9 +199,19 @@ def classify_rules(
     # solo producto a la vista, "quiero flores" sigue siendo una búsqueda.
     if (
         _BUY_VERB_RE.search(norm)
-        and resolve_chosen_product(state, raw, allow_implicit=False) is not None
+        and resolve_chosen_product(
+            state, f"{quoted}\n{raw}" if quoted else raw, allow_implicit=False
+        )
+        is not None
     ):
         return Classification("checkout", 0.95, "rules")
+
+    # Un destino explícito gana a la búsqueda de productos. "Deseo hacer un
+    # pedido para Cercado de Lima" todavía no elige ningún producto: primero se
+    # valida distrito/tarifa y luego cobertura pregunta qué regalo quiere. Antes
+    # caía al catálogo y soltaba desayunos al azar.
+    if explicit_delivery_destination(norm):
+        return Classification("coverage", 0.97, "rules")
 
     if looks_like_coverage(norm) and not _CATALOG_RE.search(norm[:40]):
         return Classification("coverage", 0.85, "rules")
@@ -251,14 +270,18 @@ VALID_INTENTS = frozenset(
 
 
 async def classify(
-    text: str, state: ConversationState | None = None, *, has_media: bool = False
+    text: str,
+    state: ConversationState | None = None,
+    *,
+    has_media: bool = False,
+    quoted: str = "",
 ) -> Classification:
     """Reglas primero; el LLM solo cuando las reglas no saben.
 
     Las reglas resuelven la inmensa mayoría de los turnos sin coste ni latencia.
     El LLM entra únicamente en el hueco que antes se tragaba el catálogo.
     """
-    rules = classify_rules(text, state, has_media=has_media)
+    rules = classify_rules(text, state, has_media=has_media, quoted=quoted)
     if rules.confidence >= CONFIDENCE_FLOOR:
         return rules
 

@@ -44,6 +44,7 @@ from app.harness.contracts import (
 )
 from app.harness.coverage import resolve_coverage
 from app.harness.orders import create_from_state as create_temporal_order
+from app.harness.quoting import split_quote
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
@@ -129,11 +130,20 @@ def _caption_of(messages: list) -> str | None:
 
 
 def perceive(messages: list) -> Turn:
-    """Qué nos llega del cliente en este turno."""
+    """Qué nos llega del cliente en este turno.
+
+    La cita se separa AQUÍ, en la frontera: a partir de este punto `turn.text`
+    son las palabras del cliente y nada más. El marcador que la trae es contexto
+    del sistema, y cuando viajaba dentro de `text` el router enrutaba por
+    palabras que el cliente no había escrito y cobertura acabó devolviéndole el
+    marcador entero (ver `harness.quoting`).
+    """
     text = latest_user_text(messages)
     has_media = text is None
     # Con imagen, `text` viene None; conservamos el caption para poder enrutar.
-    return Turn(text=(text if not has_media else _caption_of(messages)) or "", has_media=has_media, messages=messages)
+    raw = (text if not has_media else _caption_of(messages)) or ""
+    own, quoted = split_quote(raw)
+    return Turn(text=own, quoted=quoted, has_media=has_media, messages=messages)
 
 
 def _reduce(state: ConversationState, result: AgentResult) -> ConversationState:
@@ -231,7 +241,9 @@ async def run_master(
         else ConversationState()
     )
 
-    classification = await classify(turn.text, state, has_media=turn.has_media)
+    classification = await classify(
+        turn.text, state, has_media=turn.has_media, quoted=turn.quoted
+    )
     intent = classification.intent
     prev_intent = state.intent_last  # antes de sobrescribir: ¿venía de una derivación?
     state.intent_last = intent
@@ -302,6 +314,36 @@ async def run_master(
         )
         result.user_facing = guarded.reply
 
+    # Un marcador interno en la respuesta significa que perdimos el hilo del
+    # turno: la clienta que preguntaba qué venía dentro de la canasta recibió el
+    # marcador de la cita dentro de un "No ubico … en nuestra lista". El cliente
+    # no tiene por qué leer nuestros fallos: esto se cede a un humano. No es
+    # venta (no hay pedido temporal ni verde en el CRM), es rescate.
+    if (
+        any(v.rule == "no_internal_context" for v in violations)
+        and result.escalate is None
+        and conversation_id is not None
+    ):
+        log.error(
+            "[GUARDRAIL] conversation=%s marcador interno en la respuesta; se deriva",
+            conversation_id,
+        )
+        record_operation("guardrail.output", "internal_leak")
+        result = AgentResult(
+            user_facing=None,
+            artifacts=result.artifacts,
+            tools_used=result.tools_used,
+            state_patch=result.state_patch,
+            escalate=await perform_handoff(
+                wa_id=wa_id,
+                conversation_id=conversation_id,
+                motivo="fallo técnico del bot: la respuesta llevaba contexto interno",
+                use_external_crm=use_external_crm,
+                session=session,
+                persist=persist,
+            ),
+        )
+
     state = _reduce(state, result)
 
     # ¿Este turno el bot ofreció un asesor? Si el cliente responde "sí", el router
@@ -360,6 +402,7 @@ async def _handle(
         return AgentResult(
             user_facing=raw.get("user_facing") or raw.get("structured", {}).get("ask"),
             state_patch=raw.get("state_patch") or {},
+            tools_used=["distritos_cobertura"],
         )
 
     # ── Cierre: máquina de estados, sin LLM ───────────────────────
@@ -500,7 +543,9 @@ async def _handle_escalate(
 
 async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
     if state.checkout_step in ("idle", ""):
-        chosen = resolve_chosen_product(state, turn.text)
+        # Con la cita: responder a la foto de un producto ES nombrarlo. Lo que
+        # NO se consume aquí es el texto del cierre — eso va limpio, más abajo.
+        chosen = resolve_chosen_product(state, turn.text_with_quote)
         if chosen is not None:
             # El cliente pudo verlo hace horas, y Qdrant va con retraso respecto al
             # catálogo. Cerrar el pedido de un producto dado de baja significa que
@@ -627,8 +672,12 @@ async def _handle_detail(turn: Turn, state: ConversationState, **ctx) -> AgentRe
 
 
 def _detalle_target(turn: Turn, state: ConversationState) -> int | None:
-    """¿De qué producto pregunta? `None` si no es unívoco."""
-    chosen = resolve_chosen_product(state, turn.text)
+    """¿De qué producto pregunta? `None` si no es unívoco.
+
+    Mira también la cita: "¿qué contiene?" respondiendo a la foto de un desayuno
+    dice de cuál se pregunta, aunque el texto no lo nombre.
+    """
+    chosen = resolve_chosen_product(state, turn.text_with_quote)
     if chosen is not None:
         return chosen[0]
     # El cliente ya lo había elegido y ahora pregunta por él sin nombrarlo

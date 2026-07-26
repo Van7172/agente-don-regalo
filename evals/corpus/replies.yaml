@@ -72,3 +72,13 @@
 - id: cortesia
   reply: "¡Me alegra saberlo! 😊 Cualquier cosa que necesites, aquí estoy."
   expect_violations: []
+
+- id: marcador-interno-en-la-respuesta
+  incident: "El marcador de la cita salió dentro de un «No ubico … en nuestra lista»."
+  reply: "No ubico “[El cliente está respondiendo al mensaje: «Brunch de Feliz Cumpleaños modificado»” en nuestra lista 😊 ¿Lo buscas en Google Maps?"
+  expect_violations: [no_internal_context]
+
+- id: etiqueta-de-pii-en-la-respuesta
+  incident: "La redacción de PII del historial se coló en la burbuja del cliente."
+  reply: "Perfecto, confirmo el envío al [teléfono protegido] 😊"
+  expect_violations: [no_internal_context]

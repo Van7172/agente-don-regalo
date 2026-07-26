@@ -10,8 +10,9 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.harness.aliases import normalize_place, resolve_alias
+from app.harness.aliases import PLACE_ALIASES, normalize_place, resolve_alias
 from app.harness.render import render_coverage
+from app.harness.registry import assert_tool_allowed
 from app.harness.state import ConversationState
 from app.tools import catalog
 
@@ -24,9 +25,55 @@ _COVERAGE_RE = re.compile(
     re.I,
 )
 
+# Un distrito nombrado no siempre habla de entrega ("flores inspiradas en
+# Miraflores"). Para que mande a cobertura exigimos que sea una respuesta corta
+# —normalmente al "¿a qué distrito?"— o que venga unido a una intención logística.
+_DELIVERY_DESTINATION_RE = re.compile(
+    r"\b(?:pedido|delivery|env[ií]o|enviar|mandar|llevar|entregar|entrega|"
+    r"destino|despacho)\b.{0,55}\b(?:a|al|para|hacia|en)\b|"
+    r"\b(?:a|al|para|hacia)\b.{0,45}\b(?:delivery|env[ií]o|entrega|despacho)\b",
+    re.I,
+)
+
+
+def _is_bare_place(text: str) -> bool:
+    """Un lugar solo, admitiendo la forma de respuesta «es en Miraflores»."""
+    norm = normalize_place(text)
+    norm = re.sub(
+        r"^(?:es\s+en|es\s+el|el\s+distrito\s+es|distrito|en)\s+",
+        "",
+        norm,
+    ).strip()
+    return norm in PLACE_ALIASES
+
 
 def looks_like_coverage(text: str) -> bool:
-    return bool(_COVERAGE_RE.search(text or ""))
+    raw = (text or "").strip()
+    if _COVERAGE_RE.search(raw):
+        return True
+    place = resolve_alias(raw)
+    if not place:
+        return False
+    # "Cercado de Lima" / "es en Miraflores": el lugar viene solo. No basta con
+    # contar palabras: "flores inspiradas en Miraflores" también es corto y es
+    # catálogo, no cobertura.
+    return _is_bare_place(raw) or bool(_DELIVERY_DESTINATION_RE.search(raw))
+
+
+def explicit_delivery_destination(text: str) -> str | None:
+    """Distrito expresado como destino del pedido, o respuesta corta de lugar.
+
+    Devuelve el nombre canónico para que el router pueda decidir sin consultar
+    aún la API. La cobertura y la tarifa reales se validan después mediante
+    `distritos_cobertura`.
+    """
+    raw = (text or "").strip()
+    place = resolve_alias(raw)
+    if not place:
+        return None
+    if _is_bare_place(raw) or _DELIVERY_DESTINATION_RE.search(raw):
+        return place
+    return None
 
 
 def _norm(s: str) -> str:
@@ -152,6 +199,30 @@ def extract_place_candidates(text: str) -> list[str]:
     return cands
 
 
+# Verbos y conectores de frase: si aparecen, eso es una oración, no un lugar.
+_NOT_A_PLACE_RE = re.compile(
+    r"\b(quisiera|quiero|puedo|podr[ií]a|ser[ií]a|est[aá]|estoy|tengo|vengan|"
+    r"venga|pagar|pago|comprar|enviar|mandar|porque|por\s+que|cu[aá]nto|"
+    r"c[oó]mo|qu[eé]|gracias)\b",
+    re.I,
+)
+
+
+def _looks_like_place(candidate: str) -> bool:
+    """¿Esto se puede citar de vuelta como un sitio? Ante la duda, no.
+
+    Un nombre de distrito o de referencia es corto y no tiene verbos: "Villa
+    María del Triunfo", "2da de Palao". Una frase del cliente no se cita: si el
+    turno vino mal enrutado, citarla le enseña nuestro fallo, no lo resuelve.
+    """
+    clean = " ".join((candidate or "").split())
+    if not (2 < len(clean) <= 40):
+        return False
+    if len(clean.split()) > 5:
+        return False
+    return not _NOT_A_PLACE_RE.search(clean)
+
+
 async def resolve_coverage(
     user_text: str,
     state: ConversationState,
@@ -168,6 +239,7 @@ async def resolve_coverage(
     assert client is not None
 
     try:
+        assert_tool_allowed("coverage", "distritos_cobertura")
         raw = await catalog.distritos_cobertura(client, {})
     finally:
         if own_client:
@@ -222,8 +294,11 @@ async def resolve_coverage(
             break
 
     if not matched:
-        # Si ya tenemos distrito en estado y el mensaje es solo "dónde queda X" ambiguo
-        place = candidates[0] if candidates else user_text
+        # Se cita de vuelta SOLO lo que puede ser un lugar. Antes salía el primer
+        # trozo del mensaje pasara lo que pasara, y un turno mal enrutado se le
+        # devolvía al cliente tal cual ("No ubico “En este caso, como voy a pagar
+        # la canasta…”"). Si nada parece un distrito, se pregunta sin citar.
+        place = next((c for c in candidates if _looks_like_place(c)), "")
         ask = render_coverage(suggest_maps=True, place_query=place[:80])
         return {
             "ok": True,

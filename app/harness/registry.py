@@ -90,7 +90,9 @@ AGENTS: dict[str, AgentSpec] = {
         name="coverage",
         playbook=playbooks.COVERAGE,
         facts=("delivery",),
-        tool_names=("distritos_cobertura", "buscar_conocimiento_equipo"),
+        # Flujo determinista: esta es su única fuente de verdad. No se declara
+        # conocimiento genérico que el código nunca invoca.
+        tool_names=("distritos_cobertura",),
         deterministic=True,
     ),
     "checkout": AgentSpec(
@@ -145,6 +147,21 @@ INTENT_TO_AGENT: dict[str, str] = {
 
 def spec_for(intent: str) -> AgentSpec:
     return AGENTS[INTENT_TO_AGENT.get(intent, "catalog")]
+
+
+def assert_tool_allowed(agent_name: str, tool_name: str) -> None:
+    """Autoriza también las tools llamadas por especialistas deterministas.
+
+    Los especialistas LLM ya reciben solo sus schemas permitidos. Cobertura llama
+    la API desde código, así que necesita el mismo candado de mínimo privilegio.
+    """
+    spec = AGENTS.get(agent_name)
+    if spec is None:
+        raise PermissionError(f"especialista desconocido: {agent_name}")
+    if tool_name not in spec.tool_names:
+        raise PermissionError(
+            f"{agent_name} no tiene permitido usar la herramienta {tool_name}"
+        )
 
 
 def tools_for(

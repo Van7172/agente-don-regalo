@@ -163,6 +163,9 @@ Webhook Meta → cola inbound → worker → buffer
 
 1. **El orquestador no habla con el cliente.** Clasifica y delega. Todo texto de cara
    al cliente sale de un especialista, incluidos los saludos (los atiende `concierge`).
+   Su rol experto en ventas consiste en reconocer la etapa comercial y elegir la
+   capacidad correcta: catálogo real, detalle, cobertura, cierre, políticas,
+   rastreo o humano. No improvisa productos ni ejecuta tools por su cuenta.
 2. **Los especialistas devuelven `AgentResult`, nunca `str`**
    ([`contracts.py`](app/harness/contracts.py)): traen lo que dicen Y lo que aprendieron
    (`artifacts`, `state_patch`). Los ids de producto salen de los resultados de las
@@ -206,6 +209,9 @@ Webhook Meta → cola inbound → worker → buffer
   (`master.compose_product_reply` + [`render.py`](app/harness/render.py)).
 - `coverage` y `checkout` están marcados `deterministic=True`: sus playbooks/tools NO
   los ve ningún modelo, el orquestador los resuelve en código.
+- `coverage` tiene mínimo privilegio: solo puede usar `distritos_cobertura`; la
+  autorización se comprueba también antes de la llamada determinista y la tool
+  queda registrada en la traza.
 
 ### Router híbrido
 
@@ -214,6 +220,12 @@ debajo de `CONFIDENCE_FLOOR` decide un clasificador LLM barato (`ROUTER_MODEL`).
 LLM falla (timeout, 429, sin clave) o inventa una intención, mandan las reglas — el
 router nunca tumba un turno. La `Trace` de cada turno registra `router`
 (`rules`|`llm`|`fallback`) y `confidence`.
+
+Las reglas dan prioridad a un destino explícito de entrega: «pedido para Cercado
+de Lima» entra a cobertura, valida distrito y tarifa reales y recién después
+pregunta qué regalo desea. Una mención no logística («flores inspiradas en
+Miraflores») permanece en catálogo. El texto citado de WhatsApp sirve para
+identificar productos, pero nunca decide la intención.
 
 ### La capa de adaptadores (dinero y formas)
 

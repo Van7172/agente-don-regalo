@@ -67,7 +67,16 @@ def render_coverage(
 ) -> str:
     """Una sola burbuja de cobertura (nunca confirmar + preguntar + reconfirmar)."""
     if suggest_maps or covered is None:
-        place = place_query or "ese lugar"
+        place = (place_query or "").strip()
+        if not place:
+            # Sin un lugar reconocible NO se cita al cliente. Citar la frase
+            # entera convertía cualquier desvío en un absurdo: *No ubico “[El
+            # cliente está respondiendo al mensaje: «Brunch de Feliz
+            # Cumpleaños…»” en nuestra lista*. Se pregunta y ya.
+            return (
+                "¿A qué distrito de Lima lo enviamos? 😊 "
+                "Con eso te confirmo la tarifa de envío al toque."
+            )
         return (
             f"No ubico “{place}” en nuestra lista 😊 "
             "¿Lo buscas un momento en Google Maps y me dices el "
