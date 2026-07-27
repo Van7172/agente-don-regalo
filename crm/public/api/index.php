@@ -53,6 +53,16 @@ try {
     if ($method === 'PATCH' && preg_match('#^/conversations/\d+/sale/delivered$#', $path)) {
         $needsToken = false;
     }
+    // Módulos del asesor: van SIEMPRE con sesión (necesitan saber qué usuario
+    // actúa) y cada handler vuelve a exigir `Auth::user()`. Aquí solo se abre la
+    // puerta para que el fetch del panel, que va con cookie y sin token, no
+    // choque contra el 401 genérico.
+    if (preg_match('#^/conversations/\d+/(claim|release|sale|notes|followups)$#', $path)) {
+        $needsToken = false;
+    }
+    if (preg_match('#^/followups(/\d+)?$#', $path)) {
+        $needsToken = false;
+    }
     if ($method === 'GET' && strpos($path, '/reports') === 0) {
         $needsToken = false;
     }
@@ -185,6 +195,16 @@ try {
                         'body' => $conv['ad_body'],
                         'url' => $conv['ad_source_url'],
                     ] : null,
+                    // Quién tiene el chat: sin esto dos asesores pueden estar
+                    // escribiéndole cosas distintas al mismo cliente.
+                    'assigned' => $conv['id_usuario_asignado'] !== null ? [
+                        'id' => (int) $conv['id_usuario_asignado'],
+                        'name' => (string) ($conv['nombre_usuario_asignado'] ?? ''),
+                        'since' => Repository::iso($conv['fecha_asignacion'] ?? null),
+                    ] : null,
+                    // Ventana de 24h de WhatsApp. El panel la muestra ANTES de
+                    // que el asesor escriba algo que Meta va a rechazar.
+                    'window' => Repository::serviceWindow($conv['last_inbound_at'] ?? null),
                     'contact' => [
                         'wa_id' => $conv['wa_id'],
                         'name' => $conv['nombre_contact'],
@@ -268,6 +288,13 @@ try {
         $body = Http::readJson();
         if (($body['mode'] ?? '') === 'AI' || ($body['mode'] ?? '') === 'HUMAN') {
             Repository::setMode($id, (string) $body['mode']);
+            // Devolver el chat al bot lo deja sin dueño. Si siguiera asignado,
+            // el filtro "Mis chats" se llenaría de conversaciones ya terminadas
+            // y el asesor dejaría de mirarlo — que es como muere un filtro.
+            // Incluye la × del rail, que manda mode=AI sin abrir el chat.
+            if ($body['mode'] === 'AI') {
+                Repository::releaseConversation($id);
+            }
         }
         if (array_key_exists('bot_active', $body)) {
             Repository::setBotActive($id, (bool) $body['bot_active']);
@@ -305,6 +332,178 @@ try {
             Http::jsonError($error->getMessage(), 404);
         }
         Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
+    // ── asignación de asesor ────────────────────────────────────────────────
+    //
+    // "Tomar conversación" ya no era suficiente: cambiaba el modo a HUMAN sin
+    // decir de QUÉ humano, así que dos asesores podían atender al mismo cliente.
+    // El claim es un UPDATE condicional; quien no lo gana recibe `claimed: false`
+    // con el nombre de quien sí lo tiene.
+    if (preg_match('#^/conversations/(\d+)/claim$#', $path, $m) && $method === 'POST') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        if (!Repository::getConversation((int) $m[1])) {
+            Http::jsonError('Conversation not found', 404);
+        }
+        $body = Http::readJson();
+        $result = Repository::claimConversation(
+            (int) $m[1],
+            (int) $user['id'],
+            (string) ($user['name'] ?? ''),
+            !empty($body['force'])
+        );
+        Http::jsonOk(['ok' => true] + $result);
+    }
+
+    if (preg_match('#^/conversations/(\d+)/release$#', $path, $m) && $method === 'POST') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        Repository::releaseConversation((int) $m[1]);
+        Http::jsonOk(['ok' => true, 'assigned' => null]);
+    }
+
+    // ── venta registrada por el asesor ──────────────────────────────────────
+    //
+    // El chat que llega a un humano es el que el bot no pudo cerrar: sin esto,
+    // la mayoría de las ventas del CRM no existían en ningún registro.
+    if (preg_match('#^/conversations/(\d+)/sale$#', $path, $m) && $method === 'POST') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        if (!Repository::getConversation((int) $m[1])) {
+            Http::jsonError('Conversation not found', 404);
+        }
+        try {
+            $sale = Repository::registerManualSale(
+                (int) $m[1],
+                Http::readJson(),
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 422);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
+    // ── notas internas ──────────────────────────────────────────────────────
+    if (preg_match('#^/conversations/(\d+)/notes$#', $path, $m)) {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $conversationId = (int) $m[1];
+        if ($method === 'GET') {
+            Http::jsonOk([
+                'ok' => true,
+                'data' => array_map(static function (array $n): array {
+                    return [
+                        'id' => (int) $n['id_nota'],
+                        'text' => (string) $n['nota_texto'],
+                        'author' => (string) ($n['nombre_usuario'] ?? ''),
+                        'created_at' => Repository::iso($n['fecha_creacion']),
+                    ];
+                }, Repository::listNotes($conversationId)),
+            ]);
+        }
+        if ($method === 'POST') {
+            if (!Repository::getConversation($conversationId)) {
+                Http::jsonError('Conversation not found', 404);
+            }
+            $body = Http::readJson();
+            try {
+                $note = Repository::addNote(
+                    $conversationId,
+                    (string) ($body['text'] ?? ''),
+                    (int) $user['id'],
+                    (string) ($user['name'] ?? '')
+                );
+            } catch (RuntimeException $error) {
+                Http::jsonError($error->getMessage(), 422);
+            }
+            Http::jsonOk([
+                'ok' => true,
+                'note' => [
+                    'id' => (int) ($note['id_nota'] ?? 0),
+                    'text' => (string) ($note['nota_texto'] ?? ''),
+                    'author' => (string) ($note['nombre_usuario'] ?? ''),
+                    'created_at' => Repository::iso($note['fecha_creacion'] ?? null),
+                ],
+            ]);
+        }
+    }
+
+    // ── seguimientos ────────────────────────────────────────────────────────
+    if (preg_match('#^/conversations/(\d+)/followups$#', $path, $m)) {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $conversationId = (int) $m[1];
+        if ($method === 'GET') {
+            Http::jsonOk([
+                'ok' => true,
+                'data' => array_map([Repository::class, 'mapFollowup'], Repository::listFollowups($conversationId)),
+            ]);
+        }
+        if ($method === 'POST') {
+            if (!Repository::getConversation($conversationId)) {
+                Http::jsonError('Conversation not found', 404);
+            }
+            $body = Http::readJson();
+            try {
+                $followup = Repository::addFollowup(
+                    $conversationId,
+                    (string) ($body['reason'] ?? ''),
+                    (string) ($body['when'] ?? ''),
+                    (int) $user['id'],
+                    (string) ($user['name'] ?? '')
+                );
+            } catch (RuntimeException $error) {
+                Http::jsonError($error->getMessage(), 422);
+            }
+            Http::jsonOk(['ok' => true, 'followup' => Repository::mapFollowup($followup)]);
+        }
+    }
+
+    // Lista global: alimenta el rail "seguimientos vencidos" del inbox. Un
+    // recordatorio en una tabla que nadie mira no sirve de nada.
+    if ($path === '/followups' && $method === 'GET') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'data' => array_map([Repository::class, 'mapFollowup'], Repository::listDueFollowups()),
+        ]);
+    }
+
+    if (preg_match('#^/followups/(\d+)$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $body = Http::readJson();
+        $status = (string) ($body['status'] ?? '');
+        if (!in_array($status, Repository::FOLLOWUP_STATUSES, true)) {
+            Http::jsonError('Invalid followup status');
+        }
+        try {
+            $followup = Repository::setFollowupStatus(
+                (int) $m[1],
+                $status,
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'followup' => Repository::mapFollowup($followup)]);
     }
 
     // PATCH /sales/{id}/status — cambio de estado desde el Historial de Ventas.
@@ -485,6 +684,29 @@ try {
         $conv = Repository::getConversation($convId);
         if (!$conv) {
             Http::jsonError('Conversation not found', 404);
+        }
+
+        // Ventana de servicio de WhatsApp. Pasadas 24h desde el último mensaje
+        // del cliente, la Cloud API rechaza el texto libre: el mensaje se
+        // encolaba, moría en `failed` y el panel decía "No se envió" sin más — el
+        // asesor reintentaba y volvía a fallar. Frenarlo aquí con el motivo es
+        // estrictamente mejor: al cliente no le llegaba de ninguna manera.
+        //
+        // Solo se bloquea cuando SABEMOS que está cerrada (`known`). Sin ningún
+        // mensaje entrante no hay evidencia, y sin evidencia no se le quita al
+        // equipo la posibilidad de escribir.
+        $window = Repository::serviceWindow($conv['last_inbound_at'] ?? null);
+        if ($window['known'] && !$window['open']) {
+            $desde = $window['last_inbound_at']
+                ? date('d/m/Y H:i', (int) strtotime($window['last_inbound_at']))
+                : '?';
+            Http::jsonError(
+                'WhatsApp no permite escribir: pasaron más de '
+                . Repository::SERVICE_WINDOW_HOURS . ' horas desde el último mensaje '
+                . "del cliente ({$desde}). Hay que esperar a que vuelva a escribir "
+                . 'o contactarlo con una plantilla aprobada por Meta.',
+                422
+            );
         }
         // El asesor respondió a un mensaje desde el inbox: la cita viaja hasta la
         // Cloud API para que el cliente la vea en su WhatsApp, y se guarda en el

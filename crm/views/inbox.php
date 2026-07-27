@@ -2,7 +2,24 @@
   data-base="<?= e(url_to('')) ?>"
   data-poll-list="4000"
   data-poll-thread="4000"
-  data-mobile-chat="false">
+  data-mobile-chat="false"
+  data-user-id="<?= e((string) ($user['id'] ?? '')) ?>"
+  data-user-name="<?= e((string) ($user['name'] ?? '')) ?>">
+
+  <!-- Seguimientos vencidos: leads a los que tocaba volver y nadie ha vuelto.
+       Va sobre la cola de ayuda porque son los únicos chats que NO se van a
+       manifestar solos: el cliente que dijo "lo consulto y te aviso" no vuelve
+       a escribir, así que nunca sube en la bandeja. -->
+  <section class="followup-rail" id="followup-rail" hidden>
+    <div class="followup-rail-head">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </svg>
+      <span>Seguimientos vencidos — tocaba volver a escribirles</span>
+    </div>
+    <div class="followup-rail-chips" id="followup-rail-chips"></div>
+  </section>
 
   <!-- Cola de atención: conversaciones marcadas human_support -->
   <section class="help-rail" id="help-rail" hidden>
@@ -41,6 +58,14 @@
           </svg>
           <input class="input" id="conv-search" type="search" placeholder="Buscar conversación…" aria-label="Buscar conversación" />
         </div>
+        <!-- Sin esto, "quién atiende qué" no se puede consultar: la bandeja
+             ordena por recencia y los chats de uno quedan repartidos entre los
+             de todos. -->
+        <div class="scope-tabs" role="tablist" aria-label="Filtrar conversaciones">
+          <button type="button" class="scope-tab is-active" data-scope="all" role="tab" aria-selected="true">Todas</button>
+          <button type="button" class="scope-tab" data-scope="mine" role="tab" aria-selected="false">Mías</button>
+          <button type="button" class="scope-tab" data-scope="free" role="tab" aria-selected="false">Sin asignar</button>
+        </div>
         <div class="list-count" id="conv-count">—</div>
       </div>
       <div class="list-scroll" id="conv-list"></div>
@@ -73,13 +98,32 @@
               <span class="dot-sm" id="chat-dot"></span>
               <span id="chat-state-label"></span>
             </div>
+            <div class="chat-chips">
+              <!-- Quién lo tiene. Antes "Tomar conversación" pasaba el chat a
+                   HUMAN sin decir a qué humano, y dos asesores podían estar
+                   escribiéndole cosas distintas al mismo cliente. -->
+              <span class="chip-assign" id="chip-assign" hidden></span>
+              <!-- Cuánto queda de la ventana de 24h de WhatsApp. -->
+              <span class="chip-window" id="chip-window" hidden></span>
+            </div>
           </div>
+          <!-- La mayoría de las ventas del CRM las cierra un asesor, no el bot,
+               y hasta ahora no quedaban registradas en ninguna parte. -->
+          <button type="button" class="btn btn-secondary" id="btn-sale" title="Registrar una venta cerrada por ti">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="1" x2="12" y2="23"></line>
+              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+            </svg>
+            Registrar venta
+          </button>
           <button type="button" class="btn btn-primary" id="btn-human" hidden>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
               <polyline points="22 4 12 14.01 9 11.01"></polyline>
             </svg>
-            Tomar conversación
+            <!-- El texto lo pone el JS: "Tomar conversación" si está libre,
+                 "Tomar de todas formas" si la tiene otro asesor. -->
+            <span class="btn-label">Tomar conversación</span>
           </button>
           <!-- Aquí hubo un "Quitar de la cola" que sacaba el chat de la franja
                SIN devolvérselo al bot. No era un estado: dejaba el chat en modo
@@ -114,6 +158,18 @@
 
         <!-- Modo HUMAN: el asesor responde -->
         <div class="composer-wrap" id="composer-wrap" hidden>
+
+          <!-- Ventana de 24h agotada. Antes esto no se sabía: el mensaje se
+               encolaba, Meta lo rechazaba y el panel decía "No se envió" sin
+               ningún motivo, así que el asesor reintentaba y volvía a fallar. -->
+          <div class="window-banner" id="window-banner" hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+              <line x1="12" y1="9" x2="12" y2="13"></line>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+            <span id="window-banner-text"></span>
+          </div>
 
           <div class="human-return-banner" id="human-return-banner">
             <span>Cuando termines → <strong>Devolver a Don Regalo</strong> para que el bot siga el chat.</span>
@@ -207,6 +263,43 @@
         <div class="lead-name" id="lead-name">—</div>
         <div class="lead-sub" id="lead-sub"></div>
         <div class="lead-fields" id="lead-fields"></div>
+
+        <!-- Seguimientos: lo único que impide que el lead que dijo "lo consulto
+             y te aviso" se hunda en la bandeja y no vuelva nunca. -->
+        <section class="lead-block">
+          <h5>Seguimientos</h5>
+          <form class="followup-form" id="followup-form">
+            <input class="input" id="followup-reason" type="text" maxlength="255"
+                   placeholder="¿Para qué? Ej: confirmar si toma el desayuno grande"
+                   aria-label="Motivo del seguimiento" />
+            <div class="followup-when">
+              <input class="input" id="followup-when" type="datetime-local"
+                     aria-label="Cuándo retomar" />
+              <button type="submit" class="btn btn-secondary btn-sm">Programar</button>
+            </div>
+            <!-- Presets: el 90% de los seguimientos son "mañana" o "en 2 días",
+                 y obligar a rellenar un datetime a mano para eso hace que no se
+                 programe ninguno. -->
+            <div class="followup-presets">
+              <button type="button" class="preset-chip" data-hours="3">En 3 h</button>
+              <button type="button" class="preset-chip" data-preset="tomorrow">Mañana 9:00</button>
+              <button type="button" class="preset-chip" data-days="2">En 2 días</button>
+            </div>
+          </form>
+          <div class="followup-list" id="followup-list"></div>
+        </section>
+
+        <!-- Notas internas: lo que sabe el equipo y el cliente NO ve. -->
+        <section class="lead-block">
+          <h5>Notas internas <span class="lead-block-hint">solo las ve el equipo</span></h5>
+          <form class="note-form" id="note-form">
+            <textarea class="input" id="note-text" rows="2" maxlength="4000"
+                      placeholder="Ej: pide factura, falta el RUC"
+                      aria-label="Nueva nota interna"></textarea>
+            <button type="submit" class="btn btn-secondary btn-sm">Guardar nota</button>
+          </form>
+          <div class="note-list" id="note-list"></div>
+        </section>
       </div>
     </aside>
   </div>
@@ -228,6 +321,72 @@
     <span>Copiar</span>
   </button>
 </div>
+
+<!-- Registrar una venta que cerró el asesor.
+     `crm_ventas_historiales` solo recogía los cierres del bot, y el chat que
+     llega a un humano es justo el que el bot NO pudo cerrar: la mayor parte de
+     lo que se vende por el CRM no existía en ningún registro. -->
+<dialog class="sale-dialog" id="sale-dialog" aria-labelledby="sale-dialog-title">
+  <form method="dialog" class="sale-dialog-form" id="sale-form">
+    <div class="sale-dialog-head">
+      <h4 id="sale-dialog-title">Registrar venta</h4>
+      <button type="button" class="icon-btn" id="sale-dialog-close" aria-label="Cerrar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    <p class="sale-dialog-lead" id="sale-dialog-lead"></p>
+
+    <div class="field">
+      <label for="sale-producto">Producto <span aria-hidden="true">*</span></label>
+      <input class="input" id="sale-producto" name="producto" type="text" required maxlength="255"
+             placeholder="Desayuno Brunch Feliz Cumpleaños" />
+    </div>
+
+    <div class="sale-dialog-grid">
+      <div class="field">
+        <label for="sale-monto">Monto (S/)</label>
+        <input class="input" id="sale-monto" name="monto_sol" type="number" min="0" step="0.10" inputmode="decimal" />
+      </div>
+      <div class="field">
+        <label for="sale-envio">Envío (S/)</label>
+        <input class="input" id="sale-envio" name="envio_sol" type="number" min="0" step="0.10" inputmode="decimal" />
+      </div>
+      <div class="field">
+        <label for="sale-distrito">Distrito</label>
+        <input class="input" id="sale-distrito" name="distrito" type="text" maxlength="120" />
+      </div>
+      <div class="field">
+        <label for="sale-pedido">Nº pedido temporal</label>
+        <input class="input" id="sale-pedido" name="pedido_temporal_id" type="number" min="1" step="1" />
+      </div>
+      <div class="field">
+        <label for="sale-fecha">Fecha de entrega</label>
+        <input class="input" id="sale-fecha" name="fecha" type="date" />
+      </div>
+      <div class="field">
+        <label for="sale-horario">Horario</label>
+        <input class="input" id="sale-horario" name="horario" type="text" maxlength="80"
+               placeholder="9:00 a 13:00" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="sale-motivo">Nota</label>
+      <input class="input" id="sale-motivo" name="motivo" type="text" maxlength="255"
+             placeholder="Pagó por Yape, comprobante en el chat" />
+    </div>
+
+    <div class="sale-dialog-error" id="sale-dialog-error" role="alert" hidden></div>
+
+    <div class="sale-dialog-actions">
+      <button type="button" class="btn btn-secondary" id="sale-cancel">Cancelar</button>
+      <button type="submit" class="btn btn-primary" id="sale-submit">Registrar venta</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="alert error-box" id="error-box" role="alert" hidden></div>
 

@@ -56,6 +56,7 @@
           <th>Estado</th>
           <th>Cliente</th>
           <th>Venta</th>
+          <th>Cerró</th>
           <th>Entrega</th>
           <th>Pedido</th>
           <th>Cierre</th>
@@ -65,7 +66,7 @@
       <tbody>
       <?php if (!$rows): ?>
         <tr>
-          <td class="history-empty" colspan="7">No hay ventas para estos filtros.</td>
+          <td class="history-empty" colspan="8">No hay ventas para estos filtros.</td>
         </tr>
       <?php endif; ?>
       <?php foreach ($rows as $row): ?>
@@ -91,7 +92,18 @@
           </td>
           <td>
             <strong><?= e($row['product']) ?></strong>
-            <small><?= e(trim($row['district'] . ' · ' . $row['shipping'], ' ·')) ?></small>
+            <small><?= e(trim(
+              $row['district'] . ' · ' . $row['amount'] . ' · envío ' . $row['shipping'],
+              ' ·'
+            )) ?></small>
+          </td>
+          <td>
+            <span class="tag <?= $row['origin'] === 'asesor' ? 'tag-neutral' : 'tag-accent-2' ?>">
+              <?= e($row['origin_label']) ?>
+            </span>
+            <?php if ($row['seller'] !== ''): ?>
+              <small><?= e($row['seller']) ?></small>
+            <?php endif; ?>
           </td>
           <td>
             <strong><?= e($row['delivery_date'] ?: '—') ?></strong>

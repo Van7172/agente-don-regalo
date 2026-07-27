@@ -33,6 +33,8 @@
   const el = {
     rail: document.getElementById("help-rail"),
     railChips: document.getElementById("help-rail-chips"),
+    followupRail: document.getElementById("followup-rail"),
+    followupRailChips: document.getElementById("followup-rail-chips"),
     inboxEmpty: document.getElementById("inbox-empty"),
     panes: document.getElementById("inbox-panes"),
     search: document.getElementById("conv-search"),
@@ -82,6 +84,39 @@
     leadSub: document.getElementById("lead-sub"),
     leadFields: document.getElementById("lead-fields"),
     error: document.getElementById("error-box"),
+
+    // Asignación de asesor y ventana de servicio de WhatsApp.
+    chipAssign: document.getElementById("chip-assign"),
+    chipWindow: document.getElementById("chip-window"),
+    windowBanner: document.getElementById("window-banner"),
+    windowBannerText: document.getElementById("window-banner-text"),
+    scopeTabs: document.querySelectorAll(".scope-tab"),
+
+    // Venta registrada por el asesor.
+    btnSale: document.getElementById("btn-sale"),
+    saleDialog: document.getElementById("sale-dialog"),
+    saleForm: document.getElementById("sale-form"),
+    saleDialogLead: document.getElementById("sale-dialog-lead"),
+    saleDialogError: document.getElementById("sale-dialog-error"),
+    saleDialogClose: document.getElementById("sale-dialog-close"),
+    saleCancel: document.getElementById("sale-cancel"),
+    saleSubmit: document.getElementById("sale-submit"),
+
+    // Notas internas y seguimientos.
+    noteForm: document.getElementById("note-form"),
+    noteText: document.getElementById("note-text"),
+    noteList: document.getElementById("note-list"),
+    followupForm: document.getElementById("followup-form"),
+    followupReason: document.getElementById("followup-reason"),
+    followupWhen: document.getElementById("followup-when"),
+    followupList: document.getElementById("followup-list"),
+  };
+
+  // Quién está usando el panel. Sin esto no se puede distinguir "lo tengo yo"
+  // de "lo tiene otro", que es justo para lo que sirve la asignación.
+  const currentUser = {
+    id: Number(root.dataset.userId || 0) || null,
+    name: root.dataset.userName || "",
   };
 
   const MAX_BYTES = 16 * 1024 * 1024;
@@ -90,6 +125,10 @@
   let conversations = [];
   let selectedId = null;
   let query = "";
+  // Filtro de la bandeja: todas / mías / sin asignar.
+  let scope = "all";
+  let dueFollowups = []; // seguimientos vencidos, para el rail
+  let railSig = "";
   let listSig = "";
   let threadSig = "";
   let pendingFiles = []; // [{ blob, name, kind }]
@@ -289,13 +328,48 @@
 
   // ── render: lista + rail ────────────────────────────────────
 
+  const isMine = (c) => !!currentUser.id && c.assigned?.id === currentUser.id;
+
+  function matchesScope(c) {
+    if (scope === "mine") return isMine(c);
+    if (scope === "free") return !c.assigned;
+    return true;
+  }
+
   function visibleConversations() {
-    if (!query) return conversations;
     const q = query.toLowerCase();
     return conversations.filter((c) => {
+      if (!matchesScope(c)) return false;
+      if (!q) return true;
       const hay = [displayName(c), c.contact?.wa_id, c.last_message].join(" ").toLowerCase();
       return hay.includes(q);
     });
+  }
+
+  /**
+   * Etiqueta de la ventana de servicio de WhatsApp.
+   *
+   * `known: false` (la conversación no tiene ni un mensaje entrante) NO se
+   * pinta: decir "quedan 24 h" sobre un dato que no tenemos es peor que no
+   * decir nada, porque el asesor lo creería.
+   */
+  function windowChip(win) {
+    if (!win || !win.known) return null;
+    if (!win.open) return { text: "Ventana cerrada", state: "closed" };
+    const mins = Number(win.minutes_left || 0);
+    if (mins < 60) return { text: `Quedan ${mins} min`, state: "warn" };
+    const horas = Math.floor(mins / 60);
+    return {
+      text: `Quedan ${horas} h`,
+      // Por debajo de 2 h el asesor tiene que decidir YA si escribe.
+      state: horas < 2 ? "warn" : "ok",
+    };
+  }
+
+  /** Seguimiento pendiente que ya venció, para marcar la fila en la lista. */
+  function followupOverdue(c) {
+    const due = parseTs(c.next_followup_at);
+    return !!due && due.getTime() <= Date.now();
   }
 
   function conversationItem(c) {
@@ -309,6 +383,16 @@
     btn.className = `list-item${c.id === selectedId ? " active" : ""}${sold ? " is-sold" : ""}`;
 
     const wait = status === "help" ? waitLabel(c.last_message_at) : "";
+    // Quién lo tiene. "Tú" y otro asesor se distinguen a simple vista: lo que
+    // hay que poder leer de un vistazo es "esto no es mío, no lo toco".
+    const assignTag = c.assigned
+      ? `<span class="tag ${isMine(c) ? "tag-mine" : "tag-taken"}" title="${esc(
+          c.assigned.name || "Asesor"
+        )}">${isMine(c) ? "TÚ" : esc(initials(c.assigned.name, "AS"))}</span>`
+      : "";
+    const followTag = followupOverdue(c)
+      ? `<span class="tag tag-followup">⏰ SEGUIMIENTO</span>`
+      : "";
     btn.innerHTML = `
       <div class="avatar-wrap">
         <div class="avatar ${avatarClass(c.contact?.wa_id || c.id)}">${esc(initials(displayName(c)))}</div>
@@ -324,7 +408,9 @@
         <div class="item-foot">
           ${sold ? `<span class="tag tag-sold">💚 VENTA CERRADA</span>` : ""}
           ${c.is_new ? `<span class="tag tag-new">✨ NUEVO</span>` : ""}
+          ${followTag}
           <span class="tag ${meta.tag}">${esc(meta.badge)}</span>
+          ${assignTag}
           ${wait ? `<span class="item-wait">${esc(wait)}</span>` : ""}
         </div>
       </div>`;
@@ -353,6 +439,41 @@
     return btn;
   }
 
+  /**
+   * Chip de un seguimiento vencido. El ✓ lo cierra sin abrir el chat: despachar
+   * la lista de la mañana no debería costar un clic de entrada y otro de salida
+   * por cada lead.
+   */
+  function followupRailChip(f) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-chip is-followup";
+    const quien = f.contact?.name || f.contact?.wa_id || `Chat #${f.conversation_id}`;
+    btn.innerHTML = `
+      <span class="chip-name">${esc(quien)}</span>
+      <span class="chip-meta">${esc(f.reason)}</span>
+      <span class="chip-dismiss" role="button" tabindex="0" title="Marcar como hecho" aria-label="Marcar como hecho">✓</span>`;
+    btn.addEventListener("click", (e) => {
+      if (e.target.closest(".chip-dismiss")) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeFollowup(f.id, "hecho");
+        return;
+      }
+      select(f.conversation_id);
+    });
+    return btn;
+  }
+
+  function renderFollowupRail() {
+    if (!el.followupRail) return;
+    const sig = JSON.stringify(dueFollowups.map((f) => [f.id, f.status]));
+    if (sig === railSig) return;
+    railSig = sig;
+    el.followupRail.hidden = dueFollowups.length === 0;
+    el.followupRailChips.replaceChildren(...dueFollowups.map(followupRailChip));
+  }
+
   function renderList() {
     const hasAny = conversations.length > 0;
     el.inboxEmpty.hidden = hasAny;
@@ -369,7 +490,15 @@
         : `${rows.length} de ${conversations.length} conversaciones`;
 
     if (!rows.length) {
-      el.list.innerHTML = `<div class="list-note">Ningún chat coincide con la búsqueda.</div>`;
+      // El motivo importa: "no tienes chats asignados" y "la búsqueda no
+      // encontró nada" mandan al asesor a sitios distintos.
+      const vacio =
+        scope === "mine"
+          ? "No tienes ninguna conversación asignada. Toma una de la lista «Todas»."
+          : scope === "free"
+            ? "No hay conversaciones sin asignar."
+            : "Ningún chat coincide con la búsqueda.";
+      el.list.innerHTML = `<div class="list-note">${esc(vacio)}</div>`;
       return;
     }
     el.list.replaceChildren(...rows.map(conversationItem));
@@ -562,6 +691,14 @@
       valor ? `<div class="sale-row"><span>${etiqueta}</span><b>${esc(String(valor))}</b></div>` : "";
     const envio =
       sale.envio_sol != null ? `S/${Number(sale.envio_sol).toFixed(2)}` : "";
+    const monto =
+      sale.monto_sol != null ? `S/${Number(sale.monto_sol).toFixed(2)}` : "";
+    // Quién la cerró. Una venta registrada a mano y una que cerró el bot valen
+    // lo mismo para cobrar, pero no para saber a quién preguntarle por ella.
+    const porAsesor = sale.origen === "asesor";
+    const titulo = porAsesor
+      ? `💚 Venta registrada${sale.registrado_por ? ` por ${esc(String(sale.registrado_por))}` : ""} — falta entregar`
+      : "💚 Venta cerrada por Don Regalo — solo falta cobrar";
     // El pedido ya está creado en el panel: el asesor solo lo convierte, sin
     // recapturar nada. Sin este número tiene que buscarlo a mano.
     const pedido = sale.pedido_temporal_id
@@ -574,7 +711,7 @@
                 aria-expanded="${saleCollapsed ? "false" : "true"}"
                 title="${saleCollapsed ? "Ver el pedido" : "Plegar el pedido"}">
           <span class="sale-head-text">
-            💚 Venta cerrada por Don Regalo — solo falta cobrar${
+            ${titulo}${
               saleCollapsed && sale.producto ? `: ${esc(String(sale.producto))}` : ""
             }
           </span>
@@ -586,6 +723,7 @@
         </button>
         <div class="sale-body">
           ${fila("Producto", sale.producto)}
+          ${fila("Monto", monto)}
           ${fila("Distrito", sale.distrito)}
           ${fila("Envío", envio)}
           ${fila("Fecha", sale.fecha)}
@@ -728,8 +866,21 @@
     // que enciende modo HUMAN, `human_support` y apaga `bot_active` de una vez.
     // Así que un chat de la cola de atención NO está en AI, está en HUMAN con el
     // bot callado — que es por lo que basta este flag para el composer.
+    renderAssignChip(conv);
+    renderWindow(conv);
+
     const isHuman = conv.mode === "HUMAN";
-    el.btnHuman.hidden = isHuman;
+    // El botón de tomar se oculta SOLO cuando el chat ya es tuyo.
+    //
+    // Antes se ocultaba en cuanto el modo era HUMAN, y ese es justo el caso que
+    // llega desde el bot: el handoff hace `set_mode(HUMAN)` sin asignar a nadie,
+    // así que el chat más urgente del panel —el de la cola de atención— era el
+    // único que no se podía reclamar. Quedaba en manos humanas y sin dueño.
+    const mine = isMine(conv);
+    el.btnHuman.hidden = mine;
+    el.btnHuman.querySelector(".btn-label").textContent = conv.assigned
+      ? "Tomar de todas formas"
+      : "Tomar conversación";
     el.btnAi.hidden = !isHuman;
     el.composerWrap.hidden = !isHuman;
     el.aiBanner.hidden = isHuman;
@@ -751,6 +902,327 @@
     }
 
     renderLead(conv, lead);
+  }
+
+  // ── asignación de asesor ────────────────────────────────────
+
+  function renderAssignChip(conv) {
+    if (!el.chipAssign) return;
+    const asignado = conv.assigned;
+    el.chipAssign.hidden = !asignado;
+    if (!asignado) return;
+    const mio = !!currentUser.id && asignado.id === currentUser.id;
+    el.chipAssign.className = `chip-assign${mio ? " is-mine" : ""}`;
+    el.chipAssign.textContent = mio
+      ? "La tienes tú"
+      : `La atiende ${asignado.name || "otro asesor"}`;
+  }
+
+  /**
+   * Toma la conversación: primero reclama, y solo si gana el claim la pasa a
+   * HUMAN.
+   *
+   * El orden importa. Al revés —cambiar el modo y luego intentar reclamar— el
+   * chat se quedaría en HUMAN aunque el claim lo hubiera ganado otro, o sea que
+   * el asesor vería el composer abierto sobre un cliente que no es suyo.
+   */
+  async function takeConversation() {
+    if (selectedId == null) return;
+    const convId = selectedId;
+    try {
+      let res = await api(`/conversations/${convId}/claim`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (!res.claimed) {
+        const quien = res.assigned?.name || "otro asesor";
+        // Salida de emergencia para el supervisor: un turno que termina no
+        // puede dejar un chat bloqueado hasta que el releaser lo suelte.
+        const forzar = window.confirm(
+          `Esta conversación la está atendiendo ${quien}. ` +
+            `¿Quieres tomarla igualmente? Se le quitará a ${quien}.`
+        );
+        if (!forzar) return;
+        res = await api(`/conversations/${convId}/claim`, {
+          method: "POST",
+          body: JSON.stringify({ force: true }),
+        });
+        if (!res.claimed) {
+          showError("No se pudo tomar la conversación. Recarga e inténtalo de nuevo.");
+          return;
+        }
+      }
+      // `human_support: false` al tomarla: la franja pasa a significar "nadie
+      // lo está atendiendo". Antes seguía gritando por un chat que un compañero
+      // ya tenía abierto, y una alarma que suena cuando no pasa nada se ignora.
+      // No es el viejo estado a medias —aquel dejaba el chat en HUMAN sin dueño
+      // y fuera de la vista de todos—: ahora tiene dueño y sale en "Mías".
+      await setMode("HUMAN", { human_support: false });
+      showError("");
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  // ── ventana de servicio de WhatsApp (24 h) ──────────────────
+  //
+  // Pasadas 24h desde el último mensaje del cliente, la Cloud API rechaza el
+  // texto libre. El panel no lo sabía: el mensaje se encolaba, moría con
+  // `failed` y salía un "No se envió" sin motivo — el asesor reintentaba y
+  // volvía a fallar. Ahora se ve ANTES de escribir.
+
+  /** ¿Se puede escribir en el chat que está abierto? */
+  function windowIsClosed() {
+    const win = lastThread?.conv?.window;
+    return !!win && win.known && !win.open;
+  }
+
+  function renderWindow(conv) {
+    const chip = windowChip(conv.window);
+    if (el.chipWindow) {
+      el.chipWindow.hidden = !chip;
+      if (chip) {
+        el.chipWindow.className = `chip-window is-${chip.state}`;
+        el.chipWindow.textContent = chip.text;
+      }
+    }
+
+    const cerrada = !!conv.window && conv.window.known && !conv.window.open;
+    if (el.windowBanner) {
+      el.windowBanner.hidden = !cerrada;
+      if (cerrada && el.windowBannerText) {
+        const desde = conv.window.last_inbound_at
+          ? `${dayLabel(conv.window.last_inbound_at) || ""} ${timeLabel(
+              conv.window.last_inbound_at
+            )}`.trim()
+          : "hace más de 24 h";
+        el.windowBannerText.textContent =
+          `WhatsApp no deja escribir: el cliente no escribe desde ${desde}. ` +
+          `Hay que esperar a que vuelva a escribir, o contactarlo con una ` +
+          `plantilla aprobada por Meta.`;
+      }
+    }
+    // El composer se bloquea entero: dejar escribir para que el envío falle
+    // después es hacerle perder el mensaje al asesor.
+    if (el.draft) {
+      el.draft.disabled = cerrada;
+      el.draft.placeholder = cerrada
+        ? "Ventana de 24 h cerrada — el cliente tiene que escribir primero"
+        : "Escribe como asesor… ( / mensajes rápidos )";
+    }
+    if (el.btnSend) el.btnSend.disabled = cerrada;
+    if (el.btnAttach) el.btnAttach.disabled = cerrada;
+    if (el.btnRecord) el.btnRecord.disabled = cerrada;
+  }
+
+  // ── notas internas ──────────────────────────────────────────
+
+  function renderNotes(notes) {
+    if (!el.noteList) return;
+    if (!notes.length) {
+      el.noteList.innerHTML = `<p class="lead-block-empty">Sin notas todavía.</p>`;
+      return;
+    }
+    el.noteList.innerHTML = notes
+      .map(
+        (n) => `<article class="note-item">
+          <div class="note-body">${linkify(n.text)}</div>
+          <div class="note-meta">${esc(n.author || "Asesor")} · ${esc(
+            `${dayLabel(n.created_at) || ""} ${timeLabel(n.created_at)}`.trim()
+          )}</div>
+        </article>`
+      )
+      .join("");
+  }
+
+  async function loadNotes(convId) {
+    try {
+      const json = await api(`/conversations/${convId}/notes`);
+      // El asesor pudo cambiar de chat mientras viajaba la respuesta: pintar
+      // las notas de otro cliente sobre este chat es peor que no pintarlas.
+      if (convId !== selectedId) return;
+      renderNotes(json.data || []);
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  async function submitNote(event) {
+    event.preventDefault();
+    if (selectedId == null) return;
+    const convId = selectedId;
+    const text = (el.noteText.value || "").trim();
+    if (!text) return;
+    try {
+      await api(`/conversations/${convId}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      el.noteText.value = "";
+      await loadNotes(convId);
+      showError("");
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  // ── seguimientos ────────────────────────────────────────────
+
+  const FOLLOWUP_LABEL = { pendiente: "Pendiente", hecho: "Hecho", cancelado: "Cancelado" };
+
+  function renderFollowups(items) {
+    if (!el.followupList) return;
+    if (!items.length) {
+      el.followupList.innerHTML = `<p class="lead-block-empty">Sin seguimientos programados.</p>`;
+      return;
+    }
+    el.followupList.innerHTML = items
+      .map((f) => {
+        const due = parseTs(f.due_at);
+        const vencido = f.status === "pendiente" && !!due && due.getTime() <= Date.now();
+        const cuando = `${dayLabel(f.due_at) || ""} ${timeLabel(f.due_at)}`.trim();
+        return `<article class="followup-item is-${esc(f.status)}${vencido ? " is-overdue" : ""}">
+          <div class="followup-when-label">${esc(cuando)}${
+            vencido ? ' <span class="followup-overdue">vencido</span>' : ""
+          }</div>
+          <div class="followup-reason">${esc(f.reason)}</div>
+          <div class="followup-meta">
+            <span>${esc(FOLLOWUP_LABEL[f.status] || f.status)} · ${esc(f.author || "Asesor")}</span>
+            ${
+              f.status === "pendiente"
+                ? `<span class="followup-actions">
+                     <button type="button" class="link-btn" data-followup="${f.id}" data-status="hecho">Hecho</button>
+                     <button type="button" class="link-btn" data-followup="${f.id}" data-status="cancelado">Cancelar</button>
+                   </span>`
+                : `<button type="button" class="link-btn" data-followup="${f.id}" data-status="pendiente">Reabrir</button>`
+            }
+          </div>
+        </article>`;
+      })
+      .join("");
+  }
+
+  async function loadFollowups(convId) {
+    try {
+      const json = await api(`/conversations/${convId}/followups`);
+      if (convId !== selectedId) return;
+      renderFollowups(json.data || []);
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  /** Los vencidos de TODO el tenant: es lo que alimenta el rail de arriba. */
+  async function loadDueFollowups() {
+    try {
+      const json = await api("/followups");
+      dueFollowups = json.data || [];
+      renderFollowupRail();
+    } catch (err) {
+      // El rail es un extra: si falla, no se tumba el inbox entero.
+      dueFollowups = [];
+      renderFollowupRail();
+    }
+  }
+
+  /** Fecha local en el formato que quiere <input type="datetime-local">. */
+  function localInputValue(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+      `T${pad(date.getHours())}:${pad(date.getMinutes())}`
+    );
+  }
+
+  async function submitFollowup(event) {
+    event.preventDefault();
+    if (selectedId == null) return;
+    const convId = selectedId;
+    const reason = (el.followupReason.value || "").trim();
+    const when = el.followupWhen.value;
+    if (!reason) {
+      showError("Ponle un motivo al seguimiento: en tres días no vas a recordar cuál era.");
+      return;
+    }
+    if (!when) {
+      showError("Falta cuándo retomar el seguimiento.");
+      return;
+    }
+    try {
+      await api(`/conversations/${convId}/followups`, {
+        method: "POST",
+        // El input local ya viene en hora del asesor; el servidor guarda tal cual.
+        body: JSON.stringify({ reason, when: when.replace("T", " ") }),
+      });
+      el.followupReason.value = "";
+      el.followupWhen.value = "";
+      await Promise.all([loadFollowups(convId), loadDueFollowups()]);
+      listSig = "";
+      await loadList();
+      showError("");
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  async function closeFollowup(id, status) {
+    try {
+      await api(`/followups/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+      const tareas = [loadDueFollowups()];
+      if (selectedId != null) tareas.push(loadFollowups(selectedId));
+      await Promise.all(tareas);
+      listSig = "";
+      await loadList();
+      showError("");
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  // ── venta registrada por el asesor ──────────────────────────
+
+  function openSaleDialog() {
+    if (selectedId == null || !el.saleDialog) return;
+    el.saleForm.reset();
+    el.saleDialogError.hidden = true;
+    el.saleDialogError.textContent = "";
+    el.saleDialogLead.textContent = lastThread
+      ? `Cliente: ${displayName(lastThread.conv)} · ${lastThread.conv.contact?.wa_id || ""}`
+      : "";
+    el.saleDialog.showModal();
+    document.getElementById("sale-producto")?.focus();
+  }
+
+  async function submitSale(event) {
+    event.preventDefault();
+    if (selectedId == null) return;
+    const convId = selectedId;
+    const data = Object.fromEntries(new FormData(el.saleForm).entries());
+    if (!String(data.producto || "").trim()) {
+      el.saleDialogError.hidden = false;
+      el.saleDialogError.textContent = "El producto es obligatorio.";
+      return;
+    }
+
+    el.saleSubmit.disabled = true;
+    try {
+      await api(`/conversations/${convId}/sale`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+      el.saleDialog.close();
+      listSig = "";
+      await Promise.all([loadThread(), loadList()]);
+      showError("");
+    } catch (err) {
+      el.saleDialogError.hidden = false;
+      el.saleDialogError.textContent = err.message || String(err);
+    } finally {
+      el.saleSubmit.disabled = false;
+    }
   }
 
   // ── responder / copiar (clic derecho sobre un mensaje) ──────
@@ -994,8 +1466,15 @@
     clearReplyTo(); // la cita es de un mensaje de ESE chat, no del nuevo
     hideMsgMenu();
     hideSlashMenu();
+    // El panel lateral es de ESTE chat: dejar las notas del anterior a la vista
+    // mientras cargan las nuevas es la forma más fácil de leer el contexto
+    // equivocado y contestarle a un cliente lo que pidió otro.
+    renderNotes([]);
+    renderFollowups([]);
     renderList();
     loadThread();
+    loadNotes(id);
+    loadFollowups(id);
   }
 
   // ── aviso sonoro del handoff ────────────────────────────────
@@ -1216,6 +1695,17 @@
     const quoted = replyTo?.text || null;
     if (!content && !attachments.length) return;
 
+    // Ventana de 24h agotada: WhatsApp lo va a rechazar. Se corta aquí, con el
+    // texto todavía en el composer — antes se enviaba, fallaba, y el asesor
+    // perdía el mensaje sin saber por qué.
+    if (windowIsClosed()) {
+      showError(
+        "No se puede enviar: pasaron más de 24 h desde el último mensaje del " +
+          "cliente. Espera a que escriba o contáctalo con una plantilla aprobada."
+      );
+      return;
+    }
+
     // Burbuja optimista y composer libre YA. Vaciar el borrador aquí es además lo
     // que evita el doble envío de dos Enter seguidos: el segundo sale vacío.
     const pending = {
@@ -1244,6 +1734,18 @@
       }
       repaintThread();
     };
+
+    // Escribir es tomar el chat. El handoff del bot lo deja en HUMAN sin dueño,
+    // y quien contesta primero es de hecho quien lo está atendiendo: obligarle a
+    // pulsar además un botón solo consigue que la asignación se quede vacía y el
+    // módulo no sirva para nada. Va suelto y sin await: es contabilidad, no
+    // puede retrasar el mensaje ni tumbarlo si falla.
+    if (!lastThread?.conv?.assigned && lastThread?.conv?.id === convId) {
+      api(`/conversations/${convId}/claim`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      }).catch(() => {});
+    }
 
     enqueueSend(convId, async () => {
       try {
@@ -1459,8 +1961,10 @@
 
   // ── enlaces ─────────────────────────────────────────────────
 
-  el.btnHuman.addEventListener("click", () => setMode("HUMAN"));
-  el.btnTake.addEventListener("click", () => setMode("HUMAN"));
+  // Tomar la conversación pasa por el claim: el modo HUMAN solo se activa si
+  // nadie más la tiene ya.
+  el.btnHuman.addEventListener("click", takeConversation);
+  el.btnTake.addEventListener("click", takeConversation);
   el.btnAi.addEventListener("click", () => setMode("AI", { human_support: false, keep_human: false }));
   if (el.btnAiBanner) {
     el.btnAiBanner.addEventListener("click", () =>
@@ -1609,6 +2113,61 @@
     renderList();
   });
 
+  // ── enlaces de los módulos del asesor ───────────────────────
+
+  el.scopeTabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      scope = tab.dataset.scope || "all";
+      el.scopeTabs.forEach((t) => {
+        const activa = t === tab;
+        t.classList.toggle("is-active", activa);
+        t.setAttribute("aria-selected", activa ? "true" : "false");
+      });
+      renderList();
+    });
+  });
+
+  if (el.btnSale) el.btnSale.addEventListener("click", openSaleDialog);
+  if (el.saleForm) el.saleForm.addEventListener("submit", submitSale);
+  if (el.saleCancel) el.saleCancel.addEventListener("click", () => el.saleDialog.close());
+  if (el.saleDialogClose) {
+    el.saleDialogClose.addEventListener("click", () => el.saleDialog.close());
+  }
+
+  if (el.noteForm) el.noteForm.addEventListener("submit", submitNote);
+  if (el.followupForm) el.followupForm.addEventListener("submit", submitFollowup);
+
+  // Presets del seguimiento: rellenan el datetime, no lo envían. Programar a
+  // ciegas un recordatorio a una hora que el asesor no ha visto es la manera de
+  // que le salte a las 3 de la mañana.
+  if (el.followupForm) {
+    el.followupForm.addEventListener("click", (e) => {
+      const chip = e.target.closest(".preset-chip");
+      if (!chip) return;
+      const cuando = new Date();
+      if (chip.dataset.preset === "tomorrow") {
+        cuando.setDate(cuando.getDate() + 1);
+        cuando.setHours(9, 0, 0, 0);
+      } else if (chip.dataset.days) {
+        cuando.setDate(cuando.getDate() + Number(chip.dataset.days));
+        cuando.setHours(9, 0, 0, 0);
+      } else {
+        cuando.setHours(cuando.getHours() + Number(chip.dataset.hours || 3));
+      }
+      el.followupWhen.value = localInputValue(cuando);
+      el.followupReason.focus();
+    });
+  }
+
+  // La lista se repinta entera al cambiar de chat: listener delegado.
+  if (el.followupList) {
+    el.followupList.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-followup]");
+      if (!btn) return;
+      closeFollowup(Number(btn.dataset.followup), btn.dataset.status);
+    });
+  }
+
   try {
     if (localStorage.getItem("dr.leadPanelCollapsed") === "1") toggleLeadPanel(true);
     saleCollapsed = localStorage.getItem("dr.saleCollapsed") === "1";
@@ -1617,6 +2176,11 @@
   }
 
   loadList();
+  loadDueFollowups();
   setInterval(loadList, pollList);
   setInterval(loadThread, pollThread);
+  // Los seguimientos vencen por el paso del tiempo, no por un mensaje nuevo, así
+  // que el rail necesita su propio reloj. Un minuto basta: nadie programa un
+  // recordatorio y espera que salte al segundo.
+  setInterval(loadDueFollowups, 60000);
 })();

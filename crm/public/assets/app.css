@@ -1029,6 +1029,12 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   .chat-head { padding: 12px 14px; gap: 8px; }
 
   .help-rail { padding-left: 16px; padding-right: 16px; }
+  .followup-rail { padding-left: 16px; padding-right: 16px; }
+  /* La cabecera del chat ya va justa en móvil: "Registrar venta" se queda solo
+     con el icono. El rail de seguimientos y los chips sí sobreviven, que es lo
+     que hace falta para saber a quién hay que escribirle. */
+  #btn-sale { font-size: 0; padding: 8px 10px; gap: 0; }
+  #btn-sale svg { font-size: 12.5px; }
   .topbar { padding: 12px 16px; gap: 12px; }
   .topbar-user .who { display: none; }
   .topbar-brand .brand-name, .topbar-brand .brand-kicker { white-space: nowrap; }
@@ -1242,3 +1248,213 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 
 /* Emoji sueltos en una burbuja: que se vean grandes, como en WhatsApp. */
 .bubble { font-family: var(--font-body); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Módulos del asesor: asignación, ventana de 24 h, notas y seguimientos.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* — rail de seguimientos vencidos —
+   Más apagado que la cola de ayuda a propósito: ahí hay un cliente esperando
+   AHORA; aquí hay uno al que tocaba volver. Los dos importan, pero si compiten
+   por el mismo naranja el asesor deja de distinguirlos. */
+.followup-rail {
+  flex: none; padding: 10px 24px;
+  border-bottom: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-accent-2-100) 55%, transparent);
+}
+.followup-rail[hidden] { display: none; }
+.followup-rail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.followup-rail-head span {
+  font-size: 12px; font-weight: 700; color: var(--color-accent-2-800);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.followup-rail-head svg { color: var(--color-accent-2-700); flex: none; }
+.followup-rail-chips { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
+
+.rail-chip.is-followup {
+  border-color: color-mix(in srgb, var(--color-accent-2-600) 45%, transparent);
+  padding-left: 14px;
+}
+.rail-chip.is-followup .chip-meta {
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* — filtro de la bandeja — */
+.scope-tabs {
+  display: flex; gap: 4px; margin-top: 8px;
+  padding: 3px; border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+.scope-tab {
+  flex: 1; border: 0; border-radius: 999px; padding: 5px 8px;
+  background: transparent; color: inherit; cursor: pointer;
+  font-size: 12px; font-weight: 600;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+.scope-tab:hover { color: var(--color-text); }
+.scope-tab.is-active {
+  background: var(--color-bg); color: var(--color-text);
+  box-shadow: var(--shadow-sm);
+}
+
+/* — badges de asignación en la lista — */
+.tag-mine { background: var(--color-accent-600); color: #fff; font-weight: 700; }
+.tag-taken {
+  background: var(--color-neutral-300); color: var(--color-neutral-800);
+  font-weight: 700;
+}
+.tag-followup { background: var(--color-accent-2-600); color: #fff; font-weight: 700; }
+
+/* — chips de la cabecera del chat — */
+.chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.chip-assign, .chip-window {
+  display: inline-flex; align-items: center;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+}
+.chip-assign[hidden], .chip-window[hidden] { display: none; }
+.chip-assign {
+  background: var(--color-neutral-200); color: var(--color-neutral-800);
+}
+.chip-assign.is-mine { background: var(--color-accent-100); color: var(--color-accent-800); }
+
+.chip-window.is-ok { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+.chip-window.is-warn { background: var(--color-accent-200); color: var(--color-accent-800); }
+.chip-window.is-closed { background: #b3261e; color: #fff; }
+
+/* — ventana de 24 h agotada —
+   Ocupa el ancho del composer porque es un impedimento, no un aviso: el asesor
+   no puede escribir hasta que el cliente vuelva. */
+.window-banner {
+  flex: none; display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--color-divider);
+  background: color-mix(in srgb, #b3261e 10%, var(--color-bg));
+  font-size: 12.5px; color: #7a1c16;
+}
+.window-banner[hidden] { display: none; }
+.window-banner svg { flex: none; margin-top: 1px; }
+
+/* — bloques del panel lateral (notas y seguimientos) — */
+.lead-block {
+  margin-top: 20px; padding-top: 16px;
+  border-top: 1px solid var(--color-divider);
+}
+.lead-block h5 {
+  margin: 0 0 10px; font-family: var(--font-body);
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+.lead-block-hint {
+  display: block; text-transform: none; letter-spacing: 0;
+  font-size: 10.5px; font-weight: 600;
+  color: color-mix(in srgb, var(--color-text) 40%, transparent);
+}
+.lead-block-empty {
+  margin: 0; font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+/* — notas internas — */
+.note-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.note-form textarea { font-size: 13px; }
+.note-form .btn { align-self: flex-end; }
+.btn-sm { font-size: 12px; padding: 5px 12px; }
+
+.note-list { display: flex; flex-direction: column; gap: 8px; }
+.note-item {
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent-2-100) 55%, var(--color-bg));
+  border-left: 3px solid var(--color-accent-2-500);
+}
+.note-body { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.note-meta {
+  margin-top: 4px; font-size: 10.5px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+
+/* — seguimientos — */
+.followup-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.followup-form .input { font-size: 13px; }
+.followup-when { display: flex; gap: 8px; }
+.followup-when .input { flex: 1; min-width: 0; }
+.followup-when .btn { flex: none; }
+
+.followup-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.preset-chip {
+  border: 1px dashed color-mix(in srgb, var(--color-text) 28%, transparent);
+  border-radius: 999px; padding: 3px 10px;
+  background: transparent; color: inherit; cursor: pointer;
+  font-size: 11.5px; font-weight: 600;
+}
+.preset-chip:hover {
+  border-style: solid; border-color: var(--color-accent);
+  background: var(--color-accent-100);
+}
+
+.followup-list { display: flex; flex-direction: column; gap: 8px; }
+.followup-item {
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--color-neutral-100);
+  border-left: 3px solid var(--color-neutral-400);
+}
+.followup-item.is-overdue {
+  background: color-mix(in srgb, var(--color-accent-100) 70%, var(--color-bg));
+  border-left-color: var(--color-accent-600);
+}
+/* Los cerrados siguen a la vista pero se apagan: son historia, no tarea. */
+.followup-item.is-hecho, .followup-item.is-cancelado { opacity: 0.6; }
+.followup-when-label { font-size: 12px; font-weight: 700; }
+.followup-overdue { color: var(--color-accent-700); font-weight: 700; }
+.followup-reason { font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.followup-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  margin-top: 4px; font-size: 10.5px;
+  color: color-mix(in srgb, var(--color-text) 50%, transparent);
+}
+.followup-actions { display: inline-flex; gap: 10px; margin-left: auto; }
+.link-btn {
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  font: inherit; font-size: 10.5px; font-weight: 700;
+  color: var(--color-accent-700); text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-btn:hover { color: var(--color-accent-800); }
+
+/* — registrar venta — */
+.sale-dialog {
+  width: min(560px, calc(100vw - 32px));
+  padding: 0; border: 0; border-radius: var(--radius-md);
+  background: var(--color-bg); color: var(--color-text);
+  box-shadow: var(--shadow-lg);
+}
+.sale-dialog::backdrop { background: color-mix(in srgb, #2e2b25 45%, transparent); }
+.sale-dialog-form { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+.sale-dialog-head { display: flex; align-items: center; justify-content: space-between; }
+.sale-dialog-head h4 { margin: 0; }
+.sale-dialog-lead {
+  margin: 0; font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+.sale-dialog-grid {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.sale-dialog-form .field { display: flex; flex-direction: column; gap: 4px; }
+.sale-dialog-form label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
+.sale-dialog-error {
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #b3261e 12%, var(--color-bg));
+  color: #7a1c16; font-size: 12.5px;
+}
+.sale-dialog-error[hidden] { display: none; }
+.sale-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+
+/* En móvil el panel lateral no existe (ver .lead-panel arriba), así que notas y
+   seguimientos viajan con él. El diálogo de venta sí tiene que caber. */
+@media (max-width: 900px) {
+  .sale-dialog-grid { grid-template-columns: 1fr 1fr; }
+}

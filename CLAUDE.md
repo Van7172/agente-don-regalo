@@ -210,6 +210,9 @@ python -m pytest tests/ -q       # 444 pasan, 2 skip, offline
   firma — sin él cualquiera inyecta mensajes), `WATCHDOG_ENABLED=1`, `ALERT_WHATSAPP`.
 - **CRM PHP**: hosting de Don Regalo, carpeta [`crm/`](crm/). El verde de venta
   cerrada, el sonido del handoff y los emojis viven aquí — hay que subir el CRM aparte.
+  Los módulos del asesor (asignación, notas, seguimientos, venta manual y la
+  ventana de 24h de WhatsApp) son **solo CRM**: no tocan el agente, pero exigen
+  las migraciones `009`–`012` ANTES del PHP. Ver [`crm/README.md`](crm/README.md).
 
 **De qué anuncio viene el lead.** Muchos chats abren con "¡Hola! Quiero más
 información.": no lo escribe el cliente, es el *mensaje predefinido* de un anuncio de

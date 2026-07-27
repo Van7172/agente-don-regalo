@@ -109,6 +109,7 @@ final class Repository
         return Database::fetchAll(
             "SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support,
+                    c.id_usuario_asignado, c.nombre_usuario_asignado,
                     COALESCE(
                       (SELECT MAX(activity.fecha_creacion)
                        FROM crm_messages activity
@@ -116,6 +117,16 @@ final class Repository
                       c.last_message_at,
                       c.fecha_creacion
                     ) AS last_message_at,
+                    -- Solo los mensajes del CLIENTE reabren la ventana de 24h de
+                    -- WhatsApp. Lo que escriba el bot o el asesor no cuenta.
+                    (SELECT MAX(entrante.fecha_creacion)
+                     FROM crm_messages entrante
+                     WHERE entrante.id_conversation = c.id_conversation
+                       AND entrante.direction_message = 'inbound') AS last_inbound_at,
+                    (SELECT MIN(seg.fecha_programada)
+                     FROM crm_seguimientos seg
+                     WHERE seg.id_conversation = c.id_conversation
+                       AND seg.estado_seguimiento = 'pendiente') AS next_followup_at,
                     c.fecha_creacion,
                     (c.fecha_creacion >= DATE_SUB(NOW(), INTERVAL :nuevoMin MINUTE))
                       AS es_nuevo,
@@ -143,6 +154,11 @@ final class Repository
                     c.bot_active, c.human_support, c.last_message_at,
                     c.ad_source_type, c.ad_source_id, c.ad_headline,
                     c.ad_body, c.ad_source_url,
+                    c.id_usuario_asignado, c.nombre_usuario_asignado, c.fecha_asignacion,
+                    (SELECT MAX(entrante.fecha_creacion)
+                     FROM crm_messages entrante
+                     WHERE entrante.id_conversation = c.id_conversation
+                       AND entrante.direction_message = \'inbound\') AS last_inbound_at,
                     ct.wa_id, ct.nombre_contact,
                     s.valor_setting AS sale
              FROM crm_conversations c
@@ -385,6 +401,170 @@ final class Repository
         );
     }
 
+    // ── asignación de asesor ────────────────────────────────────────────────
+
+    /**
+     * Reclama la conversación para un asesor. `claimed: false` = la tiene otro.
+     *
+     * Mismo patrón que `claimOutbox`, y por el mismo motivo: un UPDATE
+     * condicional es atómico bajo el lock de fila de InnoDB, así que de dos
+     * asesores que pulsan "Tomar" a la vez exactamente uno ve rowCount() === 1.
+     * Comprobar antes con un SELECT y actualizar después dejaría la ventana
+     * abierta justo cuando importa — la cola se despacha en ráfagas y los dos
+     * clics ocurren dentro del mismo segundo.
+     *
+     * `force` existe para el supervisor que necesita entrar a un chat que otro
+     * dejó tomado (turno terminado, alguien se fue): sin salida de emergencia, un
+     * chat se quedaría bloqueado hasta que el releaser lo devuelva al bot.
+     *
+     * @return array{claimed: bool, assigned: array{id: int, name: string}|null}
+     */
+    public static function claimConversation(
+        int $conversationId,
+        int $userId,
+        string $userName = '',
+        bool $force = false
+    ): array {
+        $name = self::resolveUserName($userId, $userName);
+        $condition = $force
+            ? ''
+            : ' AND (id_usuario_asignado IS NULL OR id_usuario_asignado = :userIdGuard)';
+        $params = [
+            'id' => $conversationId,
+            'userId' => $userId,
+            'userName' => $name,
+        ];
+        if (!$force) {
+            $params['userIdGuard'] = $userId;
+        }
+
+        Database::exec(
+            'UPDATE crm_conversations
+                SET id_usuario_asignado = :userId,
+                    nombre_usuario_asignado = :userName,
+                    fecha_asignacion = COALESCE(fecha_asignacion, NOW())
+              WHERE id_conversation = :id' . $condition,
+            $params
+        );
+
+        // El veredicto NO sale de rowCount(). MySQL cuenta filas CAMBIADAS, no
+        // coincidentes: cuando el dueño vuelve a reclamar la suya —y lo hace en
+        // cada mensaje, porque responder reclama— el UPDATE no cambia ningún
+        // valor y devuelve 0. Con eso, el panel le decía al asesor que su propio
+        // chat lo tenía otro y le ofrecía quitárselo a sí mismo.
+        //
+        // La pregunta real es "¿de quién es la fila AHORA?", y esa se responde
+        // leyéndola. La atomicidad sigue viniendo del UPDATE condicional de
+        // arriba: quien no cumple la guarda no escribe nada, así que en una
+        // carrera el perdedor lee al ganador y se retira.
+        $assigned = self::assignmentOf($conversationId);
+        return [
+            'claimed' => $assigned !== null && $assigned['id'] === $userId,
+            'assigned' => $assigned,
+        ];
+    }
+
+    /**
+     * Suelta la conversación. Se llama al devolverla al bot: un chat en manos de
+     * Don Regalo no tiene dueño, y dejarlo asignado haría que el filtro "Mis
+     * chats" se llenara de conversaciones que el asesor ya terminó.
+     */
+    public static function releaseConversation(int $conversationId): void
+    {
+        Database::exec(
+            'UPDATE crm_conversations
+                SET id_usuario_asignado = NULL,
+                    nombre_usuario_asignado = NULL,
+                    fecha_asignacion = NULL
+              WHERE id_conversation = :id',
+            ['id' => $conversationId]
+        );
+    }
+
+    /** @return array{id: int, name: string}|null */
+    public static function assignmentOf(int $conversationId): ?array
+    {
+        $row = Database::fetchOne(
+            'SELECT id_usuario_asignado, nombre_usuario_asignado
+             FROM crm_conversations WHERE id_conversation = :id LIMIT 1',
+            ['id' => $conversationId]
+        );
+        if (!$row || $row['id_usuario_asignado'] === null) {
+            return null;
+        }
+        return [
+            'id' => (int) $row['id_usuario_asignado'],
+            'name' => (string) ($row['nombre_usuario_asignado'] ?? ''),
+        ];
+    }
+
+    // ── ventana de servicio de WhatsApp ─────────────────────────────────────
+
+    /** Horas que Meta da para responder libremente tras un mensaje del cliente. */
+    const SERVICE_WINDOW_HOURS = 24;
+
+    /**
+     * Estado de la ventana de 24 horas, calculado sobre el último mensaje del
+     * cliente.
+     *
+     * Pasadas 24h desde que el cliente escribió por última vez, la Cloud API
+     * rechaza cualquier texto libre: solo entran plantillas aprobadas por Meta.
+     * El CRM no sabía nada de esto, así que el mensaje del asesor se encolaba,
+     * moría con `failed` y en el panel salía un "No se envió" sin ninguna pista
+     * de por qué — el asesor reintentaba, y volvía a fallar.
+     *
+     * `known: false` cuando la conversación no tiene ni un mensaje entrante. Ahí
+     * NO se bloquea nada: sin evidencia no se le quita al equipo la posibilidad
+     * de escribir. Es la diferencia entre "sabemos que está cerrada" y "no lo
+     * sabemos", y solo la primera justifica frenar un envío.
+     *
+     * @return array{known: bool, open: bool, last_inbound_at: ?string, expires_at: ?string, minutes_left: int}
+     */
+    public static function serviceWindow(?string $lastInboundAt): array
+    {
+        $raw = trim((string) ($lastInboundAt ?? ''));
+        if ($raw === '') {
+            return [
+                'known' => false,
+                'open' => true,
+                'last_inbound_at' => null,
+                'expires_at' => null,
+                'minutes_left' => 0,
+            ];
+        }
+        $last = strtotime($raw);
+        if ($last === false) {
+            return [
+                'known' => false,
+                'open' => true,
+                'last_inbound_at' => null,
+                'expires_at' => null,
+                'minutes_left' => 0,
+            ];
+        }
+        $expires = $last + self::SERVICE_WINDOW_HOURS * 3600;
+        $left = (int) floor(($expires - time()) / 60);
+        return [
+            'known' => true,
+            'open' => $left > 0,
+            'last_inbound_at' => self::iso($raw),
+            'expires_at' => date('c', $expires),
+            'minutes_left' => max(0, $left),
+        ];
+    }
+
+    /** La ventana de una conversación concreta, para validar antes de encolar. */
+    public static function serviceWindowFor(int $conversationId): array
+    {
+        $row = Database::fetchOne(
+            'SELECT MAX(fecha_creacion) AS last_inbound_at
+             FROM crm_messages
+             WHERE id_conversation = :id AND direction_message = \'inbound\'',
+            ['id' => $conversationId]
+        );
+        return self::serviceWindow($row['last_inbound_at'] ?? null);
+    }
+
     public static function upsertLead(array $input): void
     {
         $tenantId = self::ensureTenantId();
@@ -539,6 +719,20 @@ final class Repository
             throw new RuntimeException('Invalid sale snapshot');
         }
 
+        // Quién cerró la venta viaja DENTRO del snapshot, no como parámetro
+        // aparte. `markSaleDelivered` vuelve a archivar la misma ficha al
+        // confirmar la entrega: si el origen fuera un argumento con default
+        // 'bot', ese segundo archivado le borraría la autoría a toda venta
+        // registrada por un asesor (misma marca de cierre → mismo ON DUPLICATE
+        // KEY → misma fila). Leyéndolo del snapshot, sobrevive a los round trips.
+        $origin = ($sale['origen'] ?? 'bot') === 'asesor' ? 'asesor' : 'bot';
+        $amount = isset($sale['monto_sol']) && $sale['monto_sol'] !== ''
+            ? (float) $sale['monto_sol']
+            : null;
+        $sellerId = isset($sale['registrado_por_id']) && (int) $sale['registrado_por_id'] > 0
+            ? (int) $sale['registrado_por_id']
+            : null;
+
         Database::exec(
             'INSERT INTO crm_ventas_historiales (
                id_tenant, id_conversation, id_contact,
@@ -548,12 +742,15 @@ final class Repository
                horario_venta_historial, id_pedido_temporal,
                motivo_venta_historial, marca_cierre_venta_historial,
                fecha_cierre_venta_historial, estado_venta_historial,
+               origen_venta_historial, monto_venta_historial,
+               id_usuario_registro, nombre_usuario_registro,
                snapshot_venta_historial
              ) VALUES (
                :tenantId, :conversationId, :contactId,
                :waId, :contactName, :product, :district, :shipping,
                :deliveryDate, :schedule, :temporaryOrderId, :reason,
-               :closedMark, FROM_UNIXTIME(:closedAt), \'pendiente\', :snapshot
+               :closedMark, FROM_UNIXTIME(:closedAt), \'pendiente\',
+               :origin, :amount, :sellerId, :sellerName, :snapshot
              )
              ON DUPLICATE KEY UPDATE
                producto_venta_historial = VALUES(producto_venta_historial),
@@ -563,6 +760,10 @@ final class Repository
                horario_venta_historial = VALUES(horario_venta_historial),
                id_pedido_temporal = VALUES(id_pedido_temporal),
                motivo_venta_historial = VALUES(motivo_venta_historial),
+               origen_venta_historial = VALUES(origen_venta_historial),
+               monto_venta_historial = VALUES(monto_venta_historial),
+               id_usuario_registro = VALUES(id_usuario_registro),
+               nombre_usuario_registro = VALUES(nombre_usuario_registro),
                snapshot_venta_historial = VALUES(snapshot_venta_historial)',
             [
                 'tenantId' => $tenantId,
@@ -579,6 +780,10 @@ final class Repository
                 'reason' => $sale['motivo'] ?? null,
                 'closedMark' => $closedAt,
                 'closedAt' => $closedAt,
+                'origin' => $origin,
+                'amount' => $amount,
+                'sellerId' => $sellerId,
+                'sellerName' => $sale['registrado_por'] ?? null,
                 'snapshot' => $snapshot,
             ]
         );
@@ -625,6 +830,71 @@ final class Repository
             }
             throw $error;
         }
+    }
+
+    /**
+     * Venta que cerró un asesor a mano, no el bot.
+     *
+     * El chat que llega a un humano es justo el que el bot NO pudo cerrar, así
+     * que la mayoría de lo que se vende por el CRM se cerraba fuera de todo
+     * registro: el Historial de ventas mostraba solo los cierres del agente y
+     * los reportes contaban esa fracción como si fuera el total.
+     *
+     * Pasa por `storeActiveSale`, o sea por el mismo camino que el bot: deja la
+     * ficha verde en el chat Y la fila en el historial, en una transacción. Una
+     * venta manual que solo apareciera en el historial obligaría al equipo a
+     * mirar en dos sitios para saber qué falta entregar.
+     *
+     * @param array<string,mixed> $input
+     */
+    public static function registerManualSale(
+        int $conversationId,
+        array $input,
+        int $userId,
+        string $userName = ''
+    ): array {
+        $texto = static function ($value, int $max): ?string {
+            $clean = trim((string) ($value ?? ''));
+            if ($clean === '') {
+                return null;
+            }
+            // Las columnas son VARCHAR cortas y MySQL en modo estricto rechaza el
+            // INSERT entero: perder la cola de un texto largo es mejor que perder
+            // la venta.
+            return mb_substr($clean, 0, $max);
+        };
+        $numero = static function ($value): ?float {
+            if ($value === null || $value === '' || !is_numeric($value)) {
+                return null;
+            }
+            return round((float) $value, 2);
+        };
+
+        $product = $texto($input['producto'] ?? null, 255);
+        if ($product === null) {
+            throw new RuntimeException('El producto es obligatorio');
+        }
+
+        $sale = [
+            'producto' => $product,
+            'distrito' => $texto($input['distrito'] ?? null, 120),
+            'envio_sol' => $numero($input['envio_sol'] ?? null),
+            'monto_sol' => $numero($input['monto_sol'] ?? null),
+            'fecha' => $texto($input['fecha'] ?? null, 20),
+            'horario' => $texto($input['horario'] ?? null, 80),
+            'motivo' => $texto($input['motivo'] ?? null, 255),
+            'origen' => 'asesor',
+            'registrado_por_id' => $userId,
+            'registrado_por' => self::resolveUserName($userId, $userName),
+            'cerrada_en' => time(),
+        ];
+
+        $pedido = $input['pedido_temporal_id'] ?? null;
+        if ($pedido !== null && $pedido !== '' && ctype_digit((string) $pedido)) {
+            $sale['pedido_temporal_id'] = (int) $pedido;
+        }
+
+        return self::storeActiveSale($conversationId, $sale);
     }
 
     /** Marca la ficha activa como entregada y solo entonces la retira del chat. */
@@ -761,6 +1031,20 @@ final class Repository
         }
     }
 
+    /**
+     * Nombre a auditar: el que ya trae la sesión, o el de la tabla `usuarios`.
+     *
+     * La sesión es la fuente preferida porque `Auth::login` ya compuso nombre +
+     * apellidos, y porque `userDisplayName` devuelve '' cuando la tabla legacy
+     * del e-commerce no tiene las columnas esperadas — y una nota firmada por
+     * nadie no sirve para saber quién la escribió.
+     */
+    private static function resolveUserName(int $userId, string $given = ''): string
+    {
+        $given = trim($given);
+        return $given !== '' ? $given : self::userDisplayName($userId);
+    }
+
     /** Nombre del usuario para la auditoría; vacío si la tabla legacy difiere. */
     private static function userDisplayName(int $userId): string
     {
@@ -828,6 +1112,196 @@ final class Repository
              LIMIT 500',
             $params
         );
+    }
+
+    // ── notas internas ──────────────────────────────────────────────────────
+
+    /**
+     * Notas de la conversación, las recientes primero.
+     *
+     * Nunca tocan `crm_messages`: todo lo que entra en el hilo es candidato a
+     * salir por la Cloud API, y una nota interna que comparta tabla con los
+     * mensajes está a un bug de distancia de acabar en el teléfono del cliente.
+     */
+    public static function listNotes(int $conversationId, int $limit = 50): array
+    {
+        $limit = max(1, min(200, $limit));
+        return Database::fetchAll(
+            "SELECT n.id_nota, n.nota_texto, n.id_usuario, n.nombre_usuario, n.fecha_creacion
+             FROM crm_conversation_notes n
+             WHERE n.id_conversation = :conversationId AND n.id_tenant = :tenantId
+             ORDER BY n.id_nota DESC
+             LIMIT {$limit}",
+            ['conversationId' => $conversationId, 'tenantId' => self::ensureTenantId()]
+        );
+    }
+
+    public static function addNote(
+        int $conversationId,
+        string $text,
+        int $userId,
+        string $userName = ''
+    ): array {
+        $clean = trim($text);
+        if ($clean === '') {
+            throw new RuntimeException('La nota está vacía');
+        }
+        $id = Database::execute(
+            'INSERT INTO crm_conversation_notes
+               (id_tenant, id_conversation, id_usuario, nombre_usuario, nota_texto)
+             VALUES (:tenantId, :conversationId, :userId, :userName, :text)',
+            [
+                'tenantId' => self::ensureTenantId(),
+                'conversationId' => $conversationId,
+                'userId' => $userId,
+                'userName' => self::resolveUserName($userId, $userName),
+                'text' => mb_substr($clean, 0, 4000),
+            ]
+        );
+        return Database::fetchOne(
+            'SELECT id_nota, nota_texto, id_usuario, nombre_usuario, fecha_creacion
+             FROM crm_conversation_notes WHERE id_nota = :id LIMIT 1',
+            ['id' => $id]
+        ) ?? [];
+    }
+
+    // ── seguimientos ────────────────────────────────────────────────────────
+
+    const FOLLOWUP_STATUSES = ['pendiente', 'hecho', 'cancelado'];
+
+    /** Seguimientos de una conversación: pendientes arriba, por fecha. */
+    public static function listFollowups(int $conversationId, int $limit = 30): array
+    {
+        $limit = max(1, min(100, $limit));
+        return Database::fetchAll(
+            "SELECT * FROM crm_seguimientos
+             WHERE id_conversation = :conversationId AND id_tenant = :tenantId
+             ORDER BY (estado_seguimiento = 'pendiente') DESC, fecha_programada ASC
+             LIMIT {$limit}",
+            ['conversationId' => $conversationId, 'tenantId' => self::ensureTenantId()]
+        );
+    }
+
+    /**
+     * Los que ya vencieron y siguen pendientes, para el rail del inbox.
+     *
+     * Sin esta lista el módulo no existe: un recordatorio guardado en una tabla
+     * que nadie mira es exactamente igual de útil que no haberlo guardado. Se
+     * ordena por el más vencido primero, que es a quien peor se le está quedando.
+     */
+    public static function listDueFollowups(int $limit = 30): array
+    {
+        $limit = max(1, min(100, $limit));
+        return Database::fetchAll(
+            "SELECT s.*, ct.wa_id, ct.nombre_contact
+             FROM crm_seguimientos s
+             JOIN crm_conversations c ON c.id_conversation = s.id_conversation
+             JOIN crm_contacts ct ON ct.id_contact = c.id_contact
+             WHERE s.id_tenant = :tenantId
+               AND s.estado_seguimiento = 'pendiente'
+               AND s.fecha_programada <= NOW()
+             ORDER BY s.fecha_programada ASC
+             LIMIT {$limit}",
+            ['tenantId' => self::ensureTenantId()]
+        );
+    }
+
+    /**
+     * Programa un seguimiento. `$when` en formato 'Y-m-d H:i' (hora local).
+     *
+     * Se guarda con hora y no solo con día a propósito: un recordatorio que
+     * vence a medianoche aparece al fondo del turno siguiente, cuando el motivo
+     * por el que se programó ("llamarla antes de que cierre") ya pasó.
+     */
+    public static function addFollowup(
+        int $conversationId,
+        string $reason,
+        string $when,
+        int $userId,
+        string $userName = ''
+    ): array {
+        $motivo = trim($reason);
+        if ($motivo === '') {
+            throw new RuntimeException('El motivo del seguimiento es obligatorio');
+        }
+        $timestamp = strtotime($when);
+        if ($timestamp === false) {
+            throw new RuntimeException('Fecha de seguimiento inválida');
+        }
+
+        $id = Database::execute(
+            'INSERT INTO crm_seguimientos
+               (id_tenant, id_conversation, motivo_seguimiento, fecha_programada,
+                estado_seguimiento, id_usuario, nombre_usuario)
+             VALUES (:tenantId, :conversationId, :reason, :when, \'pendiente\', :userId, :userName)',
+            [
+                'tenantId' => self::ensureTenantId(),
+                'conversationId' => $conversationId,
+                'reason' => mb_substr($motivo, 0, 255),
+                'when' => date('Y-m-d H:i:s', $timestamp),
+                'userId' => $userId,
+                'userName' => self::resolveUserName($userId, $userName),
+            ]
+        );
+        return Database::fetchOne(
+            'SELECT * FROM crm_seguimientos WHERE id_seguimiento = :id LIMIT 1',
+            ['id' => $id]
+        ) ?? [];
+    }
+
+    /**
+     * Marca un seguimiento como hecho o cancelado, o lo reabre.
+     *
+     * Va en los dos sentidos como `setSaleStatus`, y por lo mismo: cerrar por
+     * error un recordatorio que era el único rastro de un lead a medias no puede
+     * ser irreversible.
+     */
+    public static function setFollowupStatus(
+        int $followupId,
+        string $status,
+        int $userId,
+        string $userName = ''
+    ): array {
+        if (!in_array($status, self::FOLLOWUP_STATUSES, true)) {
+            throw new RuntimeException('Invalid followup status');
+        }
+        $tenantId = self::ensureTenantId();
+        $abierto = $status === 'pendiente';
+        $changed = Database::affect(
+            'UPDATE crm_seguimientos
+                SET estado_seguimiento = :status,
+                    fecha_cierre = ' . ($abierto ? 'NULL' : 'NOW()') . ',
+                    id_usuario_cierre = ' . ($abierto ? 'NULL' : ':userId') . ',
+                    nombre_usuario_cierre = ' . ($abierto ? 'NULL' : ':userName') . '
+              WHERE id_seguimiento = :id AND id_tenant = :tenantId',
+            $abierto
+                ? ['status' => $status, 'id' => $followupId, 'tenantId' => $tenantId]
+                : [
+                    'status' => $status,
+                    'userId' => $userId,
+                    'userName' => self::resolveUserName($userId, $userName),
+                    'id' => $followupId,
+                    'tenantId' => $tenantId,
+                ]
+        );
+        if ($changed === 0) {
+            // Sin filas tocadas puede ser que no exista, que sea de otro tenant o
+            // que ya estuviera en ese estado. Distinguirlo con un SELECT evita
+            // decirle "no existe" a un seguimiento que el compañero acaba de cerrar.
+            $row = Database::fetchOne(
+                'SELECT * FROM crm_seguimientos
+                 WHERE id_seguimiento = :id AND id_tenant = :tenantId LIMIT 1',
+                ['id' => $followupId, 'tenantId' => $tenantId]
+            );
+            if (!$row) {
+                throw new RuntimeException('Followup not found');
+            }
+            return $row;
+        }
+        return Database::fetchOne(
+            'SELECT * FROM crm_seguimientos WHERE id_seguimiento = :id LIMIT 1',
+            ['id' => $followupId]
+        ) ?? [];
     }
 
     public static function enqueueOutbox(array $input): int
@@ -1336,6 +1810,27 @@ final class Repository
         }
     }
 
+    /** Forma que consume el panel. `is_due` lo decide el servidor, no el navegador. */
+    public static function mapFollowup(array $f): array
+    {
+        $due = self::iso($f['fecha_programada'] ?? null);
+        return [
+            'id' => (int) ($f['id_seguimiento'] ?? 0),
+            'conversation_id' => (int) ($f['id_conversation'] ?? 0),
+            'reason' => (string) ($f['motivo_seguimiento'] ?? ''),
+            'due_at' => $due,
+            'status' => (string) ($f['estado_seguimiento'] ?? 'pendiente'),
+            'author' => (string) ($f['nombre_usuario'] ?? ''),
+            'closed_by' => (string) ($f['nombre_usuario_cierre'] ?? ''),
+            'created_at' => self::iso($f['fecha_creacion'] ?? null),
+            // El contacto solo viaja en la lista global (el rail necesita
+            // nombrar al cliente sin abrir el chat).
+            'contact' => isset($f['wa_id'])
+                ? ['wa_id' => (string) $f['wa_id'], 'name' => (string) ($f['nombre_contact'] ?? '')]
+                : null,
+        ];
+    }
+
     public static function mapConversationList(array $c): array
     {
         return [
@@ -1354,6 +1849,18 @@ final class Repository
             'sale' => isset($c['sale']) && $c['sale'] !== null
                 ? json_decode((string) $c['sale'], true)
                 : null,
+            // Quién tiene el chat. Sin esto, dos asesores pueden estar
+            // atendiendo al mismo cliente sin enterarse.
+            'assigned' => ($c['id_usuario_asignado'] ?? null) !== null
+                ? [
+                    'id' => (int) $c['id_usuario_asignado'],
+                    'name' => (string) ($c['nombre_usuario_asignado'] ?? ''),
+                ]
+                : null,
+            // Ventana de 24h de WhatsApp: el panel avisa ANTES de que el asesor
+            // escriba un mensaje que Meta va a rechazar.
+            'window' => self::serviceWindow($c['last_inbound_at'] ?? null),
+            'next_followup_at' => self::iso($c['next_followup_at'] ?? null),
             'contact' => [
                 'wa_id' => $c['wa_id'],
                 'name' => $c['nombre_contact'],

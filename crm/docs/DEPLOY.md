@@ -82,6 +82,30 @@ La migración crea `crm_ventas_historiales` y copia como pendientes las fichas
 `sale_*` que ya estén activas. Es repetible: usa `CREATE TABLE IF NOT EXISTS` e
 `INSERT IGNORE`.
 
+### Módulos del asesor (asignación, notas, seguimientos, venta manual)
+
+Ejecutar **en este orden y antes de subir el PHP** — el panel consulta columnas
+y tablas que estas migraciones crean, así que al revés el inbox devuelve 500:
+
+```text
+crm/sql/009_asignacion_asesor.sql   → quién tiene cada conversación
+crm/sql/010_notas_internas.sql      → crm_conversation_notes
+crm/sql/011_seguimientos.sql        → crm_seguimientos
+crm/sql/012_venta_manual.sql        → origen/monto/asesor en el historial
+```
+
+Los `ALTER TABLE` (009 y 012) **no** son repetibles: si se corren dos veces dan
+`Duplicate column name`. Eso es inofensivo, pero conviene saberlo antes de verlo
+en phpMyAdmin.
+
+Después hay que subir, además de los archivos de siempre:
+`views/inbox.php`, `views/sales-history.php`, `public/sales-history.php`,
+`public/assets/inbox.js`, `public/assets/app.css`, `src/Repository.php` y
+`public/api/index.php`.
+
+**No requiere tocar el agente.** La ventana de 24 h se calcula en el CRM desde
+`crm_messages`, y ningún módulo nuevo llama al agente.
+
 ## 4. Apache
 
 `public/.htaccess` requiere `mod_rewrite`. En Nginx, reescribe `/api/*` a `api/index.php`.

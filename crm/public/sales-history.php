@@ -32,7 +32,15 @@ $rows = array_map(static function (array $row): array {
         return $timestamp ? date('d/m/Y H:i', $timestamp) : (string) $value;
     };
     $shipping = $row['envio_sol_venta_historial'] ?? null;
+    $amount = $row['monto_venta_historial'] ?? null;
+    $origin = ($row['origen_venta_historial'] ?? 'bot') === 'asesor' ? 'asesor' : 'bot';
     return [
+        // Cuánto cierra el bot y cuánto cierra el equipo son dos preguntas
+        // distintas; con las filas mezcladas no se puede responder ninguna.
+        'origin' => $origin,
+        'origin_label' => $origin === 'asesor' ? 'Asesor' : 'Don Regalo',
+        'seller' => (string) ($row['nombre_usuario_registro'] ?? ''),
+        'amount' => $amount !== null ? 'S/' . number_format((float) $amount, 2) : '—',
         // Sin el id la vista no puede cambiar el estado de una fila concreta.
         'id' => (int) ($row['id_venta_historial'] ?? 0),
         'status' => (string) ($row['estado_venta_historial'] ?? 'pendiente'),
