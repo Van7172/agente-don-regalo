@@ -27,8 +27,10 @@ from app.guardrails import (
 from app.harness.contracts import Product
 from app.harness.invariants import check_reply
 from app.harness.policies import handoff_policy
+from app.harness.registry import AGENTS, spec_for
 from app.harness.router import classify_intent
 from app.harness.state import ConversationState
+from app.prompts.compose import build_system
 
 CORPUS = pathlib.Path(__file__).parent / "corpus"
 
@@ -120,6 +122,44 @@ def run_handoff() -> list[Result]:
                     f"esperaba {'escalar' if should_allow else 'NO escalar'}, "
                     f"obtuvo {'escalar' if decision.allow else 'NO escalar'}"
                 ),
+            )
+        )
+    return out
+
+
+def run_specialists() -> list[Result]:
+    """Regresiones agrupadas por el especialista que asume el turno."""
+    out: list[Result] = []
+    for case in _load("specialists"):
+        agent = case["agent"]
+        state = _state(case.get("state"))
+        text = case.get("text") or ""
+        failures: list[str] = []
+
+        if case.get("check_routing", True):
+            got = spec_for(classify_intent(text, state)).name
+            if got != agent:
+                failures.append(f"enrutó a {got}, esperaba {agent}")
+
+        system = build_system(
+            AGENTS[agent],
+            state,
+            turn_text=text,
+            has_media=bool(case.get("has_media")),
+        )
+        for marker in case.get("prompt_contains") or []:
+            if marker not in system:
+                failures.append(f"falta bloque {marker!r}")
+        for marker in case.get("prompt_excludes") or []:
+            if marker in system:
+                failures.append(f"incluyó bloque innecesario {marker!r}")
+
+        out.append(
+            Result(
+                case_id=case["id"],
+                kind=f"specialist:{agent}",
+                passed=not failures,
+                detail="; ".join(failures),
             )
         )
     return out
@@ -231,7 +271,13 @@ def run_adversarial() -> list[Result]:
 
 def run_all() -> list[Result]:
     """Solo lo determinista: sin OpenAI, sin API. Es lo que corre en CI."""
-    return [*run_routing(), *run_replies(), *run_handoff(), *run_adversarial()]
+    return [
+        *run_routing(),
+        *run_replies(),
+        *run_handoff(),
+        *run_specialists(),
+        *run_adversarial(),
+    ]
 
 
 async def run_routing_llm() -> list[Result]:

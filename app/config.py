@@ -78,6 +78,11 @@ class Settings:
 
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        # Tier opcional para especialistas simples. Si no se configura conserva
+        # exactamente el modelo global y el despliegue no cambia de conducta.
+        self.openai_fast_model: str = (
+            os.getenv("OPENAI_FAST_MODEL", "").strip() or self.openai_model
+        )
         # Clasificador de intención del router: solo se usa cuando las reglas no
         # saben, así que puede ser el modelo más barato disponible.
         self.router_model: str = os.getenv("ROUTER_MODEL", "gpt-4o-mini")

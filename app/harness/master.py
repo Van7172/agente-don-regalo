@@ -38,7 +38,6 @@ from app.harness.checkout import (
 )
 from app.harness.contracts import (
     AgentResult,
-    EscalateReason,
     Product,
     Turn,
     extract_products,
@@ -669,26 +668,18 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     if conversation_id is not None:
         await announce_sale(conversation_id, state)
 
-    # El pago lo coordina un humano.
+    # El pago lo coordina un humano. La derivación es una transición de estado,
+    # no una decisión generativa: se ejecuta directamente y nunca invoca OpenAI.
     motivo = state.handoff_reason or "cliente listo para pagar / coordinar comprobante"
-    escalated = await _run_specialty(
-        "escalate",
-        turn,
-        state,
-        extra_system=(
-            "El cliente confirmó el resumen del pedido y pasa a pago. "
-            f"Llama YA `escalar_a_humano` con motivo: {motivo}."
-        ),
-        **ctx,
+    escalate = await perform_handoff(
+        wa_id=ctx.get("wa_id"),
+        conversation_id=ctx.get("conversation_id"),
+        motivo=motivo,
+        use_external_crm=ctx.get("use_external_crm", False),
+        session=ctx.get("session"),
+        persist=ctx.get("persist"),
     )
-    if escalated.escalate is not None:
-        return escalated
-
-    # El especialista no llamó la tool: el handoff se hace igual. Un cliente
-    # listo para pagar no puede quedarse esperando.
-    return AgentResult(
-        user_facing=reply, escalate=EscalateReason(motivo=motivo, is_payment=True)
-    )
+    return AgentResult(user_facing=None, escalate=escalate)
 
 
 async def _handle_detail(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
@@ -790,7 +781,22 @@ async def _run_specialty(
     fallback_artifacts: list[Product] | None = None,
 ) -> AgentResult:
     spec = spec_for(intent)
-    system = build_system(spec, state, extra=extra_system)
+    if spec.deterministic:
+        raise RuntimeError(
+            f"el especialista determinista {spec.name} no puede ejecutarse vía LLM"
+        )
+    system = build_system(
+        spec,
+        state,
+        extra=extra_system,
+        turn_text=turn.text,
+        has_media=turn.has_media,
+    )
+    model = (
+        settings.openai_fast_model
+        if spec.model_tier == "fast"
+        else settings.openai_model
+    )
 
     # Etiqueta del gasto. Sin ella, "cuánto cuesta el catálogo" y "cuánto cuesta
     # el concierge" serían la misma cifra y no habría forma de saber qué prompt
@@ -811,11 +817,17 @@ async def _run_specialty(
             ),
             include_handoff=spec.can_handoff,
             include_memory=spec.customer_facing,
+            model=model,
+            max_tool_rounds=spec.max_tool_rounds,
+            max_tool_calls=spec.max_tool_calls,
+            parallel_tool_calls=spec.parallel_tool_calls,
         )
+
+    output_policy = spec.output_policy
 
     # Nunca mostrar dos veces el mismo producto: el cliente lo lee como que no le
     # hicimos caso ("otras, no esas").
-    if spec.name == "catalog":
+    if output_policy == "catalog":
         result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
 
     # El modelo respondió sin llamar la tool porque el dato ya lo tenía en el
@@ -825,16 +837,16 @@ async def _run_specialty(
     if not result.artifacts and fallback_artifacts:
         result.artifacts = list(fallback_artifacts)
 
-    if spec.name in ("catalog", "detail") and result.artifacts:
+    if output_policy in ("catalog", "detail") and result.artifacts:
         result.user_facing = compose_product_reply(result.user_facing, result.artifacts)
 
     # El modelo ofreció un menú de categorías en vez de productos. Se le deja
     # (a veces toca preguntar), pero la lista la reescribe el código: así los
     # nombres son los reales y la numeración es la que luego sabemos resolver.
-    if spec.name == "catalog" and not result.artifacts:
+    if output_policy == "catalog" and not result.artifacts:
         await _own_the_menu(result, turn, state)
 
-    _capture_choice(spec.name, turn, state, result)
+    _capture_choice(output_policy, turn, state, result)
 
     return result
 
@@ -927,7 +939,7 @@ _COLETILLA = re.compile(
 
 
 def _capture_choice(
-    spec_name: str, turn: Turn, state: ConversationState, result: AgentResult
+    output_policy: str, turn: Turn, state: ConversationState, result: AgentResult
 ) -> None:
     """Fija el producto elegido cuando la elección la resuelve un especialista LLM.
 
@@ -942,7 +954,7 @@ def _capture_choice(
     no la prosa) o, si el modelo respondió de contexto sin volver a llamarla,
     desde la lista que el cliente YA vio, con la misma resolución que usa el FSM.
     """
-    if spec_name not in ("catalog", "detail"):
+    if output_policy not in ("catalog", "detail"):
         return
     # Dentro del cierre el producto ya está fijo y un "2" es un horario, no una
     # elección de producto: no lo tocamos.
@@ -951,7 +963,7 @@ def _capture_choice(
 
     chosen: tuple[int, str] | None = None
     # 1. Autoritativo: el detalle de UN solo producto es el que el cliente mira.
-    if spec_name == "detail" and len(result.artifacts) == 1:
+    if output_policy == "detail" and len(result.artifacts) == 1:
         art = result.artifacts[0]
         chosen = (art.id_producto, art.nombre)
     else:

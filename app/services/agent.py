@@ -374,6 +374,10 @@ async def run_specialist(
     tools_override: list | None = None,
     include_handoff: bool = True,
     include_memory: bool = True,
+    model: str | None = None,
+    max_tool_rounds: int | None = None,
+    max_tool_calls: int | None = None,
+    parallel_tool_calls: bool = True,
 ) -> AgentResult:
     """Ejecuta un especialista y devuelve lo que dijo Y lo que aprendió.
 
@@ -384,6 +388,13 @@ async def run_specialist(
     artifacts: list[Product] = []
     seen_ids: set[int] = set()
     tools_used: list[str] = []
+    tool_calls_executed = 0
+    model_name = model or settings.openai_model
+    round_limit = (
+        settings.max_tool_rounds
+        if max_tool_rounds is None
+        else max(1, max_tool_rounds)
+    )
 
     def _absorb(raw_result: str) -> None:
         try:
@@ -447,15 +458,20 @@ async def run_specialist(
             early_filler_task = asyncio.create_task(_send_early_filler())
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            for _ in range(settings.max_tool_rounds):
+            for _ in range(round_limit):
                 payload: dict = {
-                    "model": settings.openai_model,
+                    "model": model_name,
                     "messages": messages,
                 }
-                if all_tools:
-                    payload["tools"] = all_tools
+                budget_available = (
+                    max_tool_calls is None
+                    or tool_calls_executed < max_tool_calls
+                )
+                round_tools = all_tools if budget_available else []
+                if round_tools:
+                    payload["tools"] = round_tools
                     payload["tool_choice"] = "auto"
-                    payload["parallel_tool_calls"] = True
+                    payload["parallel_tool_calls"] = parallel_tool_calls
                 # Sin tools NO se manda `tool_choice`: OpenAI rechaza con 400
                 # ("tool_choice is only allowed when tools are specified") y el
                 # agente devolvía None → el bot se quedaba mudo. Un agente sin
@@ -553,6 +569,43 @@ async def run_specialist(
                 tool_calls = validated_calls
                 if not tool_calls:
                     continue
+
+                # Presupuesto total del turno, no solo de esta ronda. Para
+                # catálogo vale uno: después del primer resultado el siguiente
+                # completion ya no recibe schemas de herramientas.
+                if max_tool_calls is not None:
+                    remaining = max(0, max_tool_calls - tool_calls_executed)
+                    allowed_by_budget = tool_calls[:remaining]
+                    for call in tool_calls[remaining:]:
+                        fn = str((call.get("function") or {}).get("name") or "")
+                        record_operation("guardrail.tool_budget", "blocked")
+                        audit_event(
+                            "guardrail.tool_budget",
+                            "blocked",
+                            conversation_id=conversation_id,
+                            agent=current_agent(),
+                            tool=fn or "unknown",
+                            reason="max_tool_calls",
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "content": json.dumps(
+                                    {
+                                        "ok": False,
+                                        "blocked": True,
+                                        "error": "presupuesto de herramientas agotado",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        )
+                    tool_calls = allowed_by_budget
+                    if not tool_calls:
+                        continue
+
+                tool_calls_executed += len(tool_calls)
 
                 if not filler_sent and conversation_id is not None:
                     filler = _filler_for_tools(tool_calls)
@@ -736,7 +789,7 @@ async def run_specialist(
             data = await _chat_completion(
                 client,
                 {
-                    "model": settings.openai_model,
+                    "model": model_name,
                     "messages": messages + [{
                         "role": "system",
                         "content": (
@@ -744,7 +797,6 @@ async def run_specialist(
                             "No llames más herramientas. Si faltan datos, pregunta uno solo."
                         ),
                     }],
-                    "tool_choice": "none",
                 },
             )
             if early_filler_task and not early_filler_task.done():

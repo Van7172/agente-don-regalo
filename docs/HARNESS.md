@@ -44,7 +44,7 @@ no se enviaba jamás y el resumen del pedido decía "Producto elegido".
 **3. El system message se compone por capas**, no se escribe a mano:
 
 ```
-system(agente) = CORE + FACTS[agente] + PLAYBOOK[agente] + ESTADO
+system(agente) = CORE + FACTS[agente] + PLAYBOOK[agente] + BLOQUES_CONDICIONALES + ESTADO
 ```
 
 - `prompts/core.py` — identidad, estilo y **RESTRICCIONES**. Va en *todos* los
@@ -52,11 +52,14 @@ system(agente) = CORE + FACTS[agente] + PLAYBOOK[agente] + ESTADO
 - `prompts/facts.py` — datos del dominio, inyectados solo a quien los necesita
   (cobertura no necesita los ids de ocasión; catálogo no necesita devoluciones).
 - `prompts/playbooks.py` — el procedimiento propio de cada especialista.
+- Catálogo añade reglas de campañas, fúnebres o atributos únicamente cuando el
+  turno las activa.
 - `prompts/compose.py` — el único sitio donde se arma un system message.
 
 **4. Prompt y toolset viven juntos** (`harness/registry.py:AgentSpec`). Estaban en
 archivos distintos y nada obligaba a que coincidieran: un playbook podía citar una
-tool que su toolset no tenía y el modelo la alucinaba en silencio.
+tool que su toolset no tenía y el modelo la alucinaba en silencio. El mismo contrato
+declara tier de modelo, rondas, presupuesto de tools, paralelismo y postproceso.
 
 ## Los agentes
 
@@ -69,11 +72,15 @@ tool que su toolset no tenía y el modelo la alucinaba en silencio.
 | `checkout` | cierre del pedido (FSM determinista) | 2 | sí |
 | `policy` | políticas, pagos, objeciones | 4 | sí |
 | `tracking` | estado de un pedido | 1 | sí |
-| `escalate` | derivación a un asesor | 1 | sí |
+| `escalate` | derivación a un asesor (determinista) | — | sí |
 
 `catalog` **no puede escalar** a propósito: buscar productos nunca es motivo de
 handoff. Ahí es donde el modelo mandaba a un asesor ventas sanas ("regalos
 corporativos por Fiestas Patrias").
+
+`catalog` tiene un máximo ejecutable de **una tool por turno**. `concierge` y
+`detail` usan el tier `fast`; `OPENAI_FAST_MODEL` hereda `OPENAI_MODEL` cuando no
+se configura, por lo que habilitar el contrato no cambia el modelo de producción.
 
 ## La capa de adaptadores
 

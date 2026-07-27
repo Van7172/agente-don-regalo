@@ -1,0 +1,52 @@
+# Regresiones organizadas por el especialista responsable. Todo es determinista:
+# routing por reglas y composición del system prompt, sin OpenAI ni APIs.
+
+- id: desconocido-seguro
+  agent: concierge
+  text: "Necesito orientación sobre algo diferente"
+
+- id: contexto-comercial
+  agent: catalog
+  text: "Mi esposa cumple años mañana"
+  prompt_excludes:
+    - "## CAMPAÑAS DE TEMPORADA"
+    - "## ARREGLOS FÚNEBRES"
+    - "## HONESTIDAD CON ATRIBUTOS"
+
+- id: detalle-producto-visto
+  agent: detail
+  text: "¿Qué contiene?"
+  state:
+    shown_product_ids: [734]
+
+- id: politica-pago
+  agent: policy
+  text: "¿Cómo puedo pagar?"
+
+- id: seguimiento-pedido
+  agent: tracking
+  text: "¿Dónde está mi pedido?"
+
+- id: derivacion-humana
+  agent: escalate
+  text: "Quiero hablar con un asesor"
+
+- id: catalogo-campana
+  agent: catalog
+  text: "Regalos por Fiestas Patrias"
+  check_routing: false
+  prompt_contains: ["## CAMPAÑAS DE TEMPORADA"]
+  prompt_excludes: ["## ARREGLOS FÚNEBRES"]
+
+- id: catalogo-funebre
+  agent: catalog
+  text: "Necesito un arreglo para un velorio"
+  check_routing: false
+  prompt_contains: ["## ARREGLOS FÚNEBRES"]
+  prompt_excludes: ["## CAMPAÑAS DE TEMPORADA"]
+
+- id: catalogo-atributos
+  agent: catalog
+  text: "Quiero rosas blancas personalizadas"
+  check_routing: false
+  prompt_contains: ["## HONESTIDAD CON ATRIBUTOS"]

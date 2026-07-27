@@ -16,6 +16,10 @@ from app.guardrails.input import sanitize_untrusted_text
 from app.guardrails.privacy import protect_profile
 from app.prompts.core import core_system
 from app.prompts.facts import render_facts
+from app.prompts.playbooks import (
+    CATALOG_EXTENSION_MATERIAL,
+    catalog_extensions,
+)
 
 if TYPE_CHECKING:  # evita el ciclo registry → prompts → registry
     from app.harness.registry import AgentSpec
@@ -72,6 +76,8 @@ def build_system(
     *,
     extra: str = "",
     now: datetime | None = None,
+    turn_text: str = "",
+    has_media: bool = False,
 ) -> str:
     """System message completo de un agente.
 
@@ -89,6 +95,10 @@ def build_system(
         blocks.append(facts)
 
     blocks.append(spec.playbook)
+    if spec.output_policy == "catalog":
+        conditional = catalog_extensions(turn_text, has_media=has_media)
+        if conditional:
+            blocks.append(conditional)
 
     if state is not None and spec.customer_facing:
         blocks.append(render_state(state))
@@ -118,6 +128,9 @@ def prompt_version(spec: "AgentSpec") -> str:
             core_system() if spec.customer_facing else "",
             render_facts(spec.facts),
             spec.playbook,
+            CATALOG_EXTENSION_MATERIAL
+            if spec.output_policy == "catalog"
+            else "",
         ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]

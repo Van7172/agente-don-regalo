@@ -6,7 +6,7 @@ import pytest
 from app.harness import master as master_mod
 from app.harness.coverage import explicit_delivery_destination
 from app.harness.registry import AGENTS, assert_tool_allowed
-from app.harness.router import classify_rules
+from app.harness.router import classify, classify_rules
 from app.harness.state import ConversationState
 
 
@@ -40,6 +40,32 @@ def test_destino_explicito_entra_a_cobertura(text):
 def test_una_referencia_no_logistica_no_secuestra_el_catalogo(text):
     assert explicit_delivery_destination(text) is None
     assert classify_rules(text, ConversationState()).intent == "catalog_search"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "mi esposa cumple años mañana",
+        "es para mi mamá",
+        "nuestro aniversario es el viernes",
+    ],
+)
+def test_el_contexto_del_regalo_es_catalogo_sin_depender_del_llm(text):
+    got = classify_rules(text, ConversationState())
+    assert got.intent == "catalog_search"
+    assert got.source == "rules"
+
+
+@pytest.mark.asyncio
+async def test_si_el_router_llm_falla_lo_desconocido_va_a_concierge(monkeypatch):
+    async def unavailable(_text):
+        return None
+
+    monkeypatch.setattr("app.harness.router.classify_with_llm", unavailable)
+    got = await classify("Necesito orientación sobre algo diferente")
+
+    assert got.intent == "small_talk"
+    assert got.source == "fallback"
 
 
 def test_cobertura_tiene_una_sola_herramienta_real():

@@ -3,6 +3,21 @@
 Foco: los especialistas a los que el orquestador delega y la mecánica de delegación.
 Fecha: 27/07/2026.
 
+## Estado de aplicación
+
+Las recomendaciones de este informe quedaron convertidas en contratos ejecutables:
+
+- `escalate` es determinista también durante el pago.
+- Las intenciones desconocidas caen en `concierge`; los contextos comerciales
+  explícitos siguen en `catalog`.
+- `AgentSpec` declara tier de modelo, rondas, presupuesto de herramientas,
+  paralelismo y política de salida.
+- Catálogo ejecuta como máximo una herramienta total e inyecta condicionalmente
+  campañas, fúnebres y atributos.
+- `evals/corpus/specialists.yaml` agrupa regresiones por especialista.
+- Tracking/PII, inyección indirecta y coste por agente ya estaban cubiertos y se
+  mantienen como regresiones.
+
 Especialistas registrados (`harness/registry.py`): `concierge, catalog, detail,
 coverage, checkout, policy, tracking, escalate`. El orquestador clasifica la intención
 (router: reglas + LLM barato) y enruta en código con `spec_for(intent)`; no hay un LLM

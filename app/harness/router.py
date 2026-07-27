@@ -67,6 +67,13 @@ _CATALOG_RE = re.compile(
     r"dia\s+del\s+padre|fiestas\s+patrias|corp",
     re.I,
 )
+_GIFT_CONTEXT_RE = re.compile(
+    r"\b(?:mi|para\s+mi)\s+(?:espos[ao]|novi[ao]|pareja|mam[aá]|pap[aá]|"
+    r"hij[ao]|herman[ao]|jef[ae]|amig[ao])\b|"
+    r"\b(?:cumplea[nñ]os|aniversario|baby\s*shower|graduaci[oó]n|"
+    r"matrimonio|boda)\b",
+    re.I,
+)
 _BUY_VERB_RE = re.compile(
     r"quiero|me\s+lo\s+llevo|lo\s+pido|me\s+quedo\s+con|elijo|escojo|reserv|comprar|"
     r"me\s+gusta\s+est|me\s+interesa",
@@ -235,6 +242,12 @@ def classify_rules(
     if has_media:
         return Classification("catalog_search", 0.8, "rules")
 
+    # Dar el contexto del regalo ya es intención comercial aunque no aparezca
+    # literalmente "quiero" o "regalo": "mi esposa cumple años mañana" debe
+    # descubrir productos incluso si el router LLM no está disponible.
+    if _GIFT_CONTEXT_RE.search(norm):
+        return Classification("catalog_search", 0.8, "rules")
+
     # Misma definición de cortesía que usa la política de handoff. Antes el router
     # tenía la suya, más pobre: "Todo en orden hoy" no le sonaba a charla y acababa
     # en el catálogo, buscando productos para alguien que no pedía nada.
@@ -251,7 +264,7 @@ def classify_rules(
     # Ninguna regla reconoció el mensaje. Antes se devolvía `catalog_search` a
     # secas y el cliente acababa recibiendo productos que no pidió. Ahora sale con
     # confianza baja para que `classify()` se lo pase al clasificador LLM.
-    return Classification("catalog_search", 0.3, "fallback")
+    return Classification("small_talk", 0.3, "fallback")
 
 
 VALID_INTENTS = frozenset(

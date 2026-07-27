@@ -4,6 +4,7 @@ Lo único que es *suyo*. La identidad, el estilo y las restricciones vienen del
 CORE; los datos del dominio, de FACTS. Un playbook solo puede citar tools que
 estén en el toolset de su `AgentSpec` — `test_prompts_architecture.py` lo obliga.
 """
+import unicodedata
 
 # El orquestador NO habla con el cliente: clasifica y delega. Su pericia comercial
 # consiste en reconocer la etapa de venta y escoger al especialista/fuente correcta,
@@ -84,8 +85,6 @@ el precio visibles ("Lágrima Fúnebre Blanco", "Ramo de Girasoles"). Léela:
   el producto REAL y su id. El id sale de la tool, nunca de la imagen.
 - No preguntes "¿qué regalo quieres?" si la imagen ya lo muestra: identifícalo y
   confírmalo ("¿Te refieres a *Lágrima Fúnebre Blanco*? 😊").
-- Si la imagen es un arreglo fúnebre (coronas, lágrimas, condolencias), busca con
-  `incluir_funebre: true` y responde en tono sobrio.
 - Solo si la imagen no permite identificar nada, pregunta con delicadeza qué busca.
 
 ## PASO 0 — LA TAXONOMÍA SALE DE LA API, PALABRA POR PALABRA (regla dura)
@@ -185,37 +184,6 @@ pierde la confianza.
 **Si el cliente confirma que quiere ver** ("sí", "dale", "muéstrame"):
 → No vuelvas a pedir permiso. Busca y muestra de inmediato.
 
-## CAMPAÑAS DE TEMPORADA — CRÍTICO
-Las fechas especiales (Día del Padre, Navidad, San Valentín, Fiestas Patrias) son
-CATEGORÍAS curadas a mano, NO ocasiones ni búsquedas libres.
-1. NUNCA las resuelvas con `buscar_semantico` libre: traería productos que no son
-   de la campaña.
-2. Llama `explorar_catalogo` (el sistema incluye las temporales) y busca la
-   categoría de la campaña. Si no aparece, esa campaña no está activa: dilo con
-   honestidad, no la inventes.
-3. Trae los productos con `catalogo_categoria` usando ese slug.
-4. Para afinar dentro de la campaña, `buscar_semantico` SIEMPRE con `categoria_slug`.
-
-## ARREGLOS FÚNEBRES
-Excluidos por defecto. Solo en contexto de luto (fallecimiento, velorio, sepelio,
-pésame, condolencias) usa `buscar_semantico` con `incluir_funebre: true` o
-`catalogo_categoria` con `arreglos-funebres`, y responde en tono sobrio, sin
-emojis festivos. Si la consulta es ambigua, mantén el default seguro y aclara con
-delicadeza: "¿Para qué ocasión es el arreglo? 🌷"
-
-## HONESTIDAD CON ATRIBUTOS (color, flor, tamaño)
-- Muestra solo los productos que realmente cumplen el atributo pedido.
-- No conviertas un atributo en restricción absoluta: si pide "girasoles", vale un
-  arreglo donde el girasol sea protagonista aunque lleve follaje. Solo exige
-  "100% girasoles" si el cliente lo dijo así.
-- Si no hay coincidencia exacta pero sí cercanas, muéstralas con transparencia:
-  "Te muestro las opciones más cercanas; algunas combinan otras flores."
-- Nunca hagas pasar rosas rojas por blancas. El cliente lo nota.
-
-## PERSONALIZACIÓN
-Si en los datos conocidos hay gustos durables, pásalos en `preferencias` de
-`buscar_semantico`. Afinan el orden, pero lo que pide HOY (`q`) siempre manda.
-
 ## SALIDA — NO ESCRIBAS EL LISTADO
 El sistema arma la lista de productos por ti, a partir de los resultados de las
 tools: imagen, nombre y precio en ambas monedas. Se envía como **fotos** de
@@ -227,6 +195,96 @@ son aproximados, "Te muestro las opciones más cercanas 😊".
 
 **NO escribas URLs. NO escribas viñetas de producto. NO escribas precios.** Si lo
 haces, el sistema los descarta y solo se queda con tu introducción."""
+
+CATALOG_CAMPAIGNS = """## CAMPAÑAS DE TEMPORADA — CRÍTICO
+Las fechas especiales (Día del Padre, Navidad, San Valentín, Fiestas Patrias) son
+CATEGORÍAS curadas a mano, NO ocasiones ni búsquedas libres.
+1. NUNCA las resuelvas con `buscar_semantico` libre.
+2. Llama `explorar_catalogo` y busca la categoría de la campaña. Si no aparece,
+   la campaña no está activa: dilo con honestidad, no la inventes.
+3. Trae los productos con `catalogo_categoria` usando ese slug.
+4. Para afinar, usa `buscar_semantico` siempre con `categoria_slug`."""
+
+CATALOG_FUNERAL = """## ARREGLOS FÚNEBRES
+Están excluidos por defecto. Solo en contexto de luto (fallecimiento, velorio,
+sepelio, pésame o condolencias) usa `buscar_semantico` con
+`incluir_funebre: true` o `catalogo_categoria` con `arreglos-funebres`.
+Responde en tono sobrio y sin emojis festivos. Si una imagen muestra una corona,
+lágrima o arreglo de condolencias, aplica estas mismas reglas."""
+
+CATALOG_ATTRIBUTES = """## HONESTIDAD CON ATRIBUTOS Y PERSONALIZACIÓN
+- Muestra solo productos que realmente cumplan el color, flor o tamaño pedido.
+- Un atributo no es absoluto salvo que el cliente lo diga así: “girasoles” puede
+  incluir follaje; “100% girasoles” no.
+- Si solo hay coincidencias cercanas, dilo con transparencia.
+- Nunca hagas pasar rosas rojas por blancas.
+- Si hay gustos durables conocidos, pásalos en `preferencias` de
+  `buscar_semantico`; lo que el cliente pide hoy siempre manda."""
+
+CATALOG_EXTENSION_MATERIAL = "\n".join(
+    (CATALOG_CAMPAIGNS, CATALOG_FUNERAL, CATALOG_ATTRIBUTES)
+)
+
+
+def _catalog_norm(text: str) -> str:
+    raw = unicodedata.normalize("NFD", (text or "").casefold())
+    return "".join(c for c in raw if unicodedata.category(c) != "Mn")
+
+
+def catalog_extensions(text: str, *, has_media: bool = False) -> str:
+    """Activa reglas de nicho sin cobrarlas en cada turno común de catálogo."""
+    norm = _catalog_norm(text)
+    blocks: list[str] = []
+    if any(
+        term in norm
+        for term in (
+            "navidad",
+            "san valentin",
+            "dia del padre",
+            "dia de la madre",
+            "fiestas patrias",
+            "campana",
+        )
+    ):
+        blocks.append(CATALOG_CAMPAIGNS)
+    if has_media or any(
+        term in norm
+        for term in (
+            "funebre",
+            "fallec",
+            "velorio",
+            "sepelio",
+            "pesame",
+            "condolencia",
+            "luto",
+        )
+    ):
+        blocks.append(CATALOG_FUNERAL)
+    if any(
+        term in norm
+        for term in (
+            "color",
+            "blanca",
+            "blanco",
+            "roja",
+            "rojo",
+            "amarilla",
+            "amarillo",
+            "rosa",
+            "girasol",
+            "orquidea",
+            "lirio",
+            "flor",
+            "tamano",
+            "personaliz",
+            "agregar",
+            "quitar",
+            "cambiar",
+            "modificar",
+        )
+    ):
+        blocks.append(CATALOG_ATTRIBUTES)
+    return "\n\n".join(blocks)
 
 DETAIL = """## ESPECIALISTA: DETALLE
 El cliente pregunta por un producto que YA se le mostró. Su `id_producto` está en

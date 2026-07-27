@@ -8,6 +8,7 @@ no incluía y el modelo alucinaba la llamada en silencio. `AgentSpec` los ata, y
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from app.prompts import playbooks
 from app.tools.definitions import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS
@@ -44,6 +45,13 @@ class AgentSpec:
     tool_names: tuple[str, ...] = ()
     customer_facing: bool = True
     can_handoff: bool = False
+    # Contrato operativo del especialista. Los deterministas usan `None`/0
+    # porque nunca deben llegar al loop de OpenAI.
+    model_tier: Literal["fast", "standard"] | None = "standard"
+    max_tool_rounds: int = 2
+    max_tool_calls: int | None = None
+    parallel_tool_calls: bool = False
+    output_policy: Literal["plain", "catalog", "detail"] = "plain"
     # `deterministic`: el orquestador lo resuelve en código y NUNCA llama al LLM
     # con este spec. Su playbook y sus facts son documentación del flujo, no un
     # prompt: no los lee ningún modelo. Ver `master._handle`.
@@ -70,18 +78,27 @@ AGENTS: dict[str, AgentSpec] = {
         playbook=playbooks.CONCIERGE,
         facts=(),
         tool_names=(),
+        model_tier="fast",
+        max_tool_rounds=1,
     ),
     "catalog": AgentSpec(
         name="catalog",
         playbook=playbooks.CATALOG,
         facts=("catalog_taxonomy", "pricing"),
         tool_names=CATALOG_TOOLS,
+        max_tool_rounds=2,
+        max_tool_calls=1,
+        parallel_tool_calls=False,
+        output_policy="catalog",
     ),
     "detail": AgentSpec(
         name="detail",
         playbook=playbooks.DETAIL,
         facts=("pricing",),
         tool_names=("detalle_producto", "productos_similares"),
+        model_tier="fast",
+        max_tool_rounds=2,
+        output_policy="detail",
     ),
     # Cobertura y cierre los resuelve el código (`harness/coverage.py` y
     # `harness/checkout.py`). Sus tools las llama el orquestador directamente, no
@@ -93,6 +110,9 @@ AGENTS: dict[str, AgentSpec] = {
         # Flujo determinista: esta es su única fuente de verdad. No se declara
         # conocimiento genérico que el código nunca invoca.
         tool_names=("distritos_cobertura",),
+        model_tier=None,
+        max_tool_rounds=0,
+        max_tool_calls=0,
         deterministic=True,
     ),
     "checkout": AgentSpec(
@@ -101,6 +121,9 @@ AGENTS: dict[str, AgentSpec] = {
         facts=("delivery", "pricing", "payment"),
         tool_names=("distritos_cobertura", "metodos_pago"),
         can_handoff=True,
+        model_tier=None,
+        max_tool_rounds=0,
+        max_tool_calls=0,
         deterministic=True,
     ),
     "policy": AgentSpec(
@@ -114,6 +137,7 @@ AGENTS: dict[str, AgentSpec] = {
             "rastrear_pedido",
         ),
         can_handoff=True,
+        max_tool_rounds=2,
     ),
     "tracking": AgentSpec(
         name="tracking",
@@ -121,13 +145,18 @@ AGENTS: dict[str, AgentSpec] = {
         facts=("contact",),
         tool_names=("rastrear_pedido",),
         can_handoff=True,
+        max_tool_rounds=2,
     ),
     "escalate": AgentSpec(
         name="escalate",
         playbook=playbooks.ESCALATE,
         facts=("contact", "payment"),
-        tool_names=("buscar_conocimiento_equipo",),
+        tool_names=(),
         can_handoff=True,
+        model_tier=None,
+        max_tool_rounds=0,
+        max_tool_calls=0,
+        deterministic=True,
     ),
 }
 
@@ -146,7 +175,7 @@ INTENT_TO_AGENT: dict[str, str] = {
 
 
 def spec_for(intent: str) -> AgentSpec:
-    return AGENTS[INTENT_TO_AGENT.get(intent, "catalog")]
+    return AGENTS[INTENT_TO_AGENT.get(intent, "concierge")]
 
 
 def assert_tool_allowed(agent_name: str, tool_name: str) -> None:

@@ -60,7 +60,7 @@ async def test_lo_que_las_reglas_no_saben_va_al_llm(espia_llm):
 
 @pytest.mark.asyncio
 async def test_si_el_llm_falla_mandan_las_reglas(monkeypatch):
-    """Un router caído no puede dejar al cliente sin respuesta."""
+    """El contexto comercial claro no depende de que el router LLM esté vivo."""
 
     async def cae(text: str):
         return None  # timeout, 429, clave ausente…
@@ -69,8 +69,8 @@ async def test_si_el_llm_falla_mandan_las_reglas(monkeypatch):
 
     got = await classify("Mi esposa cumple años mañana", ConversationState())
 
-    assert got.intent == "catalog_search"  # el default de siempre
-    assert got.source == "fallback"
+    assert got.intent == "catalog_search"
+    assert got.source == "rules"
 
 
 @pytest.mark.asyncio

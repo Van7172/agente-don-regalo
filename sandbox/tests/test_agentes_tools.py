@@ -76,13 +76,17 @@ def test_el_router_y_el_registro_no_se_contradicen(intent, agente):
 
 
 def test_los_agentes_deterministas_estan_marcados():
-    """Cobertura y cierre los resuelve el código: el LLM nunca ve sus specs.
+    """Cobertura, cierre y derivación se resuelven sin LLM.
 
     Si alguien añade tools a uno de ellos esperando que el modelo las llame, no va
     a pasar nada. Marcarlos evita esa confusión.
     """
     deterministas = {n for n, s in AGENTS.items() if s.deterministic}
-    assert deterministas == {"coverage", "checkout"}
+    assert deterministas == {"coverage", "checkout", "escalate"}
+
+
+def test_una_intencion_desconocida_cae_en_concierge():
+    assert spec_for("intencion_que_no_existe").name == "concierge"
 
 
 def test_solo_escalan_los_agentes_que_deben():
