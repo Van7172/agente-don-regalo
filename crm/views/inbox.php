@@ -231,4 +231,5 @@
 
 <div class="alert error-box" id="error-box" role="alert" hidden></div>
 
+<script src="<?= e(url_to('assets/inbox-time.js')) ?>?v=<?= (int) @filemtime(dirname(__DIR__) . '/public/assets/inbox-time.js') ?>"></script>
 <script src="<?= e(url_to('assets/inbox.js')) ?>?v=<?= (int) @filemtime(dirname(__DIR__) . '/public/assets/inbox.js') ?>"></script>

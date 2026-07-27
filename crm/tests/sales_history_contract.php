@@ -68,9 +68,13 @@ requiresText($inbox, 'tag-new', 'Falta el badge de lead nuevo en la lista');
 
 $repositoryLista = source('src/Repository.php');
 requiresText($repositoryLista, 'LEAD_NUEVO_MIN', 'La ventana de "nuevo" debe estar en un solo sitio');
-// El lead nuevo va PRIMERO. Puesto detrás de las ventas y de la cola de ayuda no
-// servía: con la cola llena, el chat recién llegado quedaba fuera de pantalla.
-requiresText($repositoryLista, 'ORDER BY es_nuevo DESC', 'El lead nuevo debe ir primero en la lista');
+// La recencia ya basta para poner arriba un lead recién llegado. Priorizar el
+// flag por encima del último mensaje rompía el comportamiento tipo WhatsApp.
+requiresText(
+    $repositoryLista,
+    'ORDER BY last_message_at DESC, c.id_conversation DESC',
+    'La lista debe ordenar por la última interacción'
+);
 requiresText($repositoryLista, "'is_new'", 'El panel necesita el flag para avisar');
 requiresText($inbox, '/sale/delivered', 'Falta llamada del inbox');
 requiresText($inbox, 'window.confirm', 'Falta confirmación previa');

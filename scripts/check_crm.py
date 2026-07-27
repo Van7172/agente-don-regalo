@@ -34,11 +34,15 @@ def main() -> int:
 
     commands: list[tuple[str, ...]] = []
     commands.extend((php, "-l", str(path)) for path in sorted(CRM.rglob("*.php")))
-    commands.append(
-        (node, "--check", str(CRM / "public" / "assets" / "operations.js"))
+    commands.extend(
+        (node, "--check", str(path))
+        for path in sorted((CRM / "public" / "assets").glob("*.js"))
     )
     commands.extend(
         (php, str(path)) for path in sorted((CRM / "tests").glob("*.php"))
+    )
+    commands.extend(
+        (node, str(path)) for path in sorted((CRM / "tests").glob("*.js"))
     )
 
     for command in commands:

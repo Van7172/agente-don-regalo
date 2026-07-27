@@ -23,6 +23,12 @@
   const apiBase = `${base}/api`;
   const pollList = Number(root.dataset.pollList || 4000);
   const pollThread = Number(root.dataset.pollThread || 4000);
+  const {
+    parseTimestamp: parseTs,
+    clockLabel: timeLabel,
+    conversationTimeLabel,
+    localDayKey,
+  } = window.CrmInboxTime;
 
   const el = {
     rail: document.getElementById("help-rail"),
@@ -178,19 +184,6 @@
     return `avatar-p${Math.abs(sum) % 3}`;
   }
 
-  function parseTs(value) {
-    if (!value) return null;
-    const iso = String(value).includes("T") ? String(value) : String(value).replace(" ", "T");
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-
-  function timeLabel(value) {
-    const d = parseTs(value);
-    if (!d) return "";
-    return d.toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", hour12: false });
-  }
-
   function minutesSince(value) {
     const d = parseTs(value);
     if (!d) return null;
@@ -324,7 +317,7 @@
       <div class="item-body">
         <div class="item-top">
           <span class="item-name">${esc(displayName(c))}</span>
-          <span class="item-time">${esc(timeLabel(c.last_message_at))}</span>
+          <span class="item-time">${esc(conversationTimeLabel(c.last_message_at))}</span>
         </div>
         <div class="item-phone">${esc(c.contact?.wa_id || "")}</div>
         <div class="item-preview">${esc(c.last_message || "Sin mensajes")}</div>
@@ -1102,7 +1095,10 @@
         );
       }
       const next = json.data;
-      const sig = JSON.stringify(next);
+      // La respuesta del API puede ser idéntica al cruzar medianoche. El día
+      // local forma parte de la firma para que 15:00 cambie a "Ayer" sin que
+      // tenga que llegar otro mensaje.
+      const sig = `${localDayKey(new Date())}|${JSON.stringify(next)}`;
       if (sig !== listSig) {
         alertOnHandoff(conversations, next);
         alertOnNewLead(conversations, next);

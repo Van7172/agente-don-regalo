@@ -292,9 +292,13 @@ Panel de asesores + API de persistencia en el hosting de Don Regalo. MySQL local
 se abre a Internet); el agente habla con él solo por **HTTP + token**.
 
 - **Panel:** inbox con polling (~4s), highlight de `human_support` ("AYUDA"), toggle
-  AI/HUMAN, resumen del lead, venta en verde. Assets: `public/assets/inbox.js`,
-  `app.css`. Los **enlaces http/https del chat son clickeables** (linkify seguro:
-  escapa y luego enlaza).
+  AI/HUMAN, resumen del lead, venta en verde. La lista principal se ordena
+  estrictamente por el último mensaje real (cliente, bot o asesor); la ayuda
+  permanece fijada aparte en el rail superior. La marca temporal muestra hora
+  para hoy, `Ayer` para ayer y `dd/mm/aaaa` en días anteriores. Assets:
+  `public/assets/inbox.js`, `public/assets/inbox-time.js`, `app.css`. Los
+  **enlaces http/https del chat son clickeables** (linkify seguro: escapa y luego
+  enlaza).
 - **API interna** (`crm/public/api/index.php`), base `{CRM_BASE_URL}/api/...`:
   conversaciones, mensajes, memoria/leads, `mode` (AI↔HUMAN), settings, outbox,
   watchdog, reportes. Auth por `X-CRM-Token` / `Bearer` (salvo `/health`).

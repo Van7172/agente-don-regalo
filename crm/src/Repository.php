@@ -97,16 +97,25 @@ final class Repository
         // `sale`: el agente cerró la venta con todos los datos del pedido. El panel
         // pinta ese chat en verde para que el vendedor entre directo a cobrarlo.
         //
-        // El lead nuevo va PRIMERO, encima de todo. La primera versión lo puso
-        // detrás de las ventas y de la cola de ayuda, y en producción no servía:
-        // con la cola llena de gente esperando horas, el chat recién llegado
-        // quedaba fuera de pantalla. El vendedor lo quiere arriba para ver al
-        // agente atendiendo al lead en vivo y entrar si hace falta — seguimiento,
-        // no rescate. La cola de ayuda va justo después, y además sigue fijada
-        // aparte en las fichas de la cabecera, así que no se pierde de vista.
+        // La bandeja sigue el modelo mental de WhatsApp: el chat cuyo ÚLTIMO
+        // mensaje (cliente, bot o asesor) es más reciente aparece primero. La
+        // cola de ayuda ya vive fijada en el rail superior; volver a priorizarla
+        // aquí, junto con "nuevo" y "venta", dejaba conversaciones de las 09:00
+        // por encima de una respuesta del vendedor de las 12:00.
+        //
+        // La fecha de crm_messages es la fuente de verdad. `last_message_at`
+        // permanece como respaldo para datos históricos, pero no puede ocultar
+        // una interacción que sí existe en el hilo.
         return Database::fetchAll(
             "SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
-                    c.bot_active, c.human_support, c.last_message_at,
+                    c.bot_active, c.human_support,
+                    COALESCE(
+                      (SELECT MAX(activity.fecha_creacion)
+                       FROM crm_messages activity
+                       WHERE activity.id_conversation = c.id_conversation),
+                      c.last_message_at,
+                      c.fecha_creacion
+                    ) AS last_message_at,
                     c.fecha_creacion,
                     (c.fecha_creacion >= DATE_SUB(NOW(), INTERVAL :nuevoMin MINUTE))
                       AS es_nuevo,
@@ -121,10 +130,7 @@ final class Repository
                     ON s.id_tenant = c.id_tenant
                    AND s.llave_setting = CONCAT('sale_', c.id_conversation)
              WHERE c.id_tenant = :tenantId
-             ORDER BY es_nuevo DESC,
-                      (s.valor_setting IS NOT NULL) DESC,
-                      c.human_support DESC,
-                      COALESCE(c.last_message_at, c.fecha_creacion) DESC
+             ORDER BY last_message_at DESC, c.id_conversation DESC
              LIMIT {$limit}",
             ['tenantId' => $tenantId, 'nuevoMin' => self::LEAD_NUEVO_MIN]
         );
