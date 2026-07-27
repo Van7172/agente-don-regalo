@@ -15,10 +15,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.guardrails.privacy import find_contacts
 from app.harness.contracts import Product
 from app.harness.quoting import internal_leak
 from app.harness.render import render_product_list
 from app.harness.state import ConversationState
+from app.prompts.core import SAFETY_MARKER
 
 # Reconoce una URL de imagen dentro de una línea (igual que el emisor de WhatsApp).
 _IMG_URL = re.compile(r"https?://[^\s<>\"']+\.(?:jpe?g|png|webp|gif)", re.I)
@@ -116,6 +118,96 @@ def no_internal_context(reply: str) -> Violation | None:
     return None
 
 
+# Fragmentos que SOLO existen dentro de nuestras instrucciones. Ninguno puede
+# aparecer en algo que lee un cliente: si sale uno, el modelo está recitando el
+# system message. Se incluyen las cabeceras de las capas (`compose.build_system`
+# monta CORE + FACTS + PLAYBOOK + ESTADO) y los nombres internos de las tools,
+# que el cliente no tiene por qué ver ni aunque el bot los use.
+_PROMPT_LEAK = re.compile(
+    r"##\s*(?:RESTRICCIONES|IDENTIDAD|ESTILO|OBJETIVO|MEMORIA\s+DEL\s+CLIENTE|"
+    r"PLAYBOOK|DATOS\s+CONOCIDOS\s+DEL\s+CLIENTE|ESTADO\s+DE\s+LA\s+CONVERSACION)"
+    r"|LIMITES\s+QUE\s+NUNCA\s+DEBES\s+CRUZAR"
+    r"|\b(?:escalar_a_humano|buscar_conocimiento_equipo|guardar_datos_cliente|"
+    r"explorar_catalogo|detalle_producto|verificar_cobertura)\b",
+    re.I,
+)
+
+
+def no_system_prompt_leak(reply: str) -> Violation | None:
+    """El cliente nunca puede leer nuestras instrucciones.
+
+    El CORE prohíbe revelar el prompt, pero eso es una instrucción al modelo: si
+    una regresión de composición o una inyección lo convence, nada lo detenía
+    después. Esta es la comprobación determinista de lo mismo, y no puede dar
+    falso positivo — un mensaje real de venta no lleva "## RESTRICCIONES" ni el
+    nombre interno de una herramienta.
+    """
+    m = _PROMPT_LEAK.search(reply or "")
+    if m:
+        return Violation("no_system_prompt_leak", f"fragmento interno: {m.group(0)!r}")
+    return None
+
+
+# Contactos oficiales de Don Regalo: el bot SÍ debe poder darlos (cancelaciones,
+# llamadas, correo de ventas). Viven en `app/prompts/facts.py`; hay un test que
+# comprueba que esta lista sigue cubriendo lo que dice aquel archivo, porque un
+# número nuevo allí y no aquí convertiría una respuesta correcta en una fuga.
+OFFICIAL_CONTACTS = frozenset(
+    {
+        "977174485",  # WhatsApp del equipo humano y llamadas
+        "923149666",  # este chat (Cloud API)
+        "943113807",  # Yape / Plin — en facts.py va como "943 113 807"
+        "ventas@donregalo.pe",
+        "nombre@gmail.com",  # ejemplo que el cierre usa al pedir el correo
+    }
+)
+
+
+def no_third_party_contact(
+    reply: str,
+    state: ConversationState,
+    user_text: str = "",
+) -> Violation | None:
+    """Ningún teléfono ni correo que no sea de esta conversación.
+
+    El riesgo real no es que el modelo se invente un número: es que repita uno
+    que vio en un resultado de `buscar_conocimiento_equipo` — notas del equipo
+    donde aparece el teléfono de OTRO cliente. El CORE lo prohíbe y la capa de
+    privacidad ya redacta los resultados de tools, pero ninguna de las dos deja
+    rastro si falla: la respuesta salía igual.
+
+    Legítimos son los contactos de la propia conversación (los que el cliente
+    acaba de escribir o los que ya están en el pedido) y los oficiales de Don
+    Regalo. Cualquier otro sale de donde no debía.
+
+    `user_text` importa: la barrera corre ANTES de reducir el estado, así que el
+    teléfono que el cliente escribe en este turno todavía no está en el pedido.
+    Sin esto, el paso del cierre que confirma el número del destinatario se
+    marcaría como fuga y se degradaría — rompiendo el cierre.
+    """
+    encontrados = set(find_contacts(reply))
+    if not encontrados:
+        return None
+
+    conocidos = set(OFFICIAL_CONTACTS)
+    conocidos.update(find_contacts(user_text))
+    for propio in (
+        state.telefono_destinatario,
+        state.email_cliente,
+        state.direccion,
+        state.nombre_cliente,
+    ):
+        conocidos.update(find_contacts(propio))
+
+    ajenos = sorted(encontrados - conocidos)
+    if ajenos:
+        return Violation(
+            "no_third_party_contact",
+            f"dato de contacto que no es de esta conversación: {ajenos[0]!r}",
+        )
+    return None
+
+
 def prices_are_sourced(reply: str, artifacts: list[Product]) -> Violation | None:
     """Todo precio en soles debe venir de una tool, no del modelo.
 
@@ -149,6 +241,7 @@ def check_reply(
     *,
     state: ConversationState | None = None,
     artifacts: list[Product] | None = None,
+    user_text: str = "",
 ) -> list[Violation]:
     """Todas las invariantes aplicables a una respuesta. Lista vacía = limpia."""
     reply = reply or ""
@@ -158,6 +251,8 @@ def check_reply(
     candidatas = [
         no_cash_on_delivery(reply),
         no_internal_context(reply),
+        no_system_prompt_leak(reply),
+        no_third_party_contact(reply, state, user_text),
         image_urls_on_own_line(reply),
         prices_are_sourced(reply, artifacts),
         no_repeated_products(state, artifacts),
@@ -166,8 +261,30 @@ def check_reply(
     return [v for v in candidatas if v is not None]
 
 
+# Las que NO pueden llegar al cliente pase lo que pase. Las demás son
+# observacionales: se anotan en la traza porque solo pueden venir del listado
+# determinista, que es fiable por construcción.
+#
+# Las dos de seguridad entran aquí y no en la lista observacional porque el daño
+# ya está hecho en cuanto el cliente lo lee: un prompt filtrado o el teléfono de
+# otra clienta no se pueden "corregir en el siguiente turno".
 _BLOCKING_RULES = frozenset(
-    {"prices_are_sourced", "no_cash_on_delivery", "no_internal_context"}
+    {
+        "prices_are_sourced",
+        "no_cash_on_delivery",
+        "no_internal_context",
+        "no_system_prompt_leak",
+        "no_third_party_contact",
+    }
+)
+
+# Violaciones que significan "el turno está roto por nuestra culpa": no se
+# conserva nada de lo redactado y el orquestador cede el chat a un humano. La
+# regla general del proyecto es que un fallo nuestro se deriva, no se narra —
+# enseñarle al cliente nuestra tubería, o el dato de otro cliente, no se arregla
+# con una frase mejor en el turno siguiente.
+HANDOFF_RULES = frozenset(
+    {"no_internal_context", "no_system_prompt_leak", "no_third_party_contact"}
 )
 
 SAFE_FALLBACK = (
@@ -202,7 +319,7 @@ def sanitize_reply(
     broken = {violation.rule for violation in violations} & _BLOCKING_RULES
     if not broken:
         return reply
-    if "no_internal_context" in broken:
+    if broken & HANDOFF_RULES:
         return SAFE_TECHNICAL_FALLBACK
     if artifacts:
         return render_product_list([_product_dict(product) for product in artifacts])
@@ -214,10 +331,11 @@ def guard_reply(
     *,
     state: ConversationState | None = None,
     artifacts: list[Product] | None = None,
+    user_text: str = "",
 ) -> GuardrailResult:
     """Fachada runtime: evaluar y sanear una respuesta en una sola operación."""
     products = artifacts or []
-    violations = check_reply(reply, state=state, artifacts=products)
+    violations = check_reply(reply, state=state, artifacts=products, user_text=user_text)
     safe = sanitize_reply(reply, violations, products)
     return GuardrailResult(
         reply=safe,

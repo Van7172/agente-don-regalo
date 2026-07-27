@@ -17,6 +17,8 @@ from app.guardrails.conversation import (
 )
 from app.guardrails.response import (
     GuardrailResult,
+    HANDOFF_RULES,
+    OFFICIAL_CONTACTS,
     SAFE_FALLBACK,
     SAFE_TECHNICAL_FALLBACK,
     Violation,
@@ -27,6 +29,8 @@ from app.guardrails.response import (
     no_duplicates_within_reply,
     no_internal_context,
     no_repeated_products,
+    no_system_prompt_leak,
+    no_third_party_contact,
     prices_are_sourced,
     sanitize_reply,
 )
@@ -49,6 +53,7 @@ from app.guardrails.parameters import (
 )
 from app.guardrails.privacy import (
     PrivacyResult,
+    find_contacts,
     minimize_historical_messages,
     protect_json_for_model,
     protect_profile,
@@ -57,6 +62,8 @@ from app.guardrails.privacy import (
 
 __all__ = [
     "GuardrailResult",
+    "HANDOFF_RULES",
+    "OFFICIAL_CONTACTS",
     "InputGuardResult",
     "InjectionFinding",
     "MCP_ARGUMENT_SCHEMAS",
@@ -70,6 +77,7 @@ __all__ = [
     "Violation",
     "check_reply",
     "dedupe_artifacts",
+    "find_contacts",
     "detect_prompt_injection",
     "grounding_violation",
     "guard_reply",
@@ -85,6 +93,8 @@ __all__ = [
     "no_duplicates_within_reply",
     "no_internal_context",
     "no_repeated_products",
+    "no_system_prompt_leak",
+    "no_third_party_contact",
     "prices_are_sourced",
     "protect_json_for_model",
     "protect_profile",

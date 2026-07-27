@@ -106,6 +106,22 @@ Después hay que subir, además de los archivos de siempre:
 **No requiere tocar el agente.** La ventana de 24 h se calcula en el CRM desde
 `crm_messages`, y ningún módulo nuevo llama al agente.
 
+### Escritura condicional del estado (`POST /api/settings/cas`)
+
+**Sin migración SQL.** Basta subir `src/Repository.php` y `public/api/index.php`.
+
+El estado del harness (`harness_state_{id}`) lo escriben tres caminos del agente
+—el turno del cliente, el releaser y el handoff— y el lock de Redis solo
+serializa los turnos entrantes: sin esto, el releaser guardaba una foto vieja del
+documento y borraba lo que el turno había avanzado. `casSetting` hace la
+escritura condicional por versión con la fila bloqueada, que es el único sitio
+donde puede ser atómica.
+
+**El CRM va primero, pero el orden no rompe nada**: el agente detecta un 404 en
+esa ruta, lo recuerda para no repetirlo y sigue guardando a pelo (mismo criterio
+que el claim del outbox). Hasta que subas el CRM, el estado se guarda igual —
+solo que sin cerrar la carrera.
+
 ## 4. Apache
 
 `public/.htaccess` requiere `mod_rewrite`. En Nginx, reescribe `/api/*` a `api/index.php`.

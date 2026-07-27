@@ -31,6 +31,12 @@ class Trace:
     agent: str = ""
     confidence: float = 1.0
     router: str = ""       # rules | llm | fallback
+    # Huella de las instrucciones con las que se atendió el turno. Los prompts
+    # son constantes Python: sin esto, un cambio de redacción y un cambio de
+    # comportamiento eran indistinguibles al leer los logs. Con ella se puede
+    # partir cualquier métrica por versión y ver si algo se degradó justo cuando
+    # alguien reescribió un playbook.
+    prompt_version: str = ""
     checkout_step: str = ""
     user_text: str = ""
     tools: list[str] = field(default_factory=list)
@@ -40,7 +46,23 @@ class Trace:
     violations: list[str] = field(default_factory=list)
     state_patch: dict[str, Any] = field(default_factory=dict)
     latency_ms: int = 0
+    # Lo que costó ESTE turno. Con la métrica por agente se sabe qué prompt
+    # engordó; con esto se sabe qué conversación se disparó — que es la pregunta
+    # cuando alguien mira la factura y busca el turno de 40.000 tokens.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    llm_calls: int = 0
     _started: float = field(default_factory=time.monotonic, repr=False)
+
+    def with_usage(self, usage: dict[str, int] | None) -> "Trace":
+        if not usage:
+            return self
+        self.prompt_tokens = int(usage.get("prompt", 0))
+        self.completion_tokens = int(usage.get("completion", 0))
+        self.cached_tokens = int(usage.get("cached", 0))
+        self.llm_calls = int(usage.get("calls", 0))
+        return self
 
     def done(self) -> "Trace":
         self.latency_ms = int((time.monotonic() - self._started) * 1000)
@@ -81,10 +103,15 @@ class Trace:
             intent=self.intent,
             agent=self.agent,
             router=self.router,
+            prompt_version=self.prompt_version,
             tool_count=len(self.tools),
             product_count=len(self.product_ids),
             violation_count=len(self.violations),
             latency_ms=self.latency_ms,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            cached_tokens=self.cached_tokens,
+            llm_calls=self.llm_calls,
         )
         level = logging.WARNING if self.violations else logging.INFO
         log.log(level, "[trace] %s", json.dumps(payload, ensure_ascii=False))

@@ -16,7 +16,11 @@ from app.channels.whatsapp.webhook import router as whatsapp_router
 from app.config import settings
 from app.crm.api import router as crm_router
 from app.db import init_db
-from app.observability import install_logging_context, render_prometheus
+from app.observability import (
+    install_logging_context,
+    record_operation,
+    render_prometheus,
+)
 from app.resilience import (
     circuit_breakers_snapshot,
     render_circuit_breaker_prometheus,
@@ -65,6 +69,18 @@ async def lifespan(_app: FastAPI):
                 "[BOOT] WHATSAPP_DRY_RUN=1 — los mensajes del asesor se verán en el CRM "
                 "pero NO llegarán a WhatsApp. Pon WHATSAPP_DRY_RUN=0 en EasyPanel."
             )
+        # Sin secreto de Meta, la firma del webhook no se puede verificar: quien
+        # conozca la URL puede inyectar mensajes haciéndose pasar por un cliente
+        # —y el bot le contestará, le mostrará precios y le abrirá un pedido—.
+        # No se aborta el arranque a propósito: dejar el negocio sin WhatsApp es
+        # peor que el riesgo, y el operador puede cerrarlo en un minuto.
+        if not (settings.whatsapp_app_secret or "").strip():
+            log.error(
+                "[BOOT] WHATSAPP_APP_SECRET vacío — la firma del webhook NO se "
+                "verifica y cualquiera que conozca la URL puede inyectar mensajes. "
+                "Ponlo en EasyPanel y activa WHATSAPP_REQUIRE_SIGNATURE=1."
+            )
+            record_operation("boot.webhook_signature", "unverified")
     if settings.donregalo_use_mcp:
         log.info("[BOOT] MCP Don Regalo activo: %s", settings.donregalo_mcp_url)
     else:
@@ -104,6 +120,15 @@ async def health():
         "watchdog": settings.watchdog_enabled,
         "whatsapp_configured": bool(settings.whatsapp_token and settings.whatsapp_phone_number_id),
         "whatsapp_dry_run": settings.whatsapp_dry_run,
+        # Para verlo sin entrar a los logs del arranque: `unverified` significa
+        # que cualquiera que conozca la URL del webhook puede inyectar mensajes.
+        "webhook_signature": (
+            "enforced"
+            if (settings.whatsapp_app_secret or "").strip()
+            else "closed_without_secret"
+            if settings.whatsapp_require_signature
+            else "unverified"
+        ),
         "openai_configured": bool(settings.openai_api_key),
         "openai_model": settings.openai_model,
         "donregalo_mcp_enabled": settings.donregalo_use_mcp,

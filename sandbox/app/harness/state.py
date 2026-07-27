@@ -91,6 +91,10 @@ class ConversationState:
     keep_human: bool = False
     last_human_outbound_at: Optional[float] = None  # epoch seconds
     assignee_user_id: Optional[int] = None
+    # Versión del documento, para escribir sin pisar a nadie (ver `save_state`).
+    # No es un dato de la conversación: es lo que permite detectar que otro
+    # escritor tocó el estado mientras este turno pensaba.
+    version: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -107,7 +111,10 @@ class ConversationState:
 
     def patch(self, updates: dict[str, Any]) -> "ConversationState":
         for k, v in updates.items():
-            if not hasattr(self, k) or v is None:
+            # `version` la lleva la capa de persistencia, no la conversación: un
+            # `state_patch` de un especialista no puede tocarla o el control de
+            # concurrencia se rompería desde dentro.
+            if k == "version" or not hasattr(self, k) or v is None:
                 continue
             if k == "shown_product_ids" and isinstance(v, list):
                 merged = list(dict.fromkeys([*self.shown_product_ids, *[int(x) for x in v if x is not None]]))
@@ -164,16 +171,100 @@ async def load_state(conversation_id: int, *, wa_id: str = "") -> ConversationSt
                 pass
         return ConversationState()
 
-    # Local: atributo en dict en memoria de proceso (tests) o contact attributes vía caller.
-    return _local_cache.get(conversation_id, ConversationState())
+    # Local: dict en memoria del proceso (tests). Se devuelve una COPIA a
+    # propósito: devolver el objeto guardado convertía el caché en memoria
+    # compartida entre escritores y hacía imposible reproducir en un test la
+    # carrera que sí ocurre en producción contra el CRM.
+    stored = _local_cache.get(conversation_id)
+    return ConversationState.from_dict(stored.to_dict()) if stored else ConversationState()
 
 
-async def save_state(conversation_id: int, state: ConversationState, *, wa_id: str = "") -> None:
-    payload = json.dumps(state.to_dict(), ensure_ascii=False)
-    if crm_http.crm_enabled():
+# Cuántas veces se reintenta un guardado que perdió la carrera. Tres sobran: los
+# escritores son pocos (turno, releaser, handoff) y cada reintento parte de una
+# lectura fresca, así que la probabilidad de perder tres seguidas es despreciable.
+_SAVE_RETRIES = 3
+
+
+def apply_delta(state: ConversationState, delta: dict[str, Any]) -> ConversationState:
+    """Aplica sobre `state` los campos que otro escritor cambió.
+
+    NO usa `patch()` tal cual: `patch` ignora los `None` (correcto para un
+    `state_patch` de un especialista, que solo dice lo que aprendió) y aquí eso
+    haría imposible vaciar un campo — un turno que limpia `chosen_product_id`
+    vería reaparecer el producto viejo al fusionar. Un delta es, por definición,
+    "esto lo cambié yo", incluido cambiarlo a nada.
+
+    Las dos listas acumulativas sí van por `patch`: `shown_product_ids` y
+    `recent_products` se unen en vez de reemplazarse, que es justo lo que se
+    quiere cuando dos escritores mostraron productos distintos.
+    """
+    acumulativas = {"shown_product_ids", "recent_products"}
+    for key, value in delta.items():
+        if key == "version" or not hasattr(state, key):
+            continue
+        if key in acumulativas:
+            state.patch({key: value})
+        else:
+            setattr(state, key, value)
+    return state
+
+
+def state_delta(base: dict[str, Any] | None, state: ConversationState) -> dict[str, Any]:
+    """Los campos que ESTE escritor cambió respecto a la foto que leyó.
+
+    Es lo que convierte un guardado en una fusión en vez de un pisotón. Sin base
+    (nadie tomó la foto) el delta es el documento entero, que es el
+    comportamiento de siempre.
+    """
+    current = state.to_dict()
+    current.pop("version", None)
+    if base is None:
+        return current
+    return {k: v for k, v in current.items() if base.get(k) != v}
+
+
+async def save_state(
+    conversation_id: int,
+    state: ConversationState,
+    *,
+    wa_id: str = "",
+    base: dict[str, Any] | None = None,
+) -> None:
+    """Guarda el estado sin llevarse por delante lo que otro escribió mientras.
+
+    El problema: `load_state` → mutar → `save_state` es leer-modificar-escribir
+    de un documento COMPLETO, y hay tres escritores sobre el mismo documento:
+
+    - el turno del cliente, que tarda segundos (el LLM está en medio);
+    - el releaser, que corre en segundo plano y FUERA del lock de Redis;
+    - el handoff (`perform_handoff`), que escribe a mitad del propio turno.
+
+    El lock por conversación de Redis serializa los turnos ENTRANTES, así que no
+    protege de los otros dos. El caso que ya estaba vivo: `perform_handoff`
+    guardaba `handoff_at` a mitad del turno y, al terminar, `master` escribía su
+    copia —cargada ANTES del handoff, con `handoff_at` a None— y lo borraba. Ese
+    campo es el ancla del releaser: sin él, el bot recuperaba el chat al instante
+    de haber prometido un asesor, que es justo el incidente que lo creó.
+
+    La solución es doble: `version` + escritura condicional en el CRM (lo único
+    que puede ser atómico de verdad, con la fila bloqueada) y, cuando la versión
+    ya no es la esperada, aplicar SOLO los campos que este escritor cambió sobre
+    el documento fresco. Reintentar el turno entero no es una opción: ya se
+    habló con el cliente.
+    """
+    delta = state_delta(base, state)
+    expected = int(base.get("version", 0)) if base is not None else int(state.version)
+
+    if not crm_http.crm_enabled():
+        _save_local(conversation_id, state, delta=delta, expected=expected)
+        return
+
+    key = _settings_key(conversation_id)
+    for intento in range(_SAVE_RETRIES):
+        state.version = expected + 1
+        payload = json.dumps(state.to_dict(), ensure_ascii=False)
         try:
-            await crm_http.put_setting(_settings_key(conversation_id), payload)
-            return
+            stored = await crm_http.put_setting_cas(key, payload, expected)
         except Exception as err:
             log.warning("[harness] save_state setting falló: %s", err)
             if wa_id:
@@ -182,7 +273,65 @@ async def save_state(conversation_id: int, state: ConversationState, *, wa_id: s
                 except Exception as err2:
                     log.warning("[harness] save_state memory falló: %s", err2)
             return
-    _local_cache[conversation_id] = state
+
+        if stored is None:
+            # CRM antiguo, sin escritura condicional. Se guarda igual: quedarse
+            # sin persistir el estado es peor que la carrera que esto evitaba
+            # (mismo criterio que el claim del outbox, que envía aunque el CRM
+            # todavía no sepa reclamar).
+            try:
+                await crm_http.put_setting(key, payload)
+            except Exception as err:
+                log.warning("[harness] save_state setting falló: %s", err)
+            return
+
+        if stored:
+            return
+
+        # Perdimos la carrera: releemos y reaplicamos SOLO lo nuestro.
+        fresh = await load_state(conversation_id, wa_id=wa_id)
+        log.info(
+            "[harness] save_state conversation=%s versión %s→%s ocupada; "
+            "reaplicando %s campo(s) (intento %s)",
+            conversation_id,
+            expected,
+            fresh.version,
+            len(delta),
+            intento + 1,
+        )
+        expected = int(fresh.version)
+        apply_delta(fresh, delta)
+        state = fresh
+
+    log.error(
+        "[harness] save_state conversation=%s no pudo escribir tras %s intentos",
+        conversation_id,
+        _SAVE_RETRIES,
+    )
+
+
+def _save_local(
+    conversation_id: int,
+    state: ConversationState,
+    *,
+    delta: dict[str, Any],
+    expected: int,
+) -> None:
+    """Mismo contrato en local, para que los tests vean lo que ve producción.
+
+    El caché local se comportaba como memoria compartida: `load_state` devolvía
+    EL MISMO objeto a todos los que lo pidieran, así que dos escritores se veían
+    las mutaciones sin guardar y ninguna carrera podía reproducirse en un test.
+    Ahora se copia al leer y se fusiona al escribir, igual que contra el CRM.
+    """
+    stored = _local_cache.get(conversation_id)
+    if stored is not None and int(stored.version) != expected:
+        merged = apply_delta(ConversationState.from_dict(stored.to_dict()), delta)
+        merged.version = int(stored.version) + 1
+        _local_cache[conversation_id] = merged
+        return
+    state.version = expected + 1
+    _local_cache[conversation_id] = ConversationState.from_dict(state.to_dict())
 
 
 _local_cache: dict[int, ConversationState] = {}

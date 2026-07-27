@@ -114,6 +114,12 @@ async def try_release_conversation(
     Devuelve (released, state).
     """
     state = await load_state(conversation_id, wa_id=wa_id)
+    # Este código corre en segundo plano y FUERA del lock por conversación de
+    # Redis, que solo serializa los turnos entrantes. O sea que mientras
+    # decidimos si liberar, un turno puede estar avanzando el cierre sobre este
+    # mismo documento. Con la foto, el guardado de abajo escribe únicamente
+    # `keep_human` en vez de devolver el estado a como estaba hace unos segundos.
+    state_base = state.to_dict()
     mode = str(conv.get("mode") or "")
     human_support = bool(conv.get("human_support"))
 
@@ -152,5 +158,5 @@ async def try_release_conversation(
         return False, state
 
     state.keep_human = False
-    await save_state(conversation_id, state, wa_id=wa_id)
+    await save_state(conversation_id, state, wa_id=wa_id, base=state_base)
     return True, state

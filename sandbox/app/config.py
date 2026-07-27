@@ -13,6 +13,41 @@ load_dotenv(_REPO_ROOT / ".env")
 load_dotenv(_SANDBOX_ROOT / ".env", override=True)
 
 
+def _parse_llm_prices(raw: str) -> dict[str, dict[str, float]]:
+    """Lee `LLM_PRICES` sin poder tumbar el arranque por un JSON mal escrito.
+
+    Un tarifario mal formado no puede impedir que el agente atienda: sin él se
+    pierde la métrica de coste, y eso es un problema de contabilidad, no de
+    servicio. Se avisa por log y se sigue.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        import json
+
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("LLM_PRICES debe ser un objeto por modelo")
+        return {
+            str(model): {
+                str(k): float(v)
+                for k, v in (rates or {}).items()
+                if isinstance(v, (int, float))
+            }
+            for model, rates in data.items()
+            if isinstance(rates, dict)
+        }
+    except Exception as error:  # pragma: no cover - configuración inválida
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[config] LLM_PRICES inválido (%s); se contarán tokens sin coste",
+            type(error).__name__,
+        )
+        return {}
+
+
 class Settings:
     def __init__(self) -> None:
         self.whatsapp_token: str = os.getenv("WHATSAPP_TOKEN", "")
@@ -46,6 +81,53 @@ class Settings:
         # Clasificador de intención del router: solo se usa cuando las reglas no
         # saben, así que puede ser el modelo más barato disponible.
         self.router_model: str = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
+
+        # Proveedor secundario del LLM. Ante una caída sostenida de OpenAI, el
+        # retry y el circuit breaker solo consiguen degradar antes: el cliente
+        # acaba con un mensaje de emergencia o con un handoff, o sea sin agente.
+        # Con esto el servicio sigue en pie, más lento o con otro modelo, que es
+        # una degradación mucho más elegante que la indisponibilidad.
+        #
+        # Compatible con cualquier API con el formato de OpenAI (OpenRouter,
+        # Azure OpenAI, Groq…). Vacío = desactivado, y todo sigue como antes.
+        self.llm_fallback_base_url: str = os.getenv(
+            "LLM_FALLBACK_BASE_URL", ""
+        ).strip().rstrip("/")
+        self.llm_fallback_api_key: str = os.getenv("LLM_FALLBACK_API_KEY", "").strip()
+        self.llm_fallback_model: str = os.getenv("LLM_FALLBACK_MODEL", "").strip()
+
+        # Tarifario del LLM en USD por cada 1.000 tokens, para convertir el
+        # consumo en dinero. NO se hardcodean precios reales: un tarifario que
+        # vive en el código se queda viejo en silencio y produce una cifra
+        # equivocada, que es peor que no dar ninguna. Sin configurar, se cuentan
+        # los tokens (que son exactos y no caducan) y no se emite coste.
+        #
+        #   LLM_PRICES={"gpt-4o-mini":{"in":0.15,"out":0.60,"cached_in":0.075}}
+        self.llm_prices: dict[str, dict[str, float]] = _parse_llm_prices(
+            os.getenv("LLM_PRICES", "")
+        )
+        # Mensajes envenenados en la DLQ a partir de los cuales se avisa. Uno
+        # solo ya es un cliente cuyo mensaje no se atendió nunca.
+        self.dlq_alert_threshold: int = int(os.getenv("DLQ_ALERT_THRESHOLD", "1"))
+
+        # Exigir firma de Meta SIEMPRE, incluso sin `WHATSAPP_APP_SECRET`.
+        #
+        # Sin secreto, `_valid_signature` acepta cualquier cosa: quien conozca la
+        # URL del webhook puede inyectar mensajes como si fueran de un cliente.
+        # Por defecto va en 0 y NO en 1 a propósito: activarlo de golpe en una
+        # instalación que todavía no tenga el secreto puesto rechazaría todos los
+        # webhooks y dejaría el negocio sin WhatsApp. Se enciende cuando el
+        # secreto está confirmado en EasyPanel; el arranque avisa a gritos
+        # mientras tanto.
+        self.whatsapp_require_signature: bool = (
+            os.getenv("WHATSAPP_REQUIRE_SIGNATURE", "0") == "1"
+        )
+        # Techo de peticiones por minuto al webhook. Meta manda un puñado por
+        # conversación; esto no estorba al tráfico real y acota lo que puede
+        # hacer quien encuentre la URL. 0 = sin límite.
+        self.webhook_rate_limit_per_minute: int = int(
+            os.getenv("WEBHOOK_RATE_LIMIT_PER_MINUTE", "600")
+        )
 
         self.bot_active_label: str = os.getenv("BOT_ACTIVE_LABEL", "agente_on")
         self.human_support_label: str = os.getenv("HUMAN_SUPPORT_LABEL", "soporte_humano")

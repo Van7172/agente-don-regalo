@@ -23,6 +23,7 @@ from app.config import settings
 from app.crm import http_client as crm_http
 from app.harness.sale import sale_key
 from app.harness.sale import summary as sale_summary
+from app.observability import record_gauge
 from app.services.messenger import send_message
 
 log = logging.getLogger(__name__)
@@ -105,6 +106,44 @@ async def check_mute() -> None:
     )
     if ok:
         await _marcar("mute")
+
+
+async def check_dlq() -> None:
+    """Mensajes envenenados: los que la cola dio por perdidos tras N reintentos.
+
+    La DLQ existía desde el principio y **nadie la miraba**. Un mensaje que cae
+    ahí es un cliente que escribió y al que no le contestó nunca nadie — ni el
+    bot (se rindió) ni un humano (no aparece en el inbox, porque el fallo ocurre
+    antes de llegar al CRM). Se quedaba callado hasta que el cliente se iba.
+
+    El umbral por defecto es 1: no hay una cantidad "sana" de mensajes perdidos.
+
+    Deja además `donregalo_dlq_depth` para poder alertar desde Prometheus, que es
+    lo que sirve cuando el propio WhatsApp del aviso es lo que está caído.
+    """
+    from app.services.inbound_queue import inbound_queue_operational_stats
+
+    try:
+        stats = await inbound_queue_operational_stats()
+    except Exception as err:
+        log.warning("[watchdog] no pude leer la cola: %s", err)
+        return
+
+    profundidad = int(stats.get("dead_letter") or 0)
+    record_gauge("dlq_depth", profundidad, scope=str(stats.get("backend") or "local"))
+
+    umbral = max(1, int(getattr(settings, "dlq_alert_threshold", 1)))
+    if profundidad < umbral or await _en_cooldown("dlq"):
+        return
+
+    ok = await _send_alert(
+        f"☠️ {profundidad} mensaje(s) de cliente en la cola de descartados (DLQ).\n"
+        "Nadie los atendió: el agente se rindió tras varios reintentos y no llegaron "
+        "al CRM, así que no están en el inbox.\n"
+        "Revisa los logs por `inbound.worker dead_letter` para ver qué los rompió."
+    )
+    if ok:
+        await _marcar("dlq")
 
 
 async def check_balance() -> None:
@@ -283,6 +322,7 @@ async def check_unattended_sales() -> None:
 async def _tick() -> None:
     try:
         await check_mute()
+        await check_dlq()
         await check_unattended_sales()
         await check_human_abandoned()
         await check_balance()

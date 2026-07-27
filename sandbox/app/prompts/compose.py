@@ -5,6 +5,8 @@ garantizar —y testear— que el bloque de seguridad va SIEMPRE.
 """
 from __future__ import annotations
 
+import hashlib
+
 import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -95,6 +97,30 @@ def build_system(
         blocks.append(extra)
 
     return "\n\n".join(b for b in blocks if b)
+
+
+def prompt_version(spec: "AgentSpec") -> str:
+    """Huella de las instrucciones ESTABLES de un agente.
+
+    Los prompts son constantes Python: tocar una palabra del CORE o de un
+    playbook no dejaba ningún rastro de "antes/después", así que un cambio de
+    redacción y un cambio de comportamiento eran indistinguibles al leer los
+    logs. Con la huella en la traza, se puede partir una serie de métricas por
+    versión y ver si el turno se degradó justo cuando alguien reescribió algo.
+
+    Deliberadamente NO entran ni la hora, ni el estado de la conversación, ni el
+    `extra` del turno: si cambiaran en cada mensaje, la huella sería distinta
+    siempre y no serviría para agrupar nada. Solo las capas que se editan a mano.
+    """
+    material = "".join(
+        [
+            spec.name,
+            core_system() if spec.customer_facing else "",
+            render_facts(spec.facts),
+            spec.playbook,
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
 
 
 def profile_block(profile: dict[str, Any]) -> str:

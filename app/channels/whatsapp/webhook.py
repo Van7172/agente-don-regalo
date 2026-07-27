@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 import logging
+import time
+from collections import deque
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
@@ -36,7 +38,13 @@ async def verify_webhook(
 
 def _valid_signature(raw_body: bytes, signature_header: str | None) -> bool:
     if not settings.whatsapp_app_secret:
-        return True  # opcional en sandbox
+        # Sin secreto no hay nada contra qué comparar: quien conozca la URL puede
+        # inyectar mensajes haciéndose pasar por un cliente. Se acepta igualmente
+        # porque encender el rechazo por defecto dejaría sin WhatsApp a cualquier
+        # instalación que aún no tenga el secreto puesto — un apagón peor que el
+        # riesgo. `WHATSAPP_REQUIRE_SIGNATURE=1` lo cierra cuando el secreto está
+        # confirmado, y el arranque avisa a gritos hasta entonces.
+        return not settings.whatsapp_require_signature
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     expected = hmac.new(
@@ -45,6 +53,34 @@ def _valid_signature(raw_body: bytes, signature_header: str | None) -> bool:
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(f"sha256={expected}", signature_header)
+
+
+# Ventana deslizante de un minuto, en memoria del proceso. No pretende ser un
+# rate limit distribuido: con varias réplicas cada una tiene el suyo y el techo
+# efectivo se multiplica por el número de pods. Aun así acota el caso que
+# importa —alguien martilleando la URL— sin añadir una dependencia, y el límite
+# por defecto (600/min) está muy por encima del tráfico real de Meta.
+_RATE_WINDOW_SEC = 60.0
+_rate_hits: deque[float] = deque()
+
+
+def _rate_limited() -> bool:
+    limite = int(getattr(settings, "webhook_rate_limit_per_minute", 0) or 0)
+    if limite <= 0:
+        return False
+    ahora = time.monotonic()
+    corte = ahora - _RATE_WINDOW_SEC
+    while _rate_hits and _rate_hits[0] < corte:
+        _rate_hits.popleft()
+    if len(_rate_hits) >= limite:
+        return True
+    _rate_hits.append(ahora)
+    return False
+
+
+def reset_rate_limit() -> None:
+    """Estado global del proceso: los tests tienen que poder limpiarlo."""
+    _rate_hits.clear()
 
 
 def _summarize_payload(payload: dict) -> str:
@@ -87,6 +123,15 @@ async def receive_webhook(request: Request):
 
 
 async def _receive_webhook(request: Request):
+    # El límite va ANTES de leer el cuerpo y antes de verificar la firma: si
+    # alguien está inundando el endpoint, no queremos gastar en HMAC ni en
+    # parsear JSON por cada petición suya. Es lo único que acota el daño mientras
+    # `WHATSAPP_APP_SECRET` no esté puesto.
+    if _rate_limited():
+        record_operation("webhook.request", "rate_limited")
+        audit_event("webhook.rate_limit", "rejected", status_code=429)
+        raise HTTPException(status_code=429, detail="Too many requests")
+
     raw = await request.body()
     sig = request.headers.get("X-Hub-Signature-256")
     if not _valid_signature(raw, sig):

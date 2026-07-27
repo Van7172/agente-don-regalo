@@ -290,3 +290,44 @@ async def finish_embedding_job(
 
 async def put_setting(key: str, value: str) -> None:
     await _request("PUT", "/api/settings", json={key: value})
+
+
+# El CRM viejo no conoce /settings/cas. Se detecta una vez y se deja de intentar:
+# reintentarlo en cada guardado sumaría un 404 por turno al circuit breaker.
+_cas_supported: bool = True
+
+
+def reset_cas_support() -> None:
+    """Solo para tests: vuelve a suponer que el CRM sabe hacer CAS."""
+    global _cas_supported
+    _cas_supported = True
+
+
+async def put_setting_cas(key: str, value: str, expected_version: int) -> bool | None:
+    """Escritura condicional. True=escrito, False=otro ganó, None=CRM sin soporte.
+
+    Los tres valores son distintos y el que llama tiene que distinguirlos: ante
+    `False` hay que releer y reintentar, pero ante `None` no hay nada que
+    reintentar — ese CRM no sabe hacer CAS y toca escribir a pelo, igual que
+    `deliver_outbox` envía igual cuando el CRM todavía no sabe reclamar. Tratar
+    `None` como `False` dejaría al agente reintentando en bucle y sin guardar.
+    """
+    global _cas_supported
+    if not _cas_supported:
+        return None
+    try:
+        data = await _request(
+            "POST",
+            "/api/settings/cas",
+            json={"key": key, "value": value, "expected_version": expected_version},
+        )
+    except httpx.HTTPStatusError as error:
+        if error.response is not None and error.response.status_code == 404:
+            _cas_supported = False
+            log.warning(
+                "[CRM-HTTP] el CRM no expone /settings/cas; el estado se guarda "
+                "sin control de versión (sube el CRM para cerrar la carrera)"
+            )
+            return None
+        raise
+    return bool(data.get("stored"))

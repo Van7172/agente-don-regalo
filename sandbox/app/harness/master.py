@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.guardrails import (
+    HANDOFF_RULES,
     SAFE_INJECTION_REPLY,
     dedupe_artifacts,
     detect_prompt_injection,
@@ -60,8 +61,14 @@ from app.harness.taxonomy import (
     resolve_option,
 )
 from app.harness.trace import Trace
-from app.observability import audit_event, record_operation
-from app.prompts.compose import build_system
+from app.observability import (
+    agent_context,
+    audit_event,
+    collect_turn_usage,
+    current_turn_usage,
+    record_operation,
+)
+from app.prompts.compose import build_system, prompt_version
 from app.prompts.playbooks import WELCOME
 from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
 from app.tools.executor import execute_tool
@@ -183,6 +190,35 @@ async def run_master(
     use_external_crm: bool = False,
     persist=None,
 ) -> str | None:
+    """Un turno, con su gasto de LLM contabilizado aparte.
+
+    El contador va aquí fuera y no dentro: un turno hace varias llamadas al
+    modelo (rondas de tools, respuesta final sin tools, y el router antes de
+    todo), y lo que se quiere saber es lo que costó EL TURNO. Es un `ContextVar`,
+    así que dos conversaciones en vuelo a la vez no se mezclan las cuentas.
+    """
+    with collect_turn_usage():
+        return await _run_master(
+            messages,
+            wa_id=wa_id,
+            contact_id=contact_id,
+            conversation_id=conversation_id,
+            session=session,
+            use_external_crm=use_external_crm,
+            persist=persist,
+        )
+
+
+async def _run_master(
+    messages: list,
+    *,
+    wa_id: str,
+    contact_id: int | None = None,
+    conversation_id: int | None = None,
+    session: AsyncSession | None = None,
+    use_external_crm: bool = False,
+    persist=None,
+) -> str | None:
     turn = perceive(messages)
 
     # La entrada se evalúa antes del router, el LLM y cualquier herramienta.
@@ -209,7 +245,7 @@ async def run_master(
                 f"prompt_injection:{rule}" for rule in input_guard.rules
             ],
         )
-        trace.done().emit()
+        trace.with_usage(current_turn_usage()).done().emit()
         return SAFE_INJECTION_REPLY
 
     # Un ataque bloqueado ya quedó persistido en el CRM como mensaje de usuario.
@@ -240,6 +276,12 @@ async def run_master(
         if conversation_id is not None
         else ConversationState()
     )
+    # Foto del estado tal y como se cargó. El turno tarda segundos (el LLM está
+    # en medio) y en ese hueco escriben el releaser y el propio handoff: al
+    # guardar hay que aplicar SOLO lo que cambió este turno, no el documento
+    # entero. Sin esto, `perform_handoff` guardaba `handoff_at` a mitad del turno
+    # y el guardado final lo borraba con el valor viejo.
+    state_base = state.to_dict()
 
     classification = await classify(
         turn.text, state, has_media=turn.has_media, quoted=turn.quoted
@@ -254,6 +296,7 @@ async def run_master(
         agent=spec_for(intent).name,
         confidence=classification.confidence,
         router=classification.source,
+        prompt_version=prompt_version(spec_for(intent)),
         checkout_step=state.checkout_step,
         user_text=turn.text,
     )
@@ -301,8 +344,15 @@ async def run_master(
         )
 
     # La barrera de salida corre ANTES de reducir y antes de enviar al cliente.
+    # `user_text` son las palabras del cliente en ESTE turno (no la cita, que es
+    # contexto del sistema). La barrera lo necesita para saber que el teléfono
+    # que acaba de aparecer en la respuesta lo escribió él hace un segundo: corre
+    # antes de reducir el estado, así que ese dato todavía no está en el pedido.
     guarded = guard_reply(
-        result.user_facing, state=state, artifacts=result.artifacts
+        result.user_facing,
+        state=state,
+        artifacts=result.artifacts,
+        user_text=turn.text,
     )
     violations = list(guarded.violations)
 
@@ -319,14 +369,12 @@ async def run_master(
     # marcador de la cita dentro de un "No ubico … en nuestra lista". El cliente
     # no tiene por qué leer nuestros fallos: esto se cede a un humano. No es
     # venta (no hay pedido temporal ni verde en el CRM), es rescate.
-    if (
-        any(v.rule == "no_internal_context" for v in violations)
-        and result.escalate is None
-        and conversation_id is not None
-    ):
+    rotas = {v.rule for v in violations} & HANDOFF_RULES
+    if rotas and result.escalate is None and conversation_id is not None:
         log.error(
-            "[GUARDRAIL] conversation=%s marcador interno en la respuesta; se deriva",
+            "[GUARDRAIL] conversation=%s respuesta comprometida (%s); se deriva",
             conversation_id,
+            sorted(rotas),
         )
         record_operation("guardrail.output", "internal_leak")
         result = AgentResult(
@@ -357,10 +405,10 @@ async def run_master(
     trace.handoff_reason = result.escalate.motivo if result.escalate else ""
     trace.violations = [str(v) for v in violations]
     trace.state_patch = result.state_patch
-    trace.done().emit()
+    trace.with_usage(current_turn_usage()).done().emit()
 
     if conversation_id is not None:
-        await save_state(conversation_id, state, wa_id=wa_id)
+        await save_state(conversation_id, state, wa_id=wa_id, base=state_base)
 
     if result.escalate is not None:
         return HANDOFF_DONE
@@ -744,21 +792,26 @@ async def _run_specialty(
     spec = spec_for(intent)
     system = build_system(spec, state, extra=extra_system)
 
-    result = await run_specialist(
-        [{"role": "system", "content": system}, *turn.messages],
-        wa_id=wa_id,
-        contact_id=contact_id,
-        conversation_id=conversation_id,
-        session=session,
-        use_external_crm=use_external_crm,
-        persist=persist,
-        tools_override=spec.tools(
-            with_memory=bool(contact_id or use_external_crm),
-            with_handoff=conversation_id is not None,
-        ),
-        include_handoff=spec.can_handoff,
-        include_memory=spec.customer_facing,
-    )
+    # Etiqueta del gasto. Sin ella, "cuánto cuesta el catálogo" y "cuánto cuesta
+    # el concierge" serían la misma cifra y no habría forma de saber qué prompt
+    # engordó. Va por contexto para no cruzar el nombre por media docena de
+    # firmas hasta la llamada HTTP.
+    with agent_context(spec.name):
+        result = await run_specialist(
+            [{"role": "system", "content": system}, *turn.messages],
+            wa_id=wa_id,
+            contact_id=contact_id,
+            conversation_id=conversation_id,
+            session=session,
+            use_external_crm=use_external_crm,
+            persist=persist,
+            tools_override=spec.tools(
+                with_memory=bool(contact_id or use_external_crm),
+                with_handoff=conversation_id is not None,
+            ),
+            include_handoff=spec.can_handoff,
+            include_memory=spec.customer_facing,
+        )
 
     # Nunca mostrar dos veces el mismo producto: el cliente lo lee como que no le
     # hicimos caso ("otras, no esas").

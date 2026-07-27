@@ -88,6 +88,27 @@ def redact_personal_data(text: object) -> PrivacyResult:
     return PrivacyResult(value, count, tuple(dict.fromkeys(categories)))
 
 
+def find_contacts(text: object) -> tuple[str, ...]:
+    """Correos y móviles presentes en un texto, normalizados para comparar.
+
+    Sirve para responder "¿este dato de contacto es de alguien de esta
+    conversación o de un tercero?", que es lo que separa un resumen de pedido
+    legítimo de una fuga de datos de otro cliente. El teléfono se reduce a sus
+    9 dígitos porque el mismo número aparece como `999888777`, `+51 999888777`
+    y `999-888-777`, y si no se normaliza, cualquiera de las tres parecería un
+    número distinto al que el cliente acaba de escribir.
+    """
+    value = str(text or "")
+    encontrados: list[str] = []
+    for match in _EMAIL_RE.finditer(value):
+        encontrados.append(match.group(0).casefold())
+    for match in _PHONE_RE.finditer(value):
+        digits = re.sub(r"\D", "", match.group(1))
+        if digits:
+            encontrados.append(digits[-9:])
+    return tuple(dict.fromkeys(encontrados))
+
+
 def protect_json_for_model(raw_result: str) -> PrivacyResult:
     """Redacta PII dentro de JSON conservando su estructura y datos comerciales."""
     try:

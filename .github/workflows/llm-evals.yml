@@ -1,0 +1,57 @@
+# Evals del clasificador LLM: nocturno, no en cada push.
+#
+# `routing_llm.yaml` son justo los mensajes que las reglas NO saben clasificar,
+# así que decide el modelo. Ese comportamiento puede degradar sin que nadie lo
+# note —OpenAI cambia un modelo por debajo, alguien toca el prompt del router— y
+# hasta ahora solo se podía comprobar a mano con `RUN_LLM_EVALS=1`.
+#
+# Va FUERA del Production Gate a propósito: llama a OpenAI de verdad (cuesta
+# dinero y depende de la red), y un gate que falla porque un proveedor tuvo un
+# mal minuto bloquea despliegues que no tienen nada que ver.
+name: LLM evals (nocturno)
+
+on:
+  schedule:
+    # 07:00 UTC = 02:00 en Lima. Fuera de horario comercial: si el aviso llega,
+    # hay toda la mañana para mirarlo antes de que empiecen a entrar pedidos.
+    - cron: "0 7 * * *"
+  workflow_dispatch:  # para poder lanzarlo a mano tras cambiar de modelo
+
+jobs:
+  routing:
+    runs-on: ubuntu-latest
+    # Sin la clave no hay nada que evaluar: en un fork o sin secreto configurado
+    # el job se salta en vez de fallar en rojo por algo que no es una regresión.
+    if: github.repository_owner != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+
+      - name: Evals del router contra el umbral
+        id: evals
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Se puede subir/bajar sin tocar el código cuando cambie el modelo.
+          LLM_EVAL_THRESHOLD: ${{ vars.LLM_EVAL_THRESHOLD || '0.85' }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "Sin OPENAI_API_KEY: se omite (no es una regresión)."
+            exit 0
+          fi
+          python -m evals.runner --llm | tee llm-evals.log
+          # La línea LLM_EVAL_RESULT es la serie temporal: se guarda como
+          # artefacto para poder mirar la TENDENCIA, que es lo que delata una
+          # degradación lenta. Un solo día por debajo del umbral puede ser ruido;
+          # tres seguidos bajando, no.
+          grep LLM_EVAL_RESULT llm-evals.log >> $GITHUB_STEP_SUMMARY
+
+      - name: Guardar la serie
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-evals-${{ github.run_number }}
+          path: llm-evals.log
+          retention-days: 90

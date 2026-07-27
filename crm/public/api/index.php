@@ -597,6 +597,36 @@ try {
         Http::jsonOk(['ok' => true]);
     }
 
+    // POST /settings/cas — escritura condicional por versión.
+    //
+    // El estado del harness lo escriben tres caminos (el turno, el releaser y el
+    // handoff) y el lock de Redis solo serializa los turnos entrantes. Sin esto,
+    // el releaser guardaba una foto vieja del documento y borraba lo que el turno
+    // había avanzado mientras tanto.
+    //
+    // `stored: false` significa "otro escribió antes que tú": el agente relee y
+    // reintenta. Va con 200 a propósito — un 409 lo contaría como fallo del CRM
+    // en el circuit breaker del agente, y esto es funcionamiento normal.
+    if ($path === '/settings/cas' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        $key = trim((string) ($body['key'] ?? ''));
+        if ($key === '') {
+            Http::jsonError('key required');
+        }
+        if (!array_key_exists('value', $body)) {
+            Http::jsonError('value required');
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'stored' => Repository::casSetting(
+                $key,
+                (string) $body['value'],
+                (int) ($body['expected_version'] ?? 0)
+            ),
+        ]);
+    }
+
     // POST /media — sube un archivo y devuelve su clave de almacenamiento.
     if ($path === '/media' && $method === 'POST') {
         // Cuando el archivo pasa del límite de PHP (`upload_max_filesize` /

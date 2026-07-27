@@ -682,6 +682,97 @@ final class Repository
         );
     }
 
+    /**
+     * Escribe un setting SOLO si su versión sigue siendo la esperada.
+     *
+     * El estado del harness (`harness_state_{id}`) es un documento JSON completo
+     * que varios escritores leen, modifican y vuelven a escribir: el turno del
+     * cliente (que tarda segundos, con el LLM en medio), el releaser en segundo
+     * plano y el handoff. El lock de Redis serializa los turnos ENTRANTES, pero
+     * el releaser corre fuera de él: leía una foto vieja del documento y al
+     * guardar se llevaba por delante todo lo que el turno había escrito mientras
+     * tanto — el clásico lost update, y sin dejar rastro.
+     *
+     * Aquí está la única parte que puede ser atómica de verdad: `SELECT ... FOR
+     * UPDATE` + `UPDATE` dentro de una transacción. El agente reintenta cuando
+     * esto devuelve `false`.
+     *
+     * `false` NO es un error: es "alguien escribió antes que tú, vuelve a leer".
+     * Por eso el endpoint responde 200 y no 409 — un 409 contaría como fallo del
+     * CRM en el circuit breaker del agente y acabaría abriéndolo por un caso que
+     * es funcionamiento normal.
+     */
+    public static function casSetting(string $key, string $value, int $expectedVersion): bool
+    {
+        $tenantId = self::ensureTenantId();
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $row = Database::fetchOne(
+                'SELECT valor_setting FROM crm_settings
+                 WHERE id_tenant = :tenantId AND llave_setting = :key
+                 LIMIT 1 FOR UPDATE',
+                ['tenantId' => $tenantId, 'key' => $key]
+            );
+
+            if (!$row) {
+                // No existe todavía: solo puede crearlo quien cree estar
+                // partiendo de cero. Si alguien esperaba la versión 3, la fila
+                // que leyó se borró bajo sus pies y no puede seguir a ciegas.
+                if ($expectedVersion !== 0) {
+                    $pdo->commit();
+                    return false;
+                }
+                Database::exec(
+                    'INSERT INTO crm_settings (id_tenant, llave_setting, valor_setting)
+                     VALUES (:tenantId, :key, :value)',
+                    ['tenantId' => $tenantId, 'key' => $key, 'value' => $value]
+                );
+                $pdo->commit();
+                return true;
+            }
+
+            if (self::settingVersion($row['valor_setting']) !== $expectedVersion) {
+                $pdo->commit();
+                return false;
+            }
+
+            Database::exec(
+                'UPDATE crm_settings SET valor_setting = :value
+                 WHERE id_tenant = :tenantId AND llave_setting = :key',
+                ['tenantId' => $tenantId, 'key' => $key, 'value' => $value]
+            );
+            $pdo->commit();
+            return true;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    /**
+     * La versión que lleva dentro un documento de estado. 0 si no la tiene.
+     *
+     * Se lee en PHP y no con JSON_EXTRACT para no depender del soporte de JSON
+     * del motor: este CRM corre sobre el MySQL del hosting, pero en desarrollo
+     * se levanta sobre MariaDB y las funciones JSON no se comportan igual. Un
+     * documento sin `version` (los que existían antes de esto) vale 0, que es
+     * justo lo que el agente enviará la primera vez.
+     */
+    private static function settingVersion(?string $raw): int
+    {
+        if ($raw === null || $raw === '') {
+            return 0;
+        }
+        $data = json_decode($raw, true);
+        if (!is_array($data) || !isset($data['version'])) {
+            return 0;
+        }
+        return (int) $data['version'];
+    }
+
     public static function deleteSetting(string $key): void
     {
         $tenantId = self::ensureTenantId();

@@ -131,20 +131,34 @@
     tbody.replaceChildren();
     const rows = Object.entries(series || {})
       .filter(([, item]) => number(item?.duration_ms_sum) > 0)
-      .map(([key, item]) => ({
-        key,
-        count: number(item.count),
-        average: number(item.duration_ms_sum) / Math.max(1, number(item.count)),
-        maximum: number(item.duration_ms_max),
-      }))
-      .sort((a, b) => b.average - a.average)
+      .map(([key, item]) => {
+        // Se divide entre las que SE CRONOMETRARON, no entre el total: hay
+        // operaciones que se registran sin medir tiempo, y repartir la suma
+        // entre ellas daba una media más baja que la real. `count` sigue de
+        // respaldo para snapshots de un agente anterior a este cambio.
+        const timed = number(item.duration_count) || number(item.count);
+        return {
+          key,
+          count: number(item.count),
+          average: number(item.duration_ms_sum) / Math.max(1, timed),
+          p95: number(item.duration_ms_p95),
+          maximum: number(item.duration_ms_max),
+        };
+      })
+      // Ordenado por p95 y no por la media: una operación que va bien de media
+      // pero tiene cola es justo la que hay que mirar, y por media quedaba
+      // enterrada.
+      .sort((a, b) => (b.p95 || b.average) - (a.p95 || a.average))
       .slice(0, 12);
-    if (!rows.length) return emptyRow(tbody, "Aún no hay muestras de latencia.", 4);
+    if (!rows.length) return emptyRow(tbody, "Aún no hay muestras de latencia.", 5);
     rows.forEach((item) => {
       const row = tbody.insertRow();
       row.insertCell().textContent = item.key;
       row.insertCell().textContent = String(item.count);
       row.insertCell().textContent = milliseconds(item.average);
+      // Un agente sin percentiles todavía desplegado: mejor un guion que un 0
+      // que se lea como "tarda nada".
+      row.insertCell().textContent = item.p95 ? milliseconds(item.p95) : "—";
       row.insertCell().textContent = milliseconds(item.maximum);
     });
   }

@@ -44,6 +44,15 @@ $layout = opsSource('views/layout.php');
 opsRequires($view, 'Panel operacional', 'Falta vista operacional');
 opsRequires($view, 'ops-circuits', 'Falta tabla de circuit breakers');
 opsRequires($view, 'ops-latencies', 'Falta tabla de latencias');
+// El equipo mira este panel, no Grafana: dejar los percentiles solo en
+// /metrics sería medir la latencia para nadie. Y la media sola miente — la
+// aplana el caso bueno, y el máximo es UN pico.
+opsRequires($view, '<th>p95</th>', 'La tabla de latencias necesita el p95');
+$opsJs = opsSource('public/assets/operations.js');
+opsRequires($opsJs, 'duration_ms_p95', 'El panel no lee el percentil del agente');
+// Repartir la suma entre llamadas que nunca se cronometraron daba una media
+// más baja que la real.
+opsRequires($opsJs, 'duration_count', 'La media debe dividirse entre lo cronometrado');
 opsRequires($view, 'ops-handoffs', 'Falta tabla de handoffs');
 opsRequires($javascript, 'setInterval(refresh, 15000)', 'Falta actualización automática');
 opsRequires($javascript, 'textContent', 'Los datos dinámicos deben renderizarse como texto');

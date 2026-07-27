@@ -24,7 +24,7 @@ from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import explicit_delivery_destination, looks_like_coverage
 from app.guardrails import is_small_talk
 from app.harness.state import ConversationState
-from app.observability import audit_event, record_operation
+from app.observability import audit_event, record_llm_usage, record_operation
 from app.resilience import circuit_breaker
 
 log = logging.getLogger(__name__)
@@ -317,9 +317,15 @@ async def classify_with_llm(text: str) -> Classification | None:
                     },
                 )
                 r.raise_for_status()
-                return json.loads(r.json()["choices"][0]["message"]["content"])
+                return r.json()
 
-        data = await circuit_breaker("openai.router").call(_request)
+        raw = await circuit_breaker("openai.router").call(_request)
+        # El router es barato por llamada pero corre en CADA turno que las reglas
+        # no resuelven: sin contarlo aparte, su gasto se diluye y nadie sabría si
+        # subir `CONFIDENCE_FLOOR` sale a cuenta. Antes se descartaba la respuesta
+        # entera (solo se parseaba el contenido) y con ella el bloque `usage`.
+        record_llm_usage("router", settings.router_model, raw)
+        data = json.loads(raw["choices"][0]["message"]["content"])
     except Exception as err:
         # El router nunca puede tumbar un turno: si el LLM falla, mandan las reglas.
         latency_ms = (time.monotonic() - started) * 1000

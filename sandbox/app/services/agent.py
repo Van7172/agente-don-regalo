@@ -30,7 +30,12 @@ from app.guardrails import (
     should_discard_handoff,
     validate_arguments,
 )
-from app.observability import audit_event, record_operation
+from app.observability import (
+    audit_event,
+    current_agent,
+    record_llm_usage,
+    record_operation,
+)
 from app.resilience import circuit_breaker
 from app.services.messenger import notify_team, send_message, set_typing
 from app.tools import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS, execute_tool
@@ -57,33 +62,50 @@ def _observe_llm(
     attempt: int,
     *,
     error_type: str | None = None,
+    label: str = "specialist",
 ) -> None:
     latency_ms = (time.monotonic() - started) * 1000
-    record_operation("openai.specialist", outcome, duration_ms=latency_ms)
+    # Serie separada por proveedor: si el respaldo tarda el triple, mezclarlo con
+    # el primario escondería tanto su lentitud como el momento en que empezó a
+    # usarse.
+    record_operation(f"openai.{label}", outcome, duration_ms=latency_ms)
     audit_event(
         "openai.request",
         outcome,
-        backend="openai",
-        operation="specialist",
+        backend="openai" if label == "specialist" else "fallback",
+        operation=label,
         processed_count=attempt,
         latency_ms=latency_ms,
         error_type=error_type,
     )
 
 
+_OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+
+
 async def _chat_completion_unprotected(
-    client: httpx.AsyncClient, payload: dict
+    client: httpx.AsyncClient,
+    payload: dict,
+    *,
+    url: str = _OPENAI_URL,
+    api_key: str = "",
+    label: str = "specialist",
 ) -> dict:
-    """POST a OpenAI reintentando errores pasajeros. Lanza si no hay forma."""
+    """POST a OpenAI reintentando errores pasajeros. Lanza si no hay forma.
+
+    `url`/`api_key` existen para el proveedor de respaldo (B5). Los valores por
+    defecto son los de siempre, así que quien llame sin ellos —incluidos los
+    tests— sigue hablando con OpenAI exactamente igual.
+    """
     delay = 1.0
     started = time.monotonic()
 
     for attempt in range(1, _LLM_MAX_ATTEMPTS + 1):
         try:
             r = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                url,
                 headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Authorization": f"Bearer {api_key or settings.openai_api_key}",
                     "Content-Type": "application/json",
                 },
                 json=payload,
@@ -94,22 +116,31 @@ async def _chat_completion_unprotected(
                 started,
                 attempt,
                 error_type=type(error).__name__,
+                label=label,
             )
             raise
         if r.status_code == 200:
-            _observe_llm("ok", started, attempt)
-            return r.json()
+            _observe_llm("ok", started, attempt, label=label)
+            data = r.json()
+            # Aquí y no en `_chat_completion`: esta es la única función que ve
+            # la respuesta cruda con su bloque `usage`, y la capa de arriba la
+            # sustituyen los tests. El agente sale del contexto, no de un
+            # parámetro, para no cruzarlo por media docena de firmas.
+            record_llm_usage(
+                current_agent(), str(payload.get("model") or ""), data
+            )
+            return data
 
         body = r.text[:300]
 
         # Sin saldo no se arregla esperando: escala ya en vez de hacer aguardar al cliente.
         if "insufficient_quota" in body:
-            _observe_llm("quota", started, attempt)
+            _observe_llm("quota", started, attempt, label=label)
             log.error("[LLM] cuota de OpenAI agotada")
             r.raise_for_status()
 
         if r.status_code not in _LLM_RETRY_STATUS or attempt == _LLM_MAX_ATTEMPTS:
-            _observe_llm("error", started, attempt)
+            _observe_llm("error", started, attempt, label=label)
             log.error("[LLM] %s definitivo (intento %s)", r.status_code, attempt)
             r.raise_for_status()
 
@@ -127,15 +158,78 @@ async def _chat_completion_unprotected(
         await asyncio.sleep(wait)
         delay = min(delay * 2, _LLM_BACKOFF_CAP)
 
-    _observe_llm("error", started, _LLM_MAX_ATTEMPTS)
+    _observe_llm("error", started, _LLM_MAX_ATTEMPTS, label=label)
     raise RuntimeError("unreachable")  # pragma: no cover
+
+
+def _fallback_configured() -> bool:
+    return bool(
+        (settings.llm_fallback_base_url or "").strip()
+        and (settings.llm_fallback_api_key or "").strip()
+    )
+
+
+async def _chat_completion_fallback(
+    client: httpx.AsyncClient, payload: dict
+) -> dict | None:
+    """Segundo proveedor cuando el primario no responde. `None` si no hay.
+
+    Tiene su PROPIO circuit breaker: si el fallback también está caído, no se
+    intenta en cada turno — sumaría segundos de espera a un cliente que ya no va
+    a recibir respuesta por esta vía, y lo que toca entonces es degradar rápido.
+    """
+    if not _fallback_configured():
+        return None
+
+    modelo = (settings.llm_fallback_model or "").strip() or str(
+        payload.get("model") or ""
+    )
+    alterno = {**payload, "model": modelo}
+    url = f"{settings.llm_fallback_base_url}/chat/completions"
+
+    data = await circuit_breaker("openai.fallback").call(
+        lambda: _chat_completion_unprotected(
+            client,
+            alterno,
+            url=url,
+            api_key=settings.llm_fallback_api_key,
+            label="fallback",
+        )
+    )
+    return data
 
 
 async def _chat_completion(client: httpx.AsyncClient, payload: dict) -> dict:
     """Una solicitud lógica (incluidos sus reintentos) cuenta como un intento."""
-    return await circuit_breaker("openai.specialist").call(
-        lambda: _chat_completion_unprotected(client, payload)
-    )
+    try:
+        return await circuit_breaker("openai.specialist").call(
+            lambda: _chat_completion_unprotected(client, payload)
+        )
+    except Exception as error_primario:
+        # Incluye el caso "circuito abierto": ahí el primario ni se intenta, y es
+        # justo cuando el secundario más falta hace.
+        try:
+            alterno = await _chat_completion_fallback(client, payload)
+        except Exception as error_alterno:
+            log.error(
+                "[LLM] el proveedor de respaldo también falló: %s",
+                type(error_alterno).__name__,
+            )
+            raise error_primario from error_alterno
+        if alterno is None:
+            raise
+        log.warning(
+            "[LLM] primario caído (%s); respondido por el proveedor de respaldo",
+            type(error_primario).__name__,
+        )
+        record_operation("openai.provider", "fallback")
+        audit_event(
+            "openai.provider",
+            "fallback",
+            backend="fallback",
+            error_type=type(error_primario).__name__,
+        )
+        return alterno
 
 _HANDOFF_WAIT_MSG = (
     "¡Claro! Te conecto con un asesor de nuestro equipo 🙏 "
@@ -220,13 +314,18 @@ async def perform_handoff(
             from app.harness.state import load_state, save_state
 
             st = await load_state(conversation_id, wa_id=wa_id or "")
+            # `base` es la foto de lo que acabamos de leer: esto corre A MITAD
+            # del turno, y al terminar `master` guarda su propia copia —cargada
+            # antes de este handoff—. Escribiendo solo el delta, ese guardado
+            # final ya no borra lo de aquí.
+            base = st.to_dict()
             st.handoff_reason = motivo or st.handoff_reason
             # Ancla del releaser: mientras el asesor no escriba, esto es lo único
             # que permite medir cuánto lleva el chat en sus manos.
             st.handoff_at = time.time()
             if is_payment:
                 st.checkout_step = "payment"
-            await save_state(conversation_id, st, wa_id=wa_id or "")
+            await save_state(conversation_id, st, wa_id=wa_id or "", base=base)
         except Exception as err:
             log.warning("[harness] no se guardó handoff_reason: %s", err)
     return EscalateReason(motivo=motivo, is_payment=is_payment)

@@ -54,7 +54,10 @@ $jsonFlags = JSON_UNESCAPED_UNICODE
       </div>
       <div class="table-scroll">
         <table class="table">
-          <thead><tr><th>Operación</th><th>Ejecuciones</th><th>Promedio</th><th>Máxima</th></tr></thead>
+          <!-- p95 antes que la máxima a propósito: la máxima es UN caso y suele
+               ser un pico raro; el p95 es lo que está viviendo el cliente lento
+               de verdad, que es la pregunta cuando alguien dice "va lento". -->
+          <thead><tr><th>Operación</th><th>Ejecuciones</th><th>Promedio</th><th>p95</th><th>Máxima</th></tr></thead>
           <tbody id="ops-latencies"></tbody>
         </table>
       </div>

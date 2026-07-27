@@ -1,0 +1,84 @@
+# Muestra para el juez LLM (`python -m evals.judge`).
+#
+# No son casos de aprobado/suspenso como el resto del corpus: son conversaciones
+# donde las invariantes estructurales pasan LIMPIAS y aun así la respuesta puede
+# ser buena o mala. Es lo que mide este corpus y no otro.
+#
+# Cada caso sale de un incidente ya documentado en CLAUDE.md, para que la nota
+# del juez se pueda contrastar con lo que sabemos que pasó de verdad.
+#
+# Al añadir casos: que la respuesta a evaluar NO viole ninguna invariante. Si la
+# viola, el sitio del caso es `replies.yaml` o `adversarial.yaml`, donde falla en
+# CI sin gastar una llamada al modelo.
+
+- id: pregunta-por-contenido-y-promete-asesor
+  # El incidente de la deuda conocida: el bot ofreció "lo consulto con un asesor
+  # y te vuelvo", algo que NO puede hacer. Debería puntuar bajo en `resolvio`.
+  conversacion:
+    - de: cliente
+      texto: "¿Qué contiene el desayuno? ¿Se puede quitar algo y aumentar otros?"
+  respuesta: "¡Buena pregunta! Lo consulto con un asesor y te vuelvo con la respuesta 😊"
+
+- id: pregunta-por-contenido-y-responde
+  conversacion:
+    - de: cliente
+      texto: "¿Qué contiene el desayuno?"
+  respuesta: |
+    Este trae jugo de naranja, café, sándwich de jamón y queso, brownie y 6 rosas rojas 🌹
+    ¿Te lo preparo para alguna fecha en particular?
+
+- id: cierre-pide-un-dato-a-la-vez
+  conversacion:
+    - de: cliente
+      texto: "Quiero el brunch para mañana"
+    - de: agente
+      texto: "¡Genial! ¿A qué distrito lo enviamos?"
+    - de: cliente
+      texto: "A Miraflores"
+  respuesta: "¡Perfecto! A Miraflores el envío es S/15 🛵 ¿Para qué fecha lo necesitas?"
+
+- id: cierre-pide-cinco-datos-de-golpe
+  # Estructuralmente impecable y aun así es un formulario. El CORE pide UNA
+  # pregunta por turno justo por esto.
+  conversacion:
+    - de: cliente
+      texto: "Quiero el brunch para mañana"
+  respuesta: |
+    Para procesar tu pedido necesito: distrito, fecha de entrega, horario,
+    nombre y teléfono del destinatario, dirección exacta, y tus datos de
+    facturación (nombre, apellidos y correo).
+
+- id: derivacion-legitima-por-pago
+  # Derivar SÍ es resolver cuando el motivo lo justifica: el bot no puede
+  # confirmar un pago.
+  conversacion:
+    - de: cliente
+      texto: "Ya les hice el yape, les mando la captura"
+  respuesta: "¡Gracias! Te conecto con un asesor de nuestro equipo para que valide tu pago 🙏"
+
+- id: no-entiende-y-repite-lo-mismo
+  # El bucle de la FSM: cuatro veces el mismo mensaje y la clienta se fue.
+  conversacion:
+    - de: cliente
+      texto: "para el 3"
+    - de: agente
+      texto: "No pude confirmar esa fecha 😅 ¿Me la escribes como día/mes?"
+    - de: cliente
+      texto: "el 3 pues"
+  respuesta: "No pude confirmar esa fecha 😅 ¿Me la escribes como día/mes?"
+
+- id: saludo-breve-sin-repetirse
+  conversacion:
+    - de: cliente
+      texto: "Hola"
+    - de: agente
+      texto: "¡Hola! Soy Don Regalo 🎁 ¿Buscas un detalle para alguien especial?"
+    - de: cliente
+      texto: "sí, algo para mi mamá"
+  respuesta: "¡Qué lindo! 😊 ¿Le gustan más las flores, los desayunos o algo dulce?"
+
+- id: fuera-de-alcance-reorienta
+  conversacion:
+    - de: cliente
+      texto: "¿Me ayudas con un código en Python?"
+  respuesta: "Eso se me escapa 😊 pero con gusto te ayudo a elegir un regalo. ¿Para qué ocasión?"
