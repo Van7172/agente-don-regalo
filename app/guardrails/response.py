@@ -123,12 +123,35 @@ def no_internal_context(reply: str) -> Violation | None:
 # system message. Se incluyen las cabeceras de las capas (`compose.build_system`
 # monta CORE + FACTS + PLAYBOOK + ESTADO) y los nombres internos de las tools,
 # que el cliente no tiene por qué ver ni aunque el bot los use.
+_INTERNAL_TOOL_NAMES = (
+    "explorar_catalogo",
+    "buscar_semantico",
+    "productos_similares",
+    "buscar_productos",
+    "catalogo_categoria",
+    "productos_destacados",
+    "productos_oferta",
+    "detalle_producto",
+    "productos_por_ocasion",
+    "distritos_cobertura",
+    "metodos_pago",
+    "tipo_cambio",
+    "rastrear_pedido",
+    "buscar_conocimiento_equipo",
+    "guardar_datos_cliente",
+    "escalar_a_humano",
+)
+_INTERNAL_TOOL_PATTERN = "|".join(
+    re.escape(name) for name in _INTERNAL_TOOL_NAMES if name
+)
+
 _PROMPT_LEAK = re.compile(
     r"##\s*(?:RESTRICCIONES|IDENTIDAD|ESTILO|OBJETIVO|MEMORIA\s+DEL\s+CLIENTE|"
-    r"PLAYBOOK|DATOS\s+CONOCIDOS\s+DEL\s+CLIENTE|ESTADO\s+DE\s+LA\s+CONVERSACION)"
+    r"PLAYBOOK|DATOS\s+CONOCIDOS\s+DEL\s+CLIENTE|ESTADO\s+DE\s+LA\s+CONVERSACION|"
+    r"ENTORNO\s+OPERATIVO|CICLO\s+DE\s+DECISION|HERRAMIENTAS\s+HABILITADAS)"
     r"|LIMITES\s+QUE\s+NUNCA\s+DEBES\s+CRUZAR"
-    r"|\b(?:escalar_a_humano|buscar_conocimiento_equipo|guardar_datos_cliente|"
-    r"explorar_catalogo|detalle_producto|verificar_cobertura)\b",
+    rf"|\b(?:{_INTERNAL_TOOL_PATTERN}|verificar_cobertura|CRM|API|MCP|Qdrant|"
+    r"modo\s+(?:AI|HUMAN)|tools?)\b",
     re.I,
 )
 
@@ -236,12 +259,106 @@ def prices_are_sourced(reply: str, artifacts: list[Product]) -> Violation | None
     return None
 
 
+_ADVISOR_PROMISE = re.compile(
+    r"(consult|pregunt|verific|confirm|averigu|revis)\w*[^.?!¿]{0,60}\bcon\s+"
+    r"(?:un|una|el|la|mi|nuestro)?\s*(?:asesor|ejecutiv|compa|human|persona|equipo)"
+    r"|\b(?:un|una)\s+(?:asesor\w*|ejecutiv\w*)\s+(?:te|le)\s+\w+"
+    r"|\bte\s+(?:paso|conecto|derivo|comunico|transfiero)\s+con\s+"
+    r"(?:un|una|el|la)?\s*(?:asesor|ejecutiv|human|persona)",
+    re.I,
+)
+_SENSITIVE_ACTION_CLAIM = re.compile(
+    r"\b(?:confirm[eé]|valid[eé]|recib[ií]|proces[eé]|cancel[eé]|anul[eé]|"
+    r"modifiqu[eé]|cambi[eé]|cre[eé]|registr[eé])\b[^.?!]{0,60}"
+    r"\b(?:pago|comprobante|dep[oó]sito|transferencia|pedido|orden)\b",
+    re.I,
+)
+_EXTERNAL_FOLLOWUP = re.compile(
+    r"\b(?:te|le)\s+(?:envi[eé]|mand[eé]|enviar[eé]|mandar[eé]|llamar[eé]|"
+    r"contactar[eé]|avisar[eé]|confirmar[eé])\b"
+    r"|\b(?:te|le)\s+(?:enviaremos|mandaremos|llamaremos|contactaremos|avisaremos)\b",
+    re.I,
+)
+_TRACKING_CLAIM = re.compile(
+    r"\b(?:revis[eé]|consult[eé]|verifiqu[eé])\b[^.?!]{0,50}"
+    r"\b(?:pedido|estado|seguimiento)\b",
+    re.I,
+)
+_MEMORY_CLAIM = re.compile(
+    r"\b(?:guard[eé]|registr[eé]|actualic[eé])\b[^.?!]{0,50}"
+    r"\b(?:datos?|preferencias?|informaci[oó]n|distrito|nombre)\b",
+    re.I,
+)
+
+
+def _negated(reply: str, start: int) -> bool:
+    """Evita bloquear explicaciones correctas como «no confirmé tu pago»."""
+    return bool(re.search(r"\b(?:no|nunca)\s+$", reply[max(0, start - 12):start], re.I))
+
+
+def unsupported_capability_claim(
+    reply: str,
+    *,
+    tools_used: list[str] | tuple[str, ...] = (),
+    agent: str = "",
+) -> Violation | None:
+    """Toda acción afirmada necesita evidencia ejecutada en este turno."""
+    text = reply or ""
+    used = set(tools_used or ())
+
+    advisor = _ADVISOR_PROMISE.search(text)
+    if advisor:
+        return Violation(
+            "unsupported_advisor_promise",
+            f"{agent or 'agente'} prometió una intervención futura",
+        )
+
+    sensitive = _SENSITIVE_ACTION_CLAIM.search(text)
+    if sensitive and not _negated(text, sensitive.start()):
+        return Violation(
+            "unsupported_sensitive_action",
+            f"{agent or 'agente'} afirmó una acción de pago/pedido no disponible",
+        )
+
+    external = _EXTERNAL_FOLLOWUP.search(text)
+    if external and not _negated(text, external.start()):
+        return Violation(
+            "unsupported_external_promise",
+            f"{agent or 'agente'} prometió contacto o envío futuro",
+        )
+
+    tracking = _TRACKING_CLAIM.search(text)
+    if (
+        tracking
+        and "rastrear_pedido" not in used
+        and not _negated(text, tracking.start())
+    ):
+        return Violation(
+            "unsupported_tracking_claim",
+            "afirmó revisar un pedido sin rastrear_pedido",
+        )
+
+    memory = _MEMORY_CLAIM.search(text)
+    if (
+        memory
+        and "guardar_datos_cliente" not in used
+        and not _negated(text, memory.start())
+    ):
+        return Violation(
+            "unsupported_memory_claim",
+            "afirmó guardar datos sin guardar_datos_cliente",
+        )
+    return None
+
+
 def check_reply(
     reply: str | None,
     *,
     state: ConversationState | None = None,
     artifacts: list[Product] | None = None,
     user_text: str = "",
+    tools_used: list[str] | tuple[str, ...] = (),
+    agent: str = "",
 ) -> list[Violation]:
     """Todas las invariantes aplicables a una respuesta. Lista vacía = limpia."""
     reply = reply or ""
@@ -255,6 +372,9 @@ def check_reply(
         no_third_party_contact(reply, state, user_text),
         image_urls_on_own_line(reply),
         prices_are_sourced(reply, artifacts),
+        unsupported_capability_claim(
+            reply, tools_used=tools_used, agent=agent
+        ),
         no_repeated_products(state, artifacts),
         no_duplicates_within_reply(artifacts),
     ]
@@ -275,6 +395,11 @@ _BLOCKING_RULES = frozenset(
         "no_internal_context",
         "no_system_prompt_leak",
         "no_third_party_contact",
+        "unsupported_advisor_promise",
+        "unsupported_sensitive_action",
+        "unsupported_external_promise",
+        "unsupported_tracking_claim",
+        "unsupported_memory_claim",
     }
 )
 
@@ -284,7 +409,15 @@ _BLOCKING_RULES = frozenset(
 # enseñarle al cliente nuestra tubería, o el dato de otro cliente, no se arregla
 # con una frase mejor en el turno siguiente.
 HANDOFF_RULES = frozenset(
-    {"no_internal_context", "no_system_prompt_leak", "no_third_party_contact"}
+    {
+        "no_internal_context",
+        "no_system_prompt_leak",
+        "no_third_party_contact",
+        "unsupported_advisor_promise",
+        "unsupported_sensitive_action",
+        "unsupported_external_promise",
+        "unsupported_tracking_claim",
+    }
 )
 
 SAFE_FALLBACK = (
@@ -299,6 +432,11 @@ SAFE_FALLBACK = (
 SAFE_TECHNICAL_FALLBACK = (
     "Perdón, se me cruzó un cable con ese mensaje 😅 "
     "¿Me lo cuentas otra vez en una línea y lo vemos al toque?"
+)
+
+SAFE_CAPABILITY_FALLBACK = (
+    "Gracias por contármelo 😊 Lo tendré en cuenta durante esta conversación. "
+    "¿En qué más te ayudo con tu regalo?"
 )
 
 
@@ -321,6 +459,8 @@ def sanitize_reply(
         return reply
     if broken & HANDOFF_RULES:
         return SAFE_TECHNICAL_FALLBACK
+    if "unsupported_memory_claim" in broken:
+        return SAFE_CAPABILITY_FALLBACK
     if artifacts:
         return render_product_list([_product_dict(product) for product in artifacts])
     return SAFE_FALLBACK
@@ -332,10 +472,19 @@ def guard_reply(
     state: ConversationState | None = None,
     artifacts: list[Product] | None = None,
     user_text: str = "",
+    tools_used: list[str] | tuple[str, ...] = (),
+    agent: str = "",
 ) -> GuardrailResult:
     """Fachada runtime: evaluar y sanear una respuesta en una sola operación."""
     products = artifacts or []
-    violations = check_reply(reply, state=state, artifacts=products, user_text=user_text)
+    violations = check_reply(
+        reply,
+        state=state,
+        artifacts=products,
+        user_text=user_text,
+        tools_used=tools_used,
+        agent=agent,
+    )
     safe = sanitize_reply(reply, violations, products)
     return GuardrailResult(
         reply=safe,

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
+from app.harness.holidays import closed_delivery_reply, is_closed_delivery
 from app.harness.orders import display_fecha, lima_today, normalize_fecha
 from app.guardrails import is_courtesy_text
 from app.harness.state import ConversationState
@@ -301,7 +302,7 @@ def _advance(
         # y el 21 de julio le estábamos pidiendo a una clienta una fecha futura
         # con un ejemplo del día anterior.
         ejemplo = (effective_today + timedelta(days=1)).strftime("%d/%m")
-        if is_courtesy_text(text):
+        if is_courtesy_text(text) and normalize_fecha(text, today=today) is None:
             return _courtesy(state, meta, "¿Para qué fecha lo necesitas? 📅")
         normalized = normalize_fecha(text, today=today)
         if normalized is not None and normalized < effective_today.isoformat():
@@ -326,6 +327,8 @@ def _advance(
                     f"así → *{ejemplo}* 📅",
                 ),
             )
+        if is_closed_delivery(normalized):
+            return _again(state, meta, (closed_delivery_reply(),))
         state.date = normalized
         state.checkout_step = "schedule"
         return (

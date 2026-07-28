@@ -82,6 +82,23 @@ corporativos por Fiestas Patrias").
 `detail` usan el tier `fast`; `OPENAI_FAST_MODEL` hereda `OPENAI_MODEL` cuando no
 se configura, por lo que habilitar el contrato no cambia el modelo de producción.
 
+## Conciencia operativa del CRM
+
+Cada system message de cara al cliente recibe un contrato interno generado desde
+el toolset real del turno. El modelo sabe que trabaja solo sobre el chat actual,
+que no puede navegar el CRM ni ver otros chats o vendedores y que una acción solo
+existe si la ejecutó código determinista o una tool devolvió éxito.
+
+El ciclo es acotado: intención → siguiente paso mínimo → parámetros → una fuente
+permitida → respuesta respaldada. Las tools estructuradas abstraen MCP/API; las
+búsquedas semánticas y de conocimiento abstraen Qdrant. El modelo no elige
+endpoints ni encadena un plan abierto.
+
+La barrera de salida cruza las promesas con `tools_used`. Confirmar pagos,
+modificar pedidos, prometer llamadas/correos o afirmar tracking/memoria sin
+evidencia se bloquea antes de WhatsApp. Las promesas sensibles ejecutan el
+handoff real; los nombres CRM, MCP, API, Qdrant y tools tampoco llegan al cliente.
+
 ## La capa de adaptadores
 
 La API de donregalo.pe devuelve **tres formas distintas de producto** (listados

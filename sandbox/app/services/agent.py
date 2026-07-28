@@ -294,7 +294,36 @@ async def perform_handoff(
     es una frase, es un cambio de estado: aviso de espera al cliente, la
     conversación pasa a HUMAN en el CRM (deja de contestar el bot) y se avisa al
     equipo. Se ejecuta en código para no depender de que el modelo llame la tool.
+
+    Fiestas Patrias 28–29/07/2026: no hay asesores. Se avisa y el bot sigue;
+    no se pone HUMAN ni se encola AYUDA.
     """
+    is_payment = is_payment_reason(motivo)
+
+    from app.harness.holidays import staff_offline, staff_offline_reply
+
+    if staff_offline():
+        await _say(wa_id, staff_offline_reply(for_payment=is_payment), persist)
+        log.info(
+            "[HANDOFF] feriado sin personal; no se cede chat conv=%s motivo=%s",
+            conversation_id,
+            (motivo or "")[:120],
+        )
+        # Sin HUMAN el bot sigue: si el cierre quedó en `payment`, el próximo
+        # mensaje volvería a escalar. Marcamos done para no repetir el aviso.
+        if is_payment and conversation_id is not None:
+            try:
+                from app.harness.state import load_state, save_state
+
+                st = await load_state(conversation_id, wa_id=wa_id or "")
+                base = st.to_dict()
+                st.checkout_step = "done"
+                st.handoff_reason = motivo or st.handoff_reason
+                await save_state(conversation_id, st, wa_id=wa_id or "", base=base)
+            except Exception as err:
+                log.warning("[harness] no se cerró checkout en feriado: %s", err)
+        return EscalateReason(motivo=motivo, is_payment=is_payment)
+
     await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
     if use_external_crm and conversation_id:
         from app.crm import http_client as crm_http
@@ -308,7 +337,6 @@ async def perform_handoff(
     )
     # El releaser exime los handoff de pago del retorno HUMAN→AI: un asesor
     # cobrando puede tardar horas en contestar.
-    is_payment = is_payment_reason(motivo)
     if conversation_id is not None:
         try:
             from app.harness.state import load_state, save_state

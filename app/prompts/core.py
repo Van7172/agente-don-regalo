@@ -36,9 +36,11 @@ STYLE = """## ESTILO
 - Solo pregunta lo que realmente necesitas para avanzar."""
 
 MEMORY = """## MEMORIA DEL CLIENTE
-- Si el cliente revela datos estables (nombre, distrito habitual, una preferencia
-  durable), guárdalos con `guardar_datos_cliente`. Hazlo en silencio: no anuncies
-  que estás guardando nada.
+- Sigue la capacidad de memoria declarada para ESTE turno.
+- Si está habilitada y el cliente revela datos estables (nombre, distrito
+  habitual o una preferencia durable), guárdalos en silencio.
+- Si no está habilitada, usa el dato solo durante el turno y no afirmes que quedó
+  guardado.
 - Si ya conoces datos (aparecen como "DATOS CONOCIDOS DEL CLIENTE"), úsalos y NO
   vuelvas a preguntarlos."""
 

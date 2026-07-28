@@ -85,21 +85,6 @@ _ADVISOR_RE = re.compile(
     r"\b(asesor\w*|ejecutiv\w*|human[oa]s?|una persona|del equipo)\b", re.I
 )
 
-# El bot PROMETE meter a un asesor: lo AFIRMA, no lo pregunta. Don Regalo no puede
-# consultarle nada a nadie ni "volver con la respuesta" — lo único que puede hacer
-# con un asesor es cederle el chat. Si lo dice y no se ejecuta, el cliente espera a
-# alguien que nunca viene ("consulto con un asesor y te vuelvo", "un asesor te
-# enviará las instrucciones", "te paso con un asesor").
-_PROMISES_HANDOFF_RE = re.compile(
-    r"(consult|pregunt|verific|confirm|averigu|revis)\w*[^.?!¿]{0,60}\bcon\s+"
-    r"(un|una|el|la|mi|nuestro)?\s*(asesor|ejecutiv|compa|human|persona|equipo)"
-    r"|\b(un|una)\s+(asesor\w*|ejecutiv\w*)\s+(te|le)\s+\w+"
-    r"|\bte\s+(paso|conecto|derivo|comunico|transfiero)\s+con\s+"
-    r"(un|una|el|la)?\s*(asesor|ejecutiv|human|persona)",
-    re.I,
-)
-
-
 def _offers_handoff(reply: str | None) -> bool:
     """El bot ofrece un asesor y espera respuesta: un "sí" es aceptar la derivación.
 
@@ -108,11 +93,6 @@ def _offers_handoff(reply: str | None) -> bool:
     ahora?") y entonces el "Si" del cliente no derivaba.
     """
     return bool(reply and _ADVISOR_RE.search(reply) and "?" in reply)
-
-
-def _promises_handoff(reply: str | None) -> bool:
-    return bool(reply and _PROMISES_HANDOFF_RE.search(reply))
-
 
 def _caption_of(messages: list) -> str | None:
     """Texto que acompaña a una imagen (`latest_user_text` lo descarta a propósito).
@@ -313,35 +293,6 @@ async def _run_master(
         persist=persist,
     )
 
-    # El modelo prometió meter a un asesor. Eso no es una frase, es un cambio de
-    # estado: Don Regalo no puede consultarle nada a nadie ni volver con la respuesta,
-    # solo cederle el chat. Si lo dijo, se ejecuta — y si no, el cliente se queda
-    # esperando a alguien que nunca viene ("consulto con un asesor y te vuelvo").
-    if (
-        result.escalate is None
-        and conversation_id is not None
-        and _promises_handoff(result.user_facing)
-    ):
-        log.info(
-            "[HANDOFF] conversation=%s la respuesta prometía un asesor; se ejecuta de verdad",
-            conversation_id,
-        )
-        result = AgentResult(
-            user_facing=None,
-            artifacts=result.artifacts,
-            tools_used=result.tools_used,
-            state_patch=result.state_patch,
-            escalate=await perform_handoff(
-                wa_id=wa_id,
-                conversation_id=conversation_id,
-                motivo=state.handoff_reason
-                or "el bot ofreció consultar con un asesor (no puede hacerlo)",
-                use_external_crm=use_external_crm,
-                session=session,
-                persist=persist,
-            ),
-        )
-
     # La barrera de salida corre ANTES de reducir y antes de enviar al cliente.
     # `user_text` son las palabras del cliente en ESTE turno (no la cita, que es
     # contexto del sistema). La barrera lo necesita para saber que el teléfono
@@ -352,6 +303,8 @@ async def _run_master(
         state=state,
         artifacts=result.artifacts,
         user_text=turn.text,
+        tools_used=result.tools_used,
+        agent=spec_for(intent).name,
     )
     violations = list(guarded.violations)
 
@@ -375,7 +328,11 @@ async def _run_master(
             conversation_id,
             sorted(rotas),
         )
-        record_operation("guardrail.output", "internal_leak")
+        unsupported = any(rule.startswith("unsupported_") for rule in rotas)
+        record_operation(
+            "guardrail.output",
+            "unsupported_capability" if unsupported else "internal_leak",
+        )
         result = AgentResult(
             user_facing=None,
             artifacts=result.artifacts,
@@ -384,7 +341,11 @@ async def _run_master(
             escalate=await perform_handoff(
                 wa_id=wa_id,
                 conversation_id=conversation_id,
-                motivo="fallo técnico del bot: la respuesta llevaba contexto interno",
+                motivo=(
+                    "el bot prometió una acción que no puede ejecutar"
+                    if unsupported
+                    else "fallo técnico del bot: la respuesta llevaba contexto interno"
+                ),
                 use_external_crm=use_external_crm,
                 session=session,
                 persist=persist,
@@ -785,12 +746,22 @@ async def _run_specialty(
         raise RuntimeError(
             f"el especialista determinista {spec.name} no puede ejecutarse vía LLM"
         )
+    runtime_tools = spec.tools(
+        with_memory=bool(contact_id or use_external_crm),
+        with_handoff=conversation_id is not None,
+    )
+    runtime_tool_names = tuple(
+        str(tool.get("function", {}).get("name") or "")
+        for tool in runtime_tools
+        if isinstance(tool, dict)
+    )
     system = build_system(
         spec,
         state,
         extra=extra_system,
         turn_text=turn.text,
         has_media=turn.has_media,
+        available_tool_names=runtime_tool_names,
     )
     model = (
         settings.openai_fast_model
@@ -811,10 +782,7 @@ async def _run_specialty(
             session=session,
             use_external_crm=use_external_crm,
             persist=persist,
-            tools_override=spec.tools(
-                with_memory=bool(contact_id or use_external_crm),
-                with_handoff=conversation_id is not None,
-            ),
+            tools_override=runtime_tools,
             include_handoff=spec.can_handoff,
             include_memory=spec.customer_facing,
             model=model,

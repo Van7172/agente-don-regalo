@@ -154,6 +154,22 @@ def run_specialists() -> list[Result]:
             if marker in system:
                 failures.append(f"incluyó bloque innecesario {marker!r}")
 
+        if "reply" in case:
+            got = sorted(
+                violation.rule
+                for violation in check_reply(
+                    case["reply"],
+                    state=state,
+                    tools_used=case.get("tools_used") or [],
+                    agent=agent,
+                )
+            )
+            expected = sorted(case.get("expect_violations") or [])
+            if got != expected:
+                failures.append(
+                    f"violaciones esperadas {expected}, obtuvo {got}"
+                )
+
         out.append(
             Result(
                 case_id=case["id"],

@@ -15,6 +15,10 @@ from zoneinfo import ZoneInfo
 from app.guardrails.input import sanitize_untrusted_text
 from app.guardrails.privacy import protect_profile
 from app.prompts.core import core_system
+from app.prompts.capabilities import (
+    CAPABILITY_CONTRACT_MATERIAL,
+    render_runtime_capabilities,
+)
 from app.prompts.facts import render_facts
 from app.prompts.playbooks import (
     CATALOG_EXTENSION_MATERIAL,
@@ -78,6 +82,7 @@ def build_system(
     now: datetime | None = None,
     turn_text: str = "",
     has_media: bool = False,
+    available_tool_names: tuple[str, ...] | list[str] = (),
 ) -> str:
     """System message completo de un agente.
 
@@ -89,6 +94,7 @@ def build_system(
     if spec.customer_facing:
         blocks.append(core_system())
         blocks.append(render_current_time(now))
+        blocks.append(render_runtime_capabilities(available_tool_names))
 
     facts = render_facts(spec.facts)
     if facts:
@@ -131,6 +137,9 @@ def prompt_version(spec: "AgentSpec") -> str:
             CATALOG_EXTENSION_MATERIAL
             if spec.output_policy == "catalog"
             else "",
+            CAPABILITY_CONTRACT_MATERIAL if spec.customer_facing else "",
+            ",".join(spec.tool_names),
+            str(spec.can_handoff),
         ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]

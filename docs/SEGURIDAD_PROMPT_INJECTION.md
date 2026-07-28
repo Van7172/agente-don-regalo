@@ -101,3 +101,12 @@ clasificador independiente para acciones de riesgo.
 `tests/test_prompt_injection_guardrails.py` cubre ataques directos, falsos
 positivos comerciales, historial contaminado, JSON de tools, memoria persistente
 y llamadas de herramientas no autorizadas.
+
+### 7. Promesas respaldadas por evidencia
+
+El prompt recibe exactamente los nombres de las herramientas expuestas en ese
+turno. Antes de enviar una respuesta, la barrera de salida compara afirmaciones
+operativas con `tools_used`: no permite confirmar pagos o modificaciones, ni
+prometer contactos futuros, ni afirmar tracking o memoria sin la ejecución
+correspondiente. También bloquea la exposición de CRM, API, MCP, Qdrant, modos
+internos y nombres de herramientas.

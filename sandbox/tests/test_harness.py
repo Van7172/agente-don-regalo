@@ -74,16 +74,19 @@ def test_classify_checkout_in_progress():
 
 
 def test_checkout_fsm_happy_path():
+    from datetime import date
+
+    hoy = date(2026, 7, 20)  # lunes; "mañana" no cae en feriado
     st = ConversationState(chosen_product_name="Ramo", chosen_product_id=9)
     start_checkout(st)
-    st, reply, _ = advance_checkout(st, "lo quiero")
+    st, reply, _ = advance_checkout(st, "lo quiero", today=hoy)
     assert "distrito" in reply.lower() or st.checkout_step == "district"
     st.district = "Miraflores"
     st.checkout_step = "date"
-    st, reply, _ = advance_checkout(st, "mañana")
+    st, reply, _ = advance_checkout(st, "mañana", today=hoy)
     assert st.checkout_step == "schedule"
     assert "horario" in reply.lower()
-    st, reply, _ = advance_checkout(st, "2")
+    st, reply, _ = advance_checkout(st, "2", today=hoy)
     assert st.time_slot
     assert st.checkout_step == "card"
     # Sin tarjeta → se piden los datos que exige el pedido temporal.
