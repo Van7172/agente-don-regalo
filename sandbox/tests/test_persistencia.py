@@ -48,9 +48,12 @@ def espias(monkeypatch):
     # Estos tests miden el handoff NORMAL (mensaje de espera + persistencia).
     # Sin esto, en feriados (28–29/07/2026) perform_handoff cambia el texto y
     # la aserción contra `_HANDOFF_WAIT_MSG` falla en CI.
+    from datetime import date
+
     import app.harness.holidays as hol
 
     monkeypatch.setattr(hol, "staff_offline", lambda today=None: False)
+    monkeypatch.setattr(hol, "lima_today", lambda: date(2026, 7, 15))
 
     async def persist(*, content, wa_message_id=None, media_url=None):
         estado["guardados"].append(content)

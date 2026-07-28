@@ -300,10 +300,16 @@ async def perform_handoff(
     """
     is_payment = is_payment_reason(motivo)
 
-    from app.harness.holidays import staff_offline, staff_offline_reply
+    # Acceso por módulo (no `from … import fn`): así los tests pueden
+    # monkeypatchear `holidays.staff_offline` sin pelearse con el binding.
+    from app.harness import holidays as holidays_mod
 
-    if staff_offline():
-        await _say(wa_id, staff_offline_reply(for_payment=is_payment), persist)
+    if holidays_mod.staff_offline():
+        await _say(
+            wa_id,
+            holidays_mod.staff_offline_reply(for_payment=is_payment),
+            persist,
+        )
         log.info(
             "[HANDOFF] feriado sin personal; no se cede chat conv=%s motivo=%s",
             conversation_id,
