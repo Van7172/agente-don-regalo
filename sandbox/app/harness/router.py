@@ -24,6 +24,7 @@ from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import explicit_delivery_destination, looks_like_coverage
 from app.guardrails import is_small_talk
 from app.harness.state import ConversationState
+from app.harness.taxonomy import looks_like_option_pick
 from app.observability import audit_event, record_llm_usage, record_operation
 from app.resilience import circuit_breaker
 
@@ -200,6 +201,17 @@ def classify_rules(
     # el modelo inventaba un menú de productos falso o escalaba una venta sana.
     if state.intent_last in ("catalog_search", "product_detail") and _CONFIRM_SHOW_RE.match(norm):
         return Classification("catalog_search", 0.85, "rules")
+
+    # Hermana de la regla de arriba, con el mismo síntoma: un NÚMERO pelado
+    # contestando a un menú que escribimos nosotros. No casaba con ninguna regla,
+    # salía con confianza 0.3 y acababa en `concierge`, que no tiene tools de
+    # catálogo — y el modelo respondía con submenús inventados en vez de con
+    # productos. Va después del cierre (ahí un "2" es una franja horaria, y esa
+    # regla devuelve antes) y `recent_options` se vacía en cuanto se muestran
+    # productos (`_reduce`), así que un "2" sobre un listado sigue siendo el
+    # segundo producto y no la segunda categoría.
+    if state.recent_options and looks_like_option_pick(raw):
+        return Classification("catalog_search", 0.9, "rules")
 
     # "quiero el panditas" nombra un producto que YA se mostró: es una compra, no
     # una búsqueda nueva. Exigimos referencia explícita (nombre u ordinal): con un

@@ -135,6 +135,53 @@ def resolve_option(text: str, options: list[dict]) -> dict | None:
     return None
 
 
+# Palabras que acompañan al número sin cambiar lo que significa: "la 3",
+# "quiero el 2", "opción 4".
+_PICK_FILLER = frozenset({
+    "la", "el", "lo", "los", "las", "un", "una",
+    "opcion", "opciones", "numero", "num",
+    "quiero", "dame", "ver", "me", "y", "por", "favor", "porfa",
+})
+
+
+def looks_like_option_pick(text: str) -> bool:
+    """¿El mensaje ENTERO es la elección de una opción del menú?
+
+    Lo necesita el router. Un "4" pelado no casaba con NINGUNA regla: salía con
+    confianza 0.3, decidía el clasificador LLM y el turno acababa en `concierge`
+    —que no tiene tools de catálogo ni la disciplina del menú, porque
+    `_answer_menu` y `_own_the_menu` solo corrían en el carril de catálogo—. Ahí
+    el modelo se inventó nueve submenús seguidos (tipos de peluche, combos,
+    tamaños, rangos de precio; Peluches no tiene ni una subcategoría) mientras el
+    cliente pedía "los modelos" cuatro veces en veinte minutos.
+
+    Acepta VARIOS números ("4\\n1"): el buffer une los mensajes que el cliente
+    manda seguidos y así llegó el turno que rompió esa conversación. Cuál de los
+    dos gana lo decide `resolve_option`, no esto — aquí solo se responde "esto va
+    dirigido al menú".
+    """
+    tokens = [t for t in re.split(r"[^\w]+", _norm(text)) if t]
+    if not tokens:
+        return False
+
+    picks = 0
+    for token in tokens:
+        if token in _PICK_FILLER:
+            continue
+        if token.isdigit():
+            # Más de dos cifras no es una opción de un menú de siete: es un
+            # teléfono, un precio o un id de producto.
+            if len(token) > 2:
+                return False
+            picks += 1
+            continue
+        if token in _ORDINALS:
+            picks += 1
+            continue
+        return False
+    return picks > 0
+
+
 # Palabras que en una tienda de regalos no distinguen nada: casi todo mensaje
 # las trae. Sin esta lista, "quiero un regalo" cae en "Regalos para Bebé".
 _GENERICOS = frozenset({

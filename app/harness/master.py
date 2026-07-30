@@ -423,11 +423,20 @@ async def _handle(
     if intent == "product_detail":
         return await _handle_detail(turn, state, **ctx)
 
-    # ── Catálogo: si responde a un menú NUESTRO, se resuelve en código ──
-    if intent == "catalog_search":
-        respondido = await _answer_menu(turn, state)
-        if respondido is not None:
-            return respondido
+    # ── ¿Responde a un menú NUESTRO? Se resuelve en código, venga el intent que
+    #    venga. Esto colgaba de `intent == "catalog_search"`, y ahí estaba el
+    #    agujero: el router mandaba un "4" pelado a `small_talk` → concierge, que
+    #    no tiene tools de catálogo, así que el turno nunca llegaba hasta aquí y
+    #    lo contestaba un modelo sin ninguna disciplina de menú. La numeración la
+    #    escribió el código; resolverla también le toca al código, y no depende de
+    #    que el router acierte la etiqueta.
+    #
+    #    Va después de escalate/cobertura/cierre/detalle a propósito: esos son
+    #    dueños del turno cuando aplican. `_answer_menu` devuelve `None` si no hay
+    #    menú vivo o si no está claro a qué opción se refiere.
+    respondido = await _answer_menu(turn, state)
+    if respondido is not None:
+        return respondido
 
     # ── Resto: especialista LLM con toolset acotado ───────────────
     return await _run_specialty(intent, turn, state, **ctx)
