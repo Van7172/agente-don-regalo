@@ -20,6 +20,7 @@ from app.harness.contracts import Product
 from app.harness.quoting import internal_leak
 from app.harness.render import render_product_list
 from app.harness.state import ConversationState
+from app.harness.taxonomy import looks_like_numbered_menu
 from app.prompts.core import SAFETY_MARKER
 
 # Reconoce una URL de imagen dentro de una línea (igual que el emisor de WhatsApp).
@@ -231,6 +232,51 @@ def no_third_party_contact(
     return None
 
 
+# Un id interno presentado como si fuera un producto. `render_product_list` NUNCA
+# imprime el id: escribe "• 🎁 *Nombre* — S/x ($y)". Así que si esto aparece, lo
+# escribió el modelo de su cosecha.
+_RAW_PRODUCT_ID = re.compile(
+    r"\bproductos?\s*(?:#|n[°ºo]\.?|nro\.?|num(?:ero)?\.?)\s*\d+",
+    re.I,
+)
+
+
+def no_raw_product_ids(reply: str) -> Violation | None:
+    """Un id de producto no es un producto. Al cliente van nombre, precio y foto.
+
+    Del incidente de Lichi (29-07): tras diez turnos de preguntas, el bot por fin
+    "mostró" cuatro opciones — *1) Producto #1221  2) Producto #290  3) Producto
+    #1119  4) Producto #309*. Sin nombre, sin precio, sin foto. El cliente eligió
+    "2" a ciegas y el bot le pidió que confirmara el envío de algo que nunca vio.
+
+    No hace falta ninguna heurística fina: el listado lo compone el código y no
+    imprime ids, así que cualquier "Producto #N" es prosa inventada.
+    """
+    m = _RAW_PRODUCT_ID.search(reply or "")
+    if m:
+        return Violation("no_raw_product_ids", f"id interno como producto: {m.group(0)!r}")
+    return None
+
+
+def no_uncomposed_menu(reply: str, *, menu_owned: bool) -> Violation | None:
+    """Un menú numerado que no compuso el código. **Observacional a propósito.**
+
+    En la misma conversación el modelo sirvió NUEVE submenús inventados (cinco
+    tipos de peluche, tres combos, cuatro tamaños, dos rondas de tipos de rosa,
+    tres rangos de precio) sin que ninguno pasara por `taxonomy.render_menu`.
+    Nada lo anotó: la traza salió limpia mientras el chat se moría.
+
+    No bloquea, y esa es una decisión, no un olvido: "tres o más renglones
+    numerados" también describe una respuesta legítima —"1) Yape  2) Transferencia
+    3) Tarjeta"—, y descartarla rompería justo el mensaje que cierra la venta.
+    Quien corta la conversación que no avanza es el contador de turnos sin
+    producto; esto es el sensor que dice dónde está pasando.
+    """
+    if menu_owned or not looks_like_numbered_menu(reply):
+        return None
+    return Violation("no_uncomposed_menu", "menú numerado que no compuso el código")
+
+
 def prices_are_sourced(reply: str, artifacts: list[Product]) -> Violation | None:
     """Todo precio en soles debe venir de una tool, no del modelo.
 
@@ -359,8 +405,14 @@ def check_reply(
     user_text: str = "",
     tools_used: list[str] | tuple[str, ...] = (),
     agent: str = "",
+    menu_owned: bool = True,
 ) -> list[Violation]:
-    """Todas las invariantes aplicables a una respuesta. Lista vacía = limpia."""
+    """Todas las invariantes aplicables a una respuesta. Lista vacía = limpia.
+
+    `menu_owned` dice si el menú de esta respuesta lo compuso el código. Por
+    defecto `True` (no se opina): solo el orquestador sabe si `_answer_menu` o
+    `_own_the_menu` pusieron la lista, y quien no lo sepa no debe acusar.
+    """
     reply = reply or ""
     artifacts = artifacts or []
     state = state or ConversationState()
@@ -372,6 +424,8 @@ def check_reply(
         no_third_party_contact(reply, state, user_text),
         image_urls_on_own_line(reply),
         prices_are_sourced(reply, artifacts),
+        no_raw_product_ids(reply),
+        no_uncomposed_menu(reply, menu_owned=menu_owned),
         unsupported_capability_claim(
             reply, tools_used=tools_used, agent=agent
         ),
@@ -392,6 +446,7 @@ _BLOCKING_RULES = frozenset(
     {
         "prices_are_sourced",
         "no_cash_on_delivery",
+        "no_raw_product_ids",
         "no_internal_context",
         "no_system_prompt_leak",
         "no_third_party_contact",
@@ -439,6 +494,15 @@ SAFE_CAPABILITY_FALLBACK = (
     "¿En qué más te ayudo con tu regalo?"
 )
 
+# El modelo "mostró" productos que no eran productos y no hay artifacts con los
+# que reconstruir el listado. No se deriva: quien corta la conversación que no
+# avanza es el contador de turnos sin producto, y hacer un handoff por cada
+# desliz de formato llenaría el inbox de chats que el bot podía atender.
+SAFE_CATALOG_FALLBACK = (
+    "Perdón, se me traspapeló ese listado 😅 Dime qué categoría te interesa "
+    "(o el regalo que buscas) y te muestro las opciones con foto y precio."
+)
+
 
 def sanitize_reply(
     reply: str | None,
@@ -463,6 +527,11 @@ def sanitize_reply(
         return SAFE_CAPABILITY_FALLBACK
     if artifacts:
         return render_product_list([_product_dict(product) for product in artifacts])
+    # Sin artifacts no hay listado que reconstruir. `SAFE_FALLBACK` habla de
+    # medios de pago, que es lo correcto para un precio inventado y un absurdo
+    # para "Producto #1221": el cliente no había preguntado por pagar.
+    if "no_raw_product_ids" in broken:
+        return SAFE_CATALOG_FALLBACK
     return SAFE_FALLBACK
 
 
@@ -474,6 +543,7 @@ def guard_reply(
     user_text: str = "",
     tools_used: list[str] | tuple[str, ...] = (),
     agent: str = "",
+    menu_owned: bool = True,
 ) -> GuardrailResult:
     """Fachada runtime: evaluar y sanear una respuesta en una sola operación."""
     products = artifacts or []
@@ -484,6 +554,7 @@ def guard_reply(
         user_text=user_text,
         tools_used=tools_used,
         agent=agent,
+        menu_owned=menu_owned,
     )
     safe = sanitize_reply(reply, violations, products)
     return GuardrailResult(

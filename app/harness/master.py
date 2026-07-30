@@ -53,11 +53,14 @@ from app.harness.state import ConversationState, load_state, save_state
 from app.harness.stock import is_available, unavailable_message
 from app.harness.taxonomy import (
     MAX_MENU_DEPTH,
+    _MENU_LINE as _taxonomy_menu_line,
     as_state,
+    looks_like_numbered_menu,
     match_category,
     parse_navegacion,
     render_menu,
     resolve_option,
+    resolve_options,
 )
 from app.harness.trace import Trace
 from app.observability import (
@@ -132,10 +135,31 @@ def perceive(messages: list) -> Turn:
     return Turn(text=own, quoted=quoted, has_media=has_media, messages=messages)
 
 
-def _reduce(state: ConversationState, result: AgentResult) -> ConversationState:
+# Turnos de descubrimiento seguidos sin enseñar nada antes de dejar de preguntar
+# y mostrar productos. Tres: con Lichi habría saltado en la tercera pregunta, en
+# vez de en la décima.
+MAX_TURNS_WITHOUT_PRODUCTS = 3
+
+# Intents donde "enseñar productos" ES la respuesta correcta. Cobertura, cierre,
+# políticas y derivación quedan fuera a propósito: ahí preguntar no es dar
+# largas, y soltarle un listado a quien pregunta por el Yape sería peor que el
+# problema que esto arregla.
+_DISCOVERY_INTENTS = frozenset({"greet", "small_talk", "catalog_search", "product_detail"})
+
+
+def _reduce(
+    state: ConversationState, result: AgentResult, *, intent: str = ""
+) -> ConversationState:
     """Aplica al estado lo que el especialista aprendió."""
     if result.state_patch:
         state.patch(result.state_patch)
+
+    # ¿Este turno el cliente vio algo? Se cuenta ANTES de mirar los artifacts
+    # para que el reset de abajo mande cuando los hay.
+    if intent in _DISCOVERY_INTENTS and not result.artifacts and result.escalate is None:
+        state.turns_without_products += 1
+    elif result.artifacts or result.escalate is not None:
+        state.turns_without_products = 0
 
     if result.artifacts:
         state.patch({
@@ -298,6 +322,10 @@ async def _run_master(
     # contexto del sistema). La barrera lo necesita para saber que el teléfono
     # que acaba de aparecer en la respuesta lo escribió él hace un segundo: corre
     # antes de reducir el estado, así que ese dato todavía no está en el pedido.
+    # Un menú es "nuestro" si el turno dejó opciones en el estado: eso solo lo
+    # hacen `_answer_menu` y `_own_the_menu`. Si la respuesta trae una lista
+    # numerada y nadie registró sus opciones, la escribió el modelo y nadie la
+    # reescribió — que es como salieron los nueve submenús inventados.
     guarded = guard_reply(
         result.user_facing,
         state=state,
@@ -305,6 +333,7 @@ async def _run_master(
         user_text=turn.text,
         tools_used=result.tools_used,
         agent=spec_for(intent).name,
+        menu_owned=bool(result.state_patch.get("recent_options")),
     )
     violations = list(guarded.violations)
 
@@ -352,7 +381,7 @@ async def _run_master(
             ),
         )
 
-    state = _reduce(state, result)
+    state = _reduce(state, result, intent=intent)
 
     # ¿Este turno el bot ofreció un asesor? Si el cliente responde "sí", el router
     # sabrá que está aceptando la derivación y no una charla. Se recalcula cada
@@ -438,8 +467,69 @@ async def _handle(
     if respondido is not None:
         return respondido
 
+    # ── Se acabaron las preguntas: productos ──────────────────────
+    if intent in _DISCOVERY_INTENTS and state.turns_without_products >= MAX_TURNS_WITHOUT_PRODUCTS:
+        rescate = await _show_something(state, **ctx)
+        if rescate is not None:
+            return rescate
+
     # ── Resto: especialista LLM con toolset acotado ───────────────
     return await _run_specialty(intent, turn, state, **ctx)
+
+
+async def _show_something(state: ConversationState, **ctx) -> AgentResult | None:
+    """Deja de preguntar y enseña algo. El `step_retries` de la venta.
+
+    El cierre ya aprendió esto: un paso que no entiende y responde lo mismo lo
+    hace para siempre, y una clienta se fue tras cuatro "No pude confirmar esa
+    fecha". El descubrimiento tenía el mismo agujero sin el mismo freno — Lichi
+    pidió "los modelos" cuatro veces en veinte minutos y el bot le contestó con
+    nueve menús.
+
+    Lo más pedido es la respuesta honesta cuando no sabemos la categoría: el
+    cliente ve precios y fotos reales, y desde ahí se puede seguir. Si ni eso
+    sale, el problema es nuestro (o de la API) y lo coge un humano: seguir
+    preguntando es exactamente lo que no funcionó.
+    """
+    productos = await _destacados()
+    if productos:
+        return AgentResult(
+            user_facing=compose_product_reply(
+                "Mejor te enseño 🎁 Esto es lo que más nos piden:", productos
+            ),
+            artifacts=productos,
+            state_patch={"recent_options": [], "menu_depth": 0},
+        )
+
+    conversation_id = ctx.get("conversation_id")
+    if conversation_id is None:
+        return None
+    log.warning(
+        "[catalog] conversation=%s %s turnos sin productos y destacados vacío; se deriva",
+        conversation_id,
+        state.turns_without_products,
+    )
+    return AgentResult(
+        user_facing=None,
+        escalate=await perform_handoff(
+            wa_id=ctx.get("wa_id") or "",
+            conversation_id=conversation_id,
+            motivo="el bot lleva varios turnos sin poder mostrar productos",
+            use_external_crm=ctx.get("use_external_crm", False),
+            session=ctx.get("session"),
+            persist=ctx.get("persist"),
+        ),
+    )
+
+
+async def _destacados() -> list[Product]:
+    """Los más pedidos, para cuando no sabemos qué categoría quiere."""
+    try:
+        payload = json.loads(await execute_tool("productos_destacados", {}))
+    except Exception as err:
+        log.warning("[catalog] no pude traer los destacados: %s", err)
+        return []
+    return extract_products(payload)
 
 
 async def _answer_menu(turn: Turn, state: ConversationState) -> AgentResult | None:
@@ -463,6 +553,22 @@ async def _answer_menu(turn: Turn, state: ConversationState) -> AgentResult | No
         return None
     chosen = resolve_option(turn.text, options)
     if chosen is None:
+        # Varios números en el mismo turno (el buffer une los mensajes seguidos:
+        # "4" a las 16:01 y "1" a las 16:02). No se adivina cuál era, pero
+        # tampoco se suelta el turno: se pregunta con las opciones que ya
+        # compuso el código, renumeradas, para que la respuesta siguiente se
+        # resuelva sola. Si el cliente vuelve a ser ambiguo, el contador de
+        # turnos sin producto corta por lo sano.
+        candidatos = resolve_options(turn.text, options)
+        if len(candidatos) > 1:
+            return AgentResult(
+                user_facing=render_menu(
+                    candidatos,
+                    "Me diste más de un número y no quiero mandarte lo que no "
+                    "era 😊 ¿Cuál de estas? Responde con el número:",
+                ),
+                state_patch={"recent_options": as_state(candidatos)},
+            )
         return None
 
     hijos = chosen.get("hijos") or []
@@ -881,16 +987,10 @@ async def _own_the_menu(
     }
 
 
-_MENU_LINE = re.compile(r"^\s*\d+\s*[).\-]\s*\S", re.M)
-
-
-def _looks_like_menu(reply: str | None) -> bool:
-    """¿Es una lista numerada de opciones? Tres o más renglones numerados.
-
-    Con menos no lo tocamos: "1) Ver fotos 2) Ver otras opciones" es una
-    pregunta legítima del modelo, no un menú de categorías que debamos suplantar.
-    """
-    return bool(reply) and len(_MENU_LINE.findall(reply)) >= 3
+# La definición de "menú" vive en `taxonomy`, que es quien los compone y quien
+# los vigila desde los guardrails. Aquí solo se le da nombre local.
+_looks_like_menu = looks_like_numbered_menu
+_MENU_LINE = _taxonomy_menu_line
 
 
 def _intro_of(reply: str | None) -> str:

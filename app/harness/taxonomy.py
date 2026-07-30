@@ -76,6 +76,22 @@ def parse_navegacion(payload: Any) -> list[dict]:
     return options
 
 
+_MENU_LINE = re.compile(r"^\s*\d+\s*[).\-]\s*\S", re.M)
+
+
+def looks_like_numbered_menu(reply: str | None) -> bool:
+    """¿Es una lista numerada de opciones? Tres o más renglones numerados.
+
+    Con menos no lo tocamos: "1) Ver fotos 2) Ver otras opciones" es una
+    pregunta legítima del modelo, no un menú de categorías que debamos suplantar.
+
+    Vive aquí y no en `master` porque lo usan dos sitios —quien reescribe el menú
+    y quien vigila la respuesta— y una segunda copia de este regex sería una
+    segunda definición de "menú" que se desincroniza de la primera.
+    """
+    return bool(reply) and len(_MENU_LINE.findall(reply)) >= 3
+
+
 def render_menu(options: list[dict], header: str) -> str:
     """El menú numerado. La numeración es la del código, no la del modelo.
 
@@ -133,6 +149,33 @@ def resolve_option(text: str, options: list[dict]) -> dict | None:
     if len(hits) == 1:
         return hits[0]
     return None
+
+
+def resolve_options(text: str, options: list[dict]) -> list[dict]:
+    """TODAS las opciones a las que apunta el mensaje, en el orden en que salen.
+
+    El buffer une los mensajes que el cliente manda seguidos, así que "4" (16:01)
+    y "1" (16:02) llegan como un turno. `resolve_option` exige un número y solo
+    uno, de modo que ahí devolvía `None` y el turno se lo quedaba el modelo — que
+    es donde empezaron los nueve submenús inventados.
+
+    Con la lista de candidatos se puede preguntar cuál era **con las opciones que
+    compuso el código**, en vez de soltar el turno. Sigue sin adivinarse: dos
+    números son dos números, y elegir por el cliente es meterlo en una categoría
+    que no pidió.
+    """
+    if not options:
+        return []
+    norm = _norm(text)
+    if not norm:
+        return []
+
+    elegidas: list[dict] = []
+    for token in re.findall(r"\d+", norm):
+        idx = int(token)
+        if 1 <= idx <= len(options) and options[idx - 1] not in elegidas:
+            elegidas.append(options[idx - 1])
+    return elegidas
 
 
 # Palabras que acompañan al número sin cambiar lo que significa: "la 3",

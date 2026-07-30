@@ -70,6 +70,12 @@ class ConversationState:
     # muestran productos con lo que haya: preguntar una tercera vez es como se
     # pierde a quien ya sabía lo que quería.
     menu_depth: int = 0
+    # Turnos SEGUIDOS de descubrimiento en los que el bot no enseñó ni un
+    # producto. `menu_depth` solo cuenta los menús que compone el código, así que
+    # con Lichi se quedó en 1 mientras el modelo servía nueve submenús suyos: el
+    # tope de dos menús nunca llegó a saltar. Esto cuenta lo que le pasa al
+    # CLIENTE —seguir sin ver nada—, que es lo que de verdad mata la venta.
+    turns_without_products: int = 0
     shown_product_ids: list[int] = field(default_factory=list)
     # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
     # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".
