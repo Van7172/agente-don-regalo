@@ -21,6 +21,7 @@ from app.config import settings
 from app.crm import repository as repo
 from app.harness.contracts import AgentResult, EscalateReason, Product, extract_products
 from app.guardrails import (
+    empty_search_is_not_a_handoff,
     handoff_policy,
     is_payment_reason,
     is_small_talk,
@@ -733,7 +734,15 @@ async def run_specialist(
 
                         # Red de seguridad: el modelo a veces escala ventas sanas
                         # ("regalos corporativos", "2 y 3") o charla trivial.
+                        # Y a veces escala por rendición: buscó, no encontró y
+                        # cedió el chat por un producto que sí estaba en venta.
                         decision = handoff_policy(messages)
+                        if decision.allow:
+                            decision = empty_search_is_not_a_handoff(
+                                messages,
+                                tools_used=tools_used,
+                                found_products=bool(artifacts),
+                            )
                         if not decision.allow:
                             log.info(
                                 "[HANDOFF] descartado conversation=%s",

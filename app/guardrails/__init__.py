@@ -5,7 +5,9 @@ salidas. El resto de la aplicación no debe inventar reglas paralelas.
 """
 
 from app.guardrails.conversation import (
+    customer_asked_for_human,
     dedupe_artifacts,
+    empty_search_is_not_a_handoff,
     grounding_violation,
     handoff_policy,
     is_courtesy_text,
@@ -80,7 +82,9 @@ __all__ = [
     "UNTRUSTED_CONTENT_REMOVED",
     "Violation",
     "check_reply",
+    "customer_asked_for_human",
     "dedupe_artifacts",
+    "empty_search_is_not_a_handoff",
     "find_contacts",
     "detect_prompt_injection",
     "grounding_violation",

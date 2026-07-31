@@ -242,6 +242,109 @@ async def _semantic_fallback(
     return result
 
 
+# Conectores y muletillas: no distinguen ningún producto, así que degradar la
+# consulta quitándolos no cambia lo que el cliente pidió.
+_QUERY_STOPWORDS = frozenset({
+    "de", "del", "la", "el", "lo", "los", "las", "un", "una", "unos", "unas",
+    "para", "con", "sin", "y", "o", "mi", "su", "que", "en", "al", "por",
+    "quiero", "busco", "tienen", "tienes", "hay", "algun", "alguna",
+    # Cómo se pregunta un precio. Ningún producto se llama así, y sin esto la
+    # frase del incidente ("Cuánto está hello Kitty") gastaba los tres intentos
+    # en "cuanto esta" y "esta hello" sin llegar nunca a "kitty".
+    "cuanto", "cuanta", "cuantos", "cuantas", "cuesta", "cuestan",
+    "esta", "este", "estan", "vale", "valen", "precio", "precios",
+    "sale", "salen", "seria", "serian", "tiene",
+})
+
+
+# Los nombres de categoría, sacados de `_CATEGORY_HINTS` para no mantener una
+# segunda lista que se desincronice de la primera.
+_CATEGORY_WORDS = frozenset(
+    _norm_text(term)
+    for terms, _slug in _CATEGORY_HINTS
+    for term in terms
+    if " " not in term
+)
+
+
+def _degrade_query(q: str, limit: int = 3) -> list[str]:
+    """Consultas más cortas para reintentar cuando la frase entera no da nada.
+
+    El `q` de la API es una coincidencia LITERAL de la frase completa, no una
+    búsqueda por palabras. Medido contra producción: `q=hello kitty` devuelve 0
+    y `q=kitty` devuelve 2 — *Peluche Kitty Sunshine* y *Kitty y sus Rosas
+    lilas Mágicas*. Una clienta preguntó "Cuánto está hello Kitty" y el bot la
+    derivó a un humano por un producto que estaba en venta, con precio y stock:
+    sobraba una palabra.
+
+    Palabras sueltas ANTES que pares: contra un LIKE, cuanto más corta la
+    consulta más cosas casan, y si la frase entera falló lo que hace falta es
+    ensanchar. Se ordenan por longitud (la palabra larga distingue más que la
+    corta) y, a igualdad, la de más a la derecha primero — en español el núcleo
+    suele ir al final: "peluche de hello kitty" → kitty, "ositos panda" → panda.
+
+    Se limita el número de intentos: cada uno es una llamada HTTP dentro del
+    turno, y el cliente está esperando.
+    """
+    tokens = [
+        t for t in _norm_text(q).split()
+        if len(t) >= 3 and t not in _QUERY_STOPWORDS
+    ]
+    if not tokens:
+        return []
+    completa = " ".join(tokens)
+    if len(tokens) < 2:
+        # Ya es lo más corto que se puede pedir… salvo que la frase original
+        # llevara ruido que acabamos de quitar ("cuánto está kitty" → "kitty").
+        return [] if completa == _norm_text(q) else [completa]
+
+    # La palabra que nombra la categoría es la que MENOS distingue: en "peluche
+    # de hello kitty" lo que identifica el producto es "kitty", y buscar
+    # "peluche" devuelve los once peluches del catálogo. Se posponen.
+    sueltas = sorted(
+        range(len(tokens)),
+        key=lambda i: (tokens[i] in _CATEGORY_WORDS, -len(tokens[i]), -i),
+    )
+    intentos = [tokens[i] for i in sueltas]
+    # Pares contiguos como último recurso: más precisos, pero si la frase entera
+    # no dio nada, lo probable es que tampoco lo dé un trozo de ella.
+    for inicio in range(len(tokens) - 2, -1, -1):
+        intentos.append(" ".join(tokens[inicio:inicio + 2]))
+
+    vistos: list[str] = []
+    for candidato in intentos:
+        if candidato != completa and candidato not in vistos:
+            vistos.append(candidato)
+    return vistos[:limit]
+
+
+async def _degraded_search(
+    client: httpx.AsyncClient, args: dict
+) -> dict | None:
+    """Reintenta con consultas más cortas. `None` si ninguna encuentra nada."""
+    original = (args.get("q") or "").strip()
+    for candidato in _degrade_query(original):
+        intento = dict(args)
+        intento["q"] = candidato
+        resultado = await _pick("buscar_productos", catalog.buscar_productos)(
+            client, intento
+        )
+        if result_product_count(resultado) > 0:
+            log.info(
+                "[tool] %r no dio nada; %r sí (%d)",
+                original[:40], candidato, result_product_count(resultado),
+            )
+            record_operation("tool.buscar_productos", "degraded_hit")
+            if isinstance(resultado, dict):
+                resultado = dict(resultado)
+                # No es literalmente lo que pidió: que el bot lo diga.
+                resultado["aproximado"] = True
+                resultado["consulta_original"] = original
+                resultado["consulta_usada"] = candidato
+            return resultado
+    return None
+
+
 async def execute_tool(name: str, args: dict) -> str:
     """Ejecuta una herramienta y devuelve el resultado como string JSON."""
     started = time.monotonic()
@@ -266,7 +369,25 @@ async def execute_tool(name: str, args: dict) -> str:
                             reason="api_like_vacia",
                         )
                         if result_product_count(sem) > 0:
+                            # La búsqueda literal no encontró NADA: esto son
+                            # vecinos semánticos, no lo que el cliente escribió.
+                            # Para "hello kitty" el tercero es un "Macetero
+                            # Gatita encantadora"; presentarlo como coincidencia
+                            # exacta es lo que hace que el cliente se sienta
+                            # engañado. Igual que el fallback de categoría.
+                            sem["aproximado"] = True
+                            sem["consulta_original"] = q
                             result = sem
+
+                # Escalón 3: acortar la frase. Va después de Qdrant pero es el
+                # que NO depende de él — sin Qdrant configurado,
+                # `buscar_semantico` cae a esta misma búsqueda literal
+                # (`search.py`), así que el fallback semántico repetía la
+                # consulta que acababa de fallar y devolvía cero otra vez.
+                if result_product_count(result) == 0:
+                    degradado = await _degraded_search(client, args)
+                    if degradado is not None:
+                        result = degradado
 
             elif name == "catalogo_categoria":
                 args = dict(args or {})

@@ -222,6 +222,63 @@ def should_discard_handoff(messages: list) -> bool | str:
     return False if decision.allow else decision.reason
 
 
+def customer_asked_for_human(messages: list) -> bool:
+    """¿Lo pidió el CLIENTE, o se lo inventó el modelo?
+
+    Mismo vocabulario que usa `handoff_policy` para forzar la derivación: pedir
+    un asesor, hablar de un pago o de una cancelación. Sirve para distinguir una
+    escalada solicitada de una escalada por rendición.
+    """
+    raw = latest_user_text(messages) or ""
+    return bool(_HANDOFF_FORCE_RE.search(raw))
+
+
+def empty_search_is_not_a_handoff(
+    messages: list, *, tools_used: list | tuple, found_products: bool
+) -> Decision:
+    """Buscar y no encontrar NO es motivo para ceder el chat.
+
+    Una clienta preguntó "Cuánto está hello Kitty". El `q` de la API es una
+    coincidencia literal de la frase entera: no encontró nada (aunque el
+    catálogo tiene *Peluche Kitty Sunshine* a $28) y el modelo se rindió y llamó
+    a `escalar_a_humano`. Un catálogo que no responde a la primera es lo normal;
+    ceder el chat por eso es regalar la venta.
+
+    Se veta SOLO si la búsqueda volvió vacía. Si encontró productos y el modelo
+    escala igual, el motivo es otro —personalización, un reclamo— y ahí la
+    derivación sí puede ser legítima; decide `handoff_policy`.
+    """
+    if found_products:
+        return Decision(allow=True)
+    if not any(t in _SEARCH_TOOLS for t in (tools_used or ())):
+        return Decision(allow=True)
+    if customer_asked_for_human(messages):
+        return Decision(allow=True)
+    return Decision(
+        allow=False,
+        reason=(
+            "La búsqueda no devolvió productos, y eso NO es motivo para derivar. "
+            "Dile con franqueza que no encontraste ese producto exacto y ofrécele "
+            "alternativas reales del catálogo: prueba otra búsqueda más corta, la "
+            "categoría que corresponda o `productos_destacados`. Nunca inventes "
+            "productos ni prometas un asesor."
+        ),
+    )
+
+
+# Tools que consultan catálogo. Si corrió alguna y no salió ni un producto, el
+# turno se quedó sin nada que enseñar — que es cuando el modelo se rinde.
+_SEARCH_TOOLS = frozenset({
+    "buscar_productos",
+    "buscar_semantico",
+    "catalogo_categoria",
+    "productos_similares",
+    "productos_destacados",
+    "productos_por_ocasion",
+    "productos_oferta",
+})
+
+
 def is_payment_reason(motivo: str) -> bool:
     return bool(_PAYMENT_RE.search(motivo or ""))
 
