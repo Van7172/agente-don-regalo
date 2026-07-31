@@ -72,7 +72,12 @@ from app.observability import (
 )
 from app.prompts.compose import build_system, prompt_version
 from app.prompts.playbooks import WELCOME
-from app.services.agent import HANDOFF_DONE, perform_handoff, run_specialist
+from app.services.agent import (
+    HANDOFF_DONE,
+    HANDOFF_FAILED_MSG,
+    perform_handoff,
+    run_specialist,
+)
 from app.tools.executor import execute_tool
 
 log = logging.getLogger(__name__)
@@ -400,6 +405,16 @@ async def _run_master(
         await save_state(conversation_id, state, wa_id=wa_id, base=state_base)
 
     if result.escalate is not None:
+        # `HANDOFF_DONE` significa "ya se habló y ahora manda un humano". Si la
+        # cesión falló, ninguna de las dos cosas es cierta: nadie va a entrar y
+        # este turno no le dijo nada al cliente. Callarse ahí es dejarlo
+        # esperando a un asesor que no existe, así que el bot sigue él.
+        if not result.escalate.ceded and not result.user_facing:
+            log.warning(
+                "[HANDOFF] conversation=%s cesión fallida; responde el bot",
+                conversation_id,
+            )
+            return HANDOFF_FAILED_MSG
         return HANDOFF_DONE
     return result.user_facing
 

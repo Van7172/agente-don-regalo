@@ -50,12 +50,27 @@ _HANDOFF_FORCE_RE = re.compile(
 )
 
 # Contexto de venta en curso: el bot debe seguir preguntando, no escalar.
+#
+# Ojo con lo que faltaba aquí. Un cliente escribió "Cuánto está hello Kitty" y
+# el modelo llamó a `escalar_a_humano`: esta lista no traía NI UNA palabra de
+# precio ni la palabra "peluche" —una de las siete categorías padre—, así que
+# `handoff_policy` no lo reconoció como venta, cayó en el `allow=True` por
+# defecto y le cedió el chat a un humano que nadie había pedido. Preguntar el
+# precio de un producto es el mensaje más comercial que existe.
+#
+# `test_handoff_no_se_come_una_venta.py` comprueba que sigue cubriendo las
+# categorías de la taxonomía REAL, para que no vuelva a desincronizarse.
 _SALES_CONTINUE_RE = re.compile(
     r"corporativ|empresa|b2b|mayorista|colegio|instituci|"
     r"recuerdo|exposici|fiestas?\s+patrias|patrias|"
     r"cantidad|unidades|docena|presupuesto|cotizaci|"
     r"cat[aá]logo|en\s+su\s+p[aá]gina|en\s+la\s+p[aá]gina|"
+    # Precio: preguntar cuánto cuesta algo es querer comprarlo.
+    r"cu[aá]nto|cu[aá]nta|precio|cuesta|valor|"
     r"desayuno|cesta|suculenta|arreglo|girasol|rosa|ramo|floral|"
+    # Las siete categorías padre y sus hijas más nombradas.
+    r"peluche|planta|orqu[ií]dea|terrario|beb[eé]|canasta|"
+    r"corona|cruz|l[aá]grima|manto|f[uú]nebre|"
     r"disponib|stock|horario|distrito|delivery|entrega|"
     r"tarjeta|visa|mastercard|paypal|"
     r"reserv[aoe]|me\s+gusta\s+est|elijo|escoger|"

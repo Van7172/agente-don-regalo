@@ -55,6 +55,11 @@ def _as_float(value: Any) -> Optional[float]:
 class EscalateReason:
     motivo: str
     is_payment: bool = False
+    # ¿Se cedió el chat DE VERDAD? `False` = el CRM no aceptó el cambio a HUMAN.
+    # Importa porque el turno que deriva no le dice nada más al cliente: si nadie
+    # va a entrar y encima nos callamos, el cliente se queda esperando a un
+    # asesor que no existe. Con esto, `master` sabe que tiene que seguir él.
+    ceded: bool = True
 
 
 @dataclass

@@ -236,6 +236,14 @@ _HANDOFF_WAIT_MSG = (
     "Dame un momento, en seguida continúan contigo."
 )
 
+# La cesión del chat no salió y el turno no tiene nada más que decir. NO se
+# vuelve a nombrar a un asesor: prometer dos veces lo que no llegó la primera es
+# peor que no prometerlo. El bot sigue atendiendo, que es lo que puede hacer.
+HANDOFF_FAILED_MSG = (
+    "Perdona la demora 🙏 Sigo por acá contigo: cuéntame en una línea qué "
+    "necesitas y lo vemos al toque."
+)
+
 _FILLER_BY_TOOL: dict[str, list[str]] = {
     "buscar_semantico": ["¡Genial! Déjame buscarte las mejores opciones 🎁", "¡Claro! Ya te busco algo perfecto 😍"],
     "buscar_productos": ["Un momento 😊"],
@@ -276,6 +284,41 @@ async def _say(wa_id: str, text: str, persist) -> str | None:
         except Exception as err:
             log.warning("[PERSIST] no se pudo guardar en el CRM: %s", err)
     return wa_mid
+
+
+async def _cede_a_humano(
+    conversation_id: int | None,
+    *,
+    use_external_crm: bool,
+    session: AsyncSession | None,
+) -> bool:
+    """Pasa la conversación a HUMAN. `False` si NO se pudo — y entonces no se
+    promete nada.
+
+    Sin `conversation_id` tampoco se puede: no hay a qué chat cambiarle el modo.
+    Antes ese caso enviaba el aviso igual y seguía como si nada.
+    """
+    if conversation_id is None:
+        return False
+    try:
+        if use_external_crm:
+            from app.crm import http_client as crm_http
+
+            await crm_http.set_mode(conversation_id, "HUMAN")
+            return True
+        if session is not None:
+            await repo.set_human_support(session, conversation_id, True)
+            await session.commit()
+            return True
+    except Exception as err:
+        log.error(
+            "[HANDOFF] conversation=%s falló el cambio a HUMAN: %s: %s",
+            conversation_id,
+            type(err).__name__,
+            err,
+        )
+        return False
+    return False
 
 
 async def perform_handoff(
@@ -330,14 +373,31 @@ async def perform_handoff(
                 log.warning("[harness] no se cerró checkout en feriado: %s", err)
         return EscalateReason(motivo=motivo, is_payment=is_payment)
 
-    await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
-    if use_external_crm and conversation_id:
-        from app.crm import http_client as crm_http
+    # PRIMERO se cede, DESPUÉS se promete. Al revés —que es como estaba— el
+    # `_say` salía siempre y el cambio de modo era condicional y sin `try`: si
+    # el CRM no respondía, el cliente se quedaba con "en seguida continúan
+    # contigo" y la conversación seguía en IA. En una captura real el bot mandó
+    # esa frase y en el mensaje siguiente estaba preguntando otra vez, con el
+    # CRM marcando "Don Regalo escuchando". Misma regla que el claim del outbox:
+    # se reclama antes de hablar.
+    if not await _cede_a_humano(
+        conversation_id, use_external_crm=use_external_crm, session=session
+    ):
+        log.error(
+            "[HANDOFF] conversation=%s no se pudo ceder el chat; el bot sigue",
+            conversation_id,
+        )
+        record_operation("handoff", "cede_failed")
+        audit_event("handoff", "cede_failed", conversation_id=conversation_id)
+        # Se avisa igual: alguien tiene que mirarlo aunque el chat siga en IA,
+        # y el asesor siempre puede entrar con "Tomar conversación".
+        await notify_team(
+            f"Handoff FALLIDO (conversacion {conversation_id}): el chat sigue en "
+            f"modo IA. Motivo: {motivo}."
+        )
+        return EscalateReason(motivo=motivo, is_payment=is_payment, ceded=False)
 
-        await crm_http.set_mode(conversation_id, "HUMAN")
-    elif session and conversation_id:
-        await repo.set_human_support(session, conversation_id, True)
-        await session.commit()
+    await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
     await notify_team(
         f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
     )

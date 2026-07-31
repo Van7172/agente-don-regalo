@@ -55,6 +55,15 @@ def espias(monkeypatch):
     monkeypatch.setattr(hol, "staff_offline", lambda today=None: False)
     monkeypatch.setattr(hol, "lima_today", lambda: date(2026, 7, 15))
 
+    # Estos tests corren sin sesión ni CRM externo, así que el chat no se podría
+    # ceder de verdad y `perform_handoff` no prometería nada (que es lo correcto:
+    # primero se cede, después se promete). Aquí se da por cedido porque lo que
+    # se mide es la persistencia del mensaje, no la cesión.
+    async def cede_ok(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(agent_mod, "_cede_a_humano", cede_ok)
+
     async def persist(*, content, wa_message_id=None, media_url=None):
         estado["guardados"].append(content)
 

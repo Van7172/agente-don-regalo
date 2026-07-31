@@ -61,9 +61,16 @@ def harness(monkeypatch):
     async def fake_typing(*a, **kw):
         return None
 
+    async def fake_cede(*a, **kw):
+        # Sin sesión ni CRM externo el chat no se podría ceder, y desde que
+        # `perform_handoff` cede ANTES de prometer, eso significaría no prometer
+        # nada. Estos tests miden que la derivación OCURRE, no el transporte.
+        return True
+
     monkeypatch.setattr(agent_mod, "execute_tool", fake_execute_tool)
     monkeypatch.setattr(agent_mod, "send_message", fake_send)
     monkeypatch.setattr(agent_mod, "set_typing", fake_typing)
+    monkeypatch.setattr(agent_mod, "_cede_a_humano", fake_cede)
     monkeypatch.setattr(state_mod.crm_http, "crm_enabled", lambda: False)
     clear_local_cache()
     yield espia
