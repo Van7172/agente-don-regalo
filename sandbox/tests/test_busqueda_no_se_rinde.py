@@ -21,16 +21,42 @@ impide rendirse — una búsqueda vacía nunca deriva.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
 from app.guardrails import customer_asked_for_human, empty_search_is_not_a_handoff
+from app.harness.taxonomy import match_recipient, parse_filtros
 from app.tools import executor
 from app.tools.executor import _degrade_query, execute_tool
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "api"
 
 
 def _msg(texto: str) -> list[dict]:
     return [{"role": "user", "content": texto}]
+
+
+@pytest.fixture
+def filtros_reales() -> list[dict]:
+    return parse_filtros(
+        json.loads((FIXTURES / "catalogo_navegacion.json").read_text(encoding="utf-8"))
+    )
+
+
+@pytest.fixture
+def navegacion(monkeypatch):
+    """La taxonomía real, sin red: el escalón 4 la consulta para los filtros."""
+    payload = json.loads(
+        (FIXTURES / "catalogo_navegacion.json").read_text(encoding="utf-8")
+    )
+
+    async def fake_explorar(_client, _args):
+        return payload
+
+    from app.tools import catalog
+
+    monkeypatch.setattr(catalog, "explorar_catalogo", fake_explorar)
 
 
 # ── Acortar la consulta ───────────────────────────────────────────────
@@ -42,12 +68,28 @@ def test_la_frase_del_incidente_llega_a_kitty():
     assert _degrade_query("hello kitty")[0] == "kitty"
 
 
-def test_la_palabra_de_la_categoria_va_la_ultima():
-    """"peluche" devuelve los once peluches del catálogo; "kitty", el producto.
-    La palabra que nombra la categoría es la que menos distingue."""
-    assert _degrade_query("peluche de hello kitty") == ["kitty", "hello", "peluche"]
-    assert _degrade_query("desayuno criollo para mi mamá")[0] == "criollo"
-    assert _degrade_query("arreglo floral de girasoles")[0] == "girasoles"
+def test_este_escalon_busca_el_producto_no_la_categoria():
+    """"peluche" devuelve los once peluches; "kitty", el producto. De la
+    categoría se encarga el escalón siguiente, y mejor —como categoría."""
+    for frase, esperado in (
+        ("peluche de hello kitty", "kitty"),
+        ("desayuno criollo para mi mamá", "criollo"),
+        ("arreglo floral de girasoles", "girasoles"),
+    ):
+        intentos = _degrade_query(frase)
+        assert intentos[0] == esperado
+        # Ninguna categoría suelta: como par sí vale ("desayuno criollo" es un
+        # producto plausible), pero sola devuelve la categoría entera.
+        assert not [i for i in intentos if i in ("peluche", "desayuno", "arreglo")]
+
+
+def test_el_destinatario_no_se_busca_como_si_fuera_un_producto():
+    """"un peluche de dinosaurio para mi esposa" acababa buscando `esposa` y
+    ofreciendo un "Box de rosas y ferrero corazón", porque esa palabra sale en
+    su descripción. El destinatario va en `filtro`, no en `q`."""
+    assert "esposa" not in _degrade_query("un peluche de dinosaurio para mi esposa")
+    assert _degrade_query("algo bonito para mi esposa") == []
+    assert _degrade_query("para mi sobrina") == []
 
 
 def test_una_sola_palabra_ya_no_se_puede_acortar():
@@ -74,16 +116,26 @@ def api_como_produccion(monkeypatch):
     """La API real: `q` casa la frase LITERAL. Sin Qdrant, como cuando el índice
     está frío — que es justo cuando el fallback semántico no sirve de nada."""
     CATALOGO = [
-        {"id_producto": 1279, "nombre": "Peluche Kitty Sunshine", "precio_sol": 95.2},
-        {"id_producto": 1226, "nombre": "Kitty y sus Rosas lilas Mágicas", "precio_sol": 129.2},
-        {"id_producto": 290, "nombre": "Peluche Oso Loquito de Amor", "precio_sol": 64.6},
+        {"id_producto": 1279, "nombre": "Peluche Kitty Sunshine", "precio_sol": 95.2,
+         "cat": "peluches", "filtros": ["para-mujer"]},
+        {"id_producto": 1226, "nombre": "Kitty y sus Rosas lilas Mágicas", "precio_sol": 129.2,
+         "cat": "arreglos-florales", "filtros": ["para-mujer"]},
+        {"id_producto": 290, "nombre": "Peluche Oso Loquito de Amor", "precio_sol": 64.6,
+         "cat": "peluches", "filtros": ["para-hombre"]},
     ]
     llamadas: list[str] = []
 
     async def fake_buscar(_client, args):
         q = (args.get("q") or "").lower()
-        llamadas.append(q)
-        data = [p for p in CATALOGO if q and q in p["nombre"].lower()]
+        categoria, filtro = args.get("categoria"), args.get("filtro")
+        llamadas.append(q or f"[categoria={categoria} filtro={filtro}]")
+        data = list(CATALOGO)
+        if q:
+            data = [p for p in data if q in p["nombre"].lower()]
+        if categoria:
+            data = [p for p in data if p["cat"] == categoria]
+        if filtro:
+            data = [p for p in data if filtro in p["filtros"]]
         return {"data": data, "total": len(data)}
 
     from app.tools import catalog, search
@@ -172,5 +224,85 @@ def test_las_palabras_de_categoria_salen_de_category_hints():
     """Una segunda lista se desincronizaría de la primera."""
     for terms, _slug in executor._CATEGORY_HINTS:
         for term in terms:
-            if " " not in term:
-                assert executor._norm_text(term) in executor._CATEGORY_WORDS
+            for palabra in executor._norm_text(term).split():
+                assert palabra in executor._CATEGORY_WORDS, (
+                    f"{palabra!r} viene de {term!r} y se buscaría como producto"
+                )
+
+
+# ── Escalón 4: ofrecer lo que sí hay ──────────────────────────────────
+
+def test_los_filtros_salen_del_payload_no_de_una_constante():
+    """`para-mujer` escrito a mano sería la regla 4 de CLAUDE.md otra vez: el
+    día que la API lo renombre mandaríamos un slug muerto."""
+    nav = json.loads(
+        (FIXTURES / "catalogo_navegacion.json").read_text(encoding="utf-8")
+    )
+    filtros = parse_filtros(nav)
+
+    destinatario = next(f for f in filtros if f["slug"] == "destinatario")
+    assert {h["slug"] for h in destinatario["hijos"]} == {
+        "para-hombre", "para-mujer", "regalos-para-ninos",
+    }
+    assert {f["slug"] for f in filtros} == {"destinatario", "flores", "ocasion"}
+
+
+@pytest.mark.parametrize(
+    "texto,esperado",
+    [
+        ("un regalo para mi esposa", "para-mujer"),
+        ("algo para mi novio", "para-hombre"),
+        ("para mi sobrina", "regalos-para-ninos"),
+    ],
+)
+def test_se_deduce_para_quien_es(texto, esperado, filtros_reales):
+    assert match_recipient(texto, filtros_reales)["slug"] == esperado
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "para mi hija",              # ¿seis años o cuarenta? no se adivina
+        "para mi esposa y mi hermano",
+        "quiero un peluche",
+    ],
+)
+def test_ante_la_duda_no_se_filtra(texto, filtros_reales):
+    assert match_recipient(texto, filtros_reales) is None
+
+
+@pytest.mark.asyncio
+async def test_sin_el_producto_se_ofrece_la_categoria(api_como_produccion, navegacion):
+    """"no tengo ese unicornio, pero mira estos peluches" cierra ventas; el
+    silencio, no."""
+    payload = json.loads(
+        await execute_tool("buscar_productos", {"q": "peluche de unicornio"})
+    )
+
+    assert payload["data"], "algo hay que enseñar"
+    assert payload["aproximado"] is True
+    assert payload["categoria_ofrecida"] == "peluches"
+
+
+@pytest.mark.asyncio
+async def test_si_consta_para_quien_es_se_estrecha(api_como_produccion, navegacion):
+    payload = json.loads(
+        await execute_tool(
+            "buscar_productos", {"q": "peluche de unicornio para mi esposa"}
+        )
+    )
+
+    assert payload["categoria_ofrecida"] == "peluches"
+    assert payload["filtro_ofrecido"] == "para-mujer"
+
+
+@pytest.mark.asyncio
+async def test_lo_que_no_vendemos_se_dice(api_como_produccion, navegacion):
+    """Ni categoría ni destinatario: un "xilófono de titanio" se contesta con la
+    verdad, no con un desayuno."""
+    payload = json.loads(
+        await execute_tool("buscar_productos", {"q": "xilofono de titanio"})
+    )
+
+    assert payload.get("data") == []
+    assert not payload.get("aproximado")

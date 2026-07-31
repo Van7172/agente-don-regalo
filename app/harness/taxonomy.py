@@ -76,6 +76,102 @@ def parse_navegacion(payload: Any) -> list[dict]:
     return options
 
 
+def parse_filtros(payload: Any) -> list[dict]:
+    """Las facetas transversales de `GET /catalogo/navegacion`.
+
+    El payload trae tres —Destinatario (`para-hombre`, `para-mujer`,
+    `regalos-para-ninos`), Flores y Ocasión— y hasta ahora nadie las leía:
+    `parse_navegacion` solo miraba `categorias`. La propia API lo dice en su
+    campo `instrucciones_agente`: *"filtros = facetas transversales. Usar query
+    filtro=slug"*.
+
+    Existe para que el código pueda usarlas SIN hardcodear los slugs. Escribir
+    "para-mujer" en el prompt o en una constante es la regla 4 de CLAUDE.md otra
+    vez: el día que la API lo renombre, mandaríamos un slug muerto.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+
+    out: list[dict] = []
+    for filtro in data.get("filtros") or []:
+        if not isinstance(filtro, dict):
+            continue
+        nombre = str(filtro.get("nombre") or "").strip()
+        slug = str(filtro.get("url_filtro") or "").strip("/")
+        if not nombre or not slug:
+            continue
+        hijos = [
+            {
+                "nombre": str(sub["nombre"]).strip(),
+                "slug": str(sub["url_filtro"]).strip("/"),
+                "tipo": "filtro",
+                "hijos": [],
+            }
+            for sub in filtro.get("subfiltros") or []
+            if isinstance(sub, dict) and sub.get("nombre") and sub.get("url_filtro")
+        ]
+        out.append(
+            {"nombre": nombre, "slug": slug, "tipo": "filtro", "hijos": hijos}
+        )
+    return out
+
+
+# Cómo nombra el cliente al destinatario. Solo lo INEQUÍVOCO: "hijo"/"hija" no
+# están porque no dicen la edad —una hija puede tener seis años o cuarenta— y
+# meter a alguien en el filtro equivocado se lee peor que no filtrar.
+_RECIPIENT_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("esposa", "señora", "senora", "novia", "mama", "madre", "mami",
+         "hermana", "abuela", "tia", "suegra", "enamorada", "amiga", "ella"),
+        "mujer",
+    ),
+    (
+        ("esposo", "señor", "senor", "novio", "papa", "padre", "papi",
+         "hermano", "abuelo", "tio", "suegro", "enamorado", "amigo"),
+        "hombre",
+    ),
+    (
+        ("nino", "nina", "sobrino", "sobrina", "nieto", "nieta", "peque"),
+        "ninos",
+    ),
+)
+
+
+# Plano, para quien solo necesita saber "esto nombra al destinatario, no al
+# producto" — la escalera de búsqueda, sin ir más lejos.
+RECIPIENT_WORDS = frozenset(
+    palabra for palabras, _clave in _RECIPIENT_WORDS for palabra in palabras
+)
+
+
+def match_recipient(text: str, filtros: list[dict]) -> dict | None:
+    """¿Para quién es el regalo? Devuelve el filtro REAL de la API, o `None`.
+
+    Las palabras son nuestras; el slug sale del payload. Si el cliente nombra a
+    dos destinatarios distintos ("para mi esposa y mi hijo") no se elige por él.
+    """
+    tokens = _tokens(text)
+    if not tokens:
+        return None
+
+    encontrados = {
+        clave
+        for palabras, clave in _RECIPIENT_WORDS
+        if tokens & frozenset(palabras)
+    }
+    if len(encontrados) != 1:
+        return None
+    clave = encontrados.pop()
+
+    opciones = [hijo for f in filtros for hijo in f.get("hijos") or []]
+    for opcion in opciones:
+        # "Regalos Para Mujer" [para-mujer] → la clave aparece en el slug.
+        if clave in _norm(opcion["slug"]).replace("-", " ").split():
+            return opcion
+    return None
+
+
 _MENU_LINE = re.compile(r"^\s*\d+\s*[).\-]\s*\S", re.M)
 
 
@@ -231,6 +327,11 @@ _GENERICOS = frozenset({
     "regalo", "regalos", "detalle", "detalles", "sorpresa", "sorpresas",
     "opcion", "opciones", "producto", "productos", "precio", "precios",
 })
+
+# Mismo conjunto, público: lo necesita la escalera de búsqueda para no mandar
+# "regalo" o "detalle" a la API como si fueran el nombre de un producto. Una
+# segunda copia acabaría diciendo otra cosa que esta.
+GENERIC_WORDS = _GENERICOS
 
 
 # Conectores que no distinguen una categoría de otra.

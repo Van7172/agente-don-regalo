@@ -9,6 +9,8 @@ import unicodedata
 import httpx
 
 from app.config import settings
+from app.harness import taxonomy
+from app.harness.taxonomy import RECIPIENT_WORDS, match_recipient, parse_filtros
 from app.observability import audit_event, record_operation
 from app.tools import catalog, mcp_client, search
 
@@ -254,16 +256,23 @@ _QUERY_STOPWORDS = frozenset({
     "cuanto", "cuanta", "cuantos", "cuantas", "cuesta", "cuestan",
     "esta", "este", "estan", "vale", "valen", "precio", "precios",
     "sale", "salen", "seria", "serian", "tiene",
-})
+    # Adjetivos de escaparate: no identifican nada. Sin ellos, "algo bonito
+    # para mi esposa" se iba a buscar el producto `algo` y devolvía terrarios.
+    "algo", "cosa", "cosas", "bonito", "bonita", "lindo", "linda",
+    "hermoso", "hermosa", "especial", "bueno", "buena", "mejor",
+} | taxonomy.GENERIC_WORDS)
 
 
 # Los nombres de categoría, sacados de `_CATEGORY_HINTS` para no mantener una
 # segunda lista que se desincronice de la primera.
+# Palabra a palabra, también las de los términos compuestos: el término es
+# "arreglo floral", pero buscar `arreglo` a secas devuelve todos los arreglos
+# florales del catálogo — que es justo el ruido que este escalón evita.
 _CATEGORY_WORDS = frozenset(
-    _norm_text(term)
+    palabra
     for terms, _slug in _CATEGORY_HINTS
     for term in terms
-    if " " not in term
+    for palabra in _norm_text(term).split()
 )
 
 
@@ -296,16 +305,27 @@ def _degrade_query(q: str, limit: int = 3) -> list[str]:
     if len(tokens) < 2:
         # Ya es lo más corto que se puede pedir… salvo que la frase original
         # llevara ruido que acabamos de quitar ("cuánto está kitty" → "kitty").
+        if completa in _CATEGORY_WORDS or completa in RECIPIENT_WORDS:
+            # "para mi esposa" no describe un producto: es trabajo del escalón 4.
+            return []
         return [] if completa == _norm_text(q) else [completa]
 
-    # La palabra que nombra la categoría es la que MENOS distingue: en "peluche
-    # de hello kitty" lo que identifica el producto es "kitty", y buscar
-    # "peluche" devuelve los once peluches del catálogo. Se posponen.
-    sueltas = sorted(
-        range(len(tokens)),
-        key=lambda i: (tokens[i] in _CATEGORY_WORDS, -len(tokens[i]), -i),
-    )
-    intentos = [tokens[i] for i in sueltas]
+    # Este escalón busca EL PRODUCTO. Dos clases de palabra no lo nombran nunca
+    # y buscarlas sueltas trae basura con cara de acierto:
+    #  - la categoría ("peluche" devuelve los once del catálogo);
+    #  - el destinatario — "un peluche de dinosaurio para mi esposa" acababa
+    #    buscando `esposa` y ofreciendo un "Box de rosas y ferrero corazón",
+    #    porque esa palabra sale en su descripción.
+    # De las dos se ocupa el escalón siguiente, y mejor: la categoría como
+    # categoría y el destinatario como `filtro=para-mujer`.
+    utiles = [
+        t for t in tokens
+        if t not in _CATEGORY_WORDS and t not in RECIPIENT_WORDS
+    ]
+    if not utiles:
+        return []
+
+    intentos = sorted(utiles, key=lambda t: (-len(t), -tokens.index(t)))
     # Pares contiguos como último recurso: más precisos, pero si la frase entera
     # no dio nada, lo probable es que tampoco lo dé un trozo de ella.
     for inicio in range(len(tokens) - 2, -1, -1):
@@ -341,6 +361,67 @@ async def _degraded_search(
                 resultado["aproximado"] = True
                 resultado["consulta_original"] = original
                 resultado["consulta_usada"] = candidato
+            return resultado
+    return None
+
+
+async def _category_fallback(
+    client: httpx.AsyncClient, args: dict
+) -> dict | None:
+    """Último escalón: lo que SÍ hay de la categoría que pidió.
+
+    Cuando nada encuentra el producto exacto, un vendedor no dice "no tengo" y
+    se calla: enseña lo que tiene de eso. "No me queda ese unicornio, pero mira
+    estos peluches" cierra ventas; el silencio, no.
+
+    Si además consta PARA QUIÉN es, se estrecha con el filtro real de la API
+    (`para-mujer`, `para-hombre`, `regalos-para-ninos`). El slug sale del
+    payload de navegación, nunca de una constante nuestra: si mañana lo
+    renombran, mandaríamos un filtro muerto y volveríamos a cero resultados. Y
+    si el filtro deja la lista vacía, se suelta — es un adorno, no un límite.
+    """
+    q = str(args.get("q") or "")
+    slug = (args.get("categoria") or "").strip("/") or _infer_categoria_slug({"q": q})
+
+    destinatario = None
+    try:
+        navegacion = await catalog.explorar_catalogo(client, {})
+        destinatario = match_recipient(q, parse_filtros(navegacion))
+    except Exception as err:  # la navegación no puede tumbar una búsqueda
+        log.warning("[tool] no pude leer los filtros: %s", err)
+
+    if slug is None and destinatario is None:
+        # Ni categoría ni destinatario: no hay nada honesto que ofrecer. Un
+        # "xilófono de titanio" se contesta con la verdad, no con un desayuno.
+        return None
+
+    intentos: list[dict] = []
+    if slug and destinatario is not None:
+        intentos.append({"categoria": slug, "filtro": destinatario["slug"]})
+    if slug:
+        intentos.append({"categoria": slug})
+    if destinatario is not None:
+        # Sin categoría, el destinatario ya acota bastante: "algo para mi
+        # esposa" son 61 productos, no el catálogo entero.
+        intentos.append({"filtro": destinatario["slug"]})
+
+    for params in intentos:
+        resultado = await _pick("buscar_productos", catalog.buscar_productos)(
+            client, dict(params)
+        )
+        if result_product_count(resultado) > 0:
+            log.info(
+                "[tool] sin coincidencias para %r; ofrezco %s",
+                q[:40], params,
+            )
+            record_operation("tool.buscar_productos", "category_fallback")
+            resultado = dict(resultado)
+            resultado["aproximado"] = True
+            resultado["consulta_original"] = q
+            if params.get("categoria"):
+                resultado["categoria_ofrecida"] = params["categoria"]
+            if params.get("filtro"):
+                resultado["filtro_ofrecido"] = params["filtro"]
             return resultado
     return None
 
@@ -388,6 +469,13 @@ async def execute_tool(name: str, args: dict) -> str:
                     degradado = await _degraded_search(client, args)
                     if degradado is not None:
                         result = degradado
+
+                # Escalón 4: no hay ese producto, pero sí esa categoría. Es la
+                # diferencia entre "no tenemos" y "no tengo ese, mira estos".
+                if result_product_count(result) == 0:
+                    por_categoria = await _category_fallback(client, args)
+                    if por_categoria is not None:
+                        result = por_categoria
 
             elif name == "catalogo_categoria":
                 args = dict(args or {})
