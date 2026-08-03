@@ -67,6 +67,21 @@ def _money(value: Any) -> Optional[float]:
     return round(amount, 2)
 
 
+class CrawlBlocked(RuntimeError):
+    """El sitio no nos dejó leer el catálogo, con el motivo concreto.
+
+    Antes esto era un `return []` con un `log.warning`. Desde el panel —y desde
+    el resumen del crawl— sale idéntico a "ese competidor no tiene productos",
+    que es la conclusión contraria: magia.pe y sorprendelima devolvieron 0 el
+    03-08 sin una sola línea en `errores`, y hubo que ir a los logs del
+    contenedor para saber por qué. `run_crawl` ya captura por competidor, así
+    que basta con levantar para que el motivo viaje hasta quien mira.
+
+    Un catálogo REALMENTE vacío sigue devolviendo `[]`: son cosas distintas y
+    confundirlas es justo lo que se está arreglando.
+    """
+
+
 async def crawl_shopify(
     fetch: FetchFn,
     *,
@@ -76,7 +91,7 @@ async def crawl_shopify(
     """Paginación de /products.json. Respeta robots del host."""
     if not await allowed_by_robots(fetch, base, "/products.json"):
         log.warning("[competencia] robots bloquea products.json en %s", base)
-        return []
+        raise CrawlBlocked(f"robots.txt de {base} no permite /products.json")
 
     out: list[ScrapedProduct] = []
     page = 1
@@ -85,11 +100,20 @@ async def crawl_shopify(
         resp = await fetch(url)
         if resp.status_code >= 400:
             log.warning("[competencia] Shopify %s → HTTP %s", url, resp.status_code)
+            # La primera página es distinta de las siguientes: si falla, no hay
+            # catálogo y hay que decirlo. Si falla la quinta, ya tenemos 200
+            # productos y cortar es lo correcto.
+            if not out:
+                raise CrawlBlocked(f"{url} devolvió HTTP {resp.status_code}")
             break
         try:
             payload = resp.json()
         except Exception:
             log.warning("[competencia] Shopify %s no devolvió JSON", url)
+            if not out:
+                raise CrawlBlocked(
+                    f"{url} no devolvió JSON (¿página de bloqueo o captcha?)"
+                )
             break
         products = payload.get("products") or []
         if not products:
