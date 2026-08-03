@@ -638,6 +638,29 @@ try {
         Http::jsonOk(['ok' => true, 'schema' => Repository::schemaState()]);
     }
 
+    // POST /competition/products — lote de productos ajenos (Fase 2).
+    //
+    // El crawl vive en el agente; aquí solo se persiste. Sin URL no se guarda.
+    if ($path === '/competition/products' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        $slug = trim((string) ($body['slug'] ?? ''));
+        if ($slug === '') {
+            Http::jsonError('slug required');
+        }
+        $products = $body['products'] ?? [];
+        if (!is_array($products)) {
+            Http::jsonError('products must be an array');
+        }
+        $upserted = Repository::upsertCompetitionProducts(
+            $slug,
+            $products,
+            (string) ($body['crawl_started'] ?? date('Y-m-d H:i:s')),
+            !empty($body['mark_missing_inactive'])
+        );
+        Http::jsonOk(['ok' => true, 'upserted' => $upserted]);
+    }
+
     // POST /demand — el agente buscó algo y el catálogo no lo tenía.
     //
     // No es recuperable hacia atrás: el histórico no guarda qué devolvió cada

@@ -319,6 +319,18 @@ async def check_unattended_sales() -> None:
             await _marcar(f"sale_{conv_id}")
 
 
+async def check_competition() -> None:
+    """Crawl de catálogos competidores (Fase 2). Opt-in y con cooldown largo."""
+    try:
+        from app.services import competition_crawl
+
+        summary = await competition_crawl.maybe_run_crawl()
+        if summary:
+            log.info("[watchdog] competencia: %s", summary)
+    except Exception as err:
+        log.warning("[watchdog] competencia falló: %s", err)
+
+
 async def _tick() -> None:
     try:
         await check_mute()
@@ -328,6 +340,7 @@ async def _tick() -> None:
         await check_balance()
         await check_fallback_spike()
         await daily_audit()
+        await check_competition()
     except Exception as err:
         log.warning("[watchdog] tick error: %s", err)
 

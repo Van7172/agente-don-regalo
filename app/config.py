@@ -252,5 +252,24 @@ class Settings:
             os.getenv("PEDIDO_TEMPORAL_ENABLED", "1") == "1"
         )
 
+        # Fase 2 — competencia. OPT-IN: apagado por defecto hasta correr 016 y
+        # subir el CRM. El crawl es lento a propósito (delay + tope por sitio).
+        self.competition_crawl_enabled: bool = (
+            os.getenv("COMPETITION_CRAWL_ENABLED", "0") == "1"
+        )
+        self.competition_crawl_interval_seconds: float = max(
+            3600.0, float(os.getenv("COMPETITION_CRAWL_INTERVAL_SECONDS", "43200"))
+        )
+        self.competition_request_delay_seconds: float = max(
+            0.2, float(os.getenv("COMPETITION_REQUEST_DELAY_SECONDS", "1.0"))
+        )
+        self.competition_max_products: int = max(
+            1, min(500, int(os.getenv("COMPETITION_MAX_PRODUCTS", "120")))
+        )
+        # Bajo este score de Qdrant el producto ajeno cuenta como hueco.
+        self.competition_match_threshold: float = float(
+            os.getenv("COMPETITION_MATCH_THRESHOLD", "0.78")
+        )
+
 
 settings = Settings()

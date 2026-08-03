@@ -53,6 +53,7 @@ foreach (
     [
         '013_venta_producto_id',
         '014_demanda_no_cubierta',
+        '016_competencia',
     ] as $migracion
 ) {
     requiresText($repo, $migracion, "schemaState no vigila la migración {$migracion}");
@@ -77,6 +78,17 @@ requiresText(
     '_FATAL',
     'Una página con un fatal de PHP devuelve 200: por el status daría por buena '
         . 'una pantalla rota'
+);
+requiresText(
+    $script,
+    'competition.php',
+    'El check debe mirar la página de Competencia: sin ella el crawl escribe '
+        . 'a una UI que nadie subió'
+);
+requiresText(
+    $script,
+    '/api/competition/products',
+    'Sin el endpoint de competencia el agente no puede persistir el crawl'
 );
 
 echo "deploy check contract: OK\n";

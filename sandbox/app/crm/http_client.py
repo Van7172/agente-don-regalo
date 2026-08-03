@@ -292,6 +292,29 @@ async def put_setting(key: str, value: str) -> None:
     await _request("PUT", "/api/settings", json={key: value})
 
 
+async def upsert_competition_products(
+    slug: str,
+    products: list,
+    *,
+    crawl_started: str,
+    mark_missing_inactive: bool = False,
+) -> int:
+    """Manda un lote de productos ajenos al CRM. Devuelve cuántos se guardaron."""
+    data = await _request(
+        "POST",
+        "/api/competition/products",
+        json={
+            "slug": slug,
+            "crawl_started": crawl_started,
+            "mark_missing_inactive": bool(mark_missing_inactive),
+            "products": products,
+        },
+    )
+    if isinstance(data, dict):
+        return int(data.get("upserted") or 0)
+    return 0
+
+
 async def record_demand_miss(
     query: str,
     *,

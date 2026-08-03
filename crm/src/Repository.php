@@ -1914,6 +1914,7 @@ final class Repository
             '012_venta_manual' => ['crm_ventas_historiales', 'origen_venta_historial'],
             '013_venta_producto_id' => ['crm_ventas_historiales', 'id_producto_venta_historial'],
             '014_demanda_no_cubierta' => ['crm_demanda_no_cubierta', 'consulta_demanda'],
+            '016_competencia' => ['crm_competencia_productos', 'url'],
         ];
 
         $rows = Database::fetchAll(
@@ -2179,5 +2180,177 @@ final class Repository
             ],
             'last_message' => substr((string) ($c['last_message_preview'] ?? ''), 0, 120),
         ];
+    }
+
+    /**
+     * Upsert de productos de un competidor. Sin URL no se guarda (fuente).
+     *
+     * @param list<array<string, mixed>> $products
+     */
+    public static function upsertCompetitionProducts(
+        string $slug,
+        array $products,
+        string $crawlStarted,
+        bool $markMissingInactive = false
+    ): int {
+        $tenantId = self::ensureTenantId();
+        $slug = trim($slug);
+        if ($slug === '') {
+            return 0;
+        }
+
+        $competidor = Database::fetchOne(
+            'SELECT id_competidor FROM crm_competidores
+              WHERE id_tenant = :t AND slug_competidor = :s AND activo = 1
+              LIMIT 1',
+            ['t' => $tenantId, 's' => $slug]
+        );
+        if (!$competidor) {
+            return 0;
+        }
+        $idCompetidor = (int) $competidor['id_competidor'];
+        $now = date('Y-m-d H:i:s');
+        $visto = preg_match('/^\d{4}-\d{2}-\d{2}/', $crawlStarted)
+            ? substr($crawlStarted, 0, 19)
+            : $now;
+
+        $upserted = 0;
+        foreach ($products as $raw) {
+            if (!is_array($raw)) {
+                continue;
+            }
+            $url = trim((string) ($raw['url'] ?? ''));
+            $nombre = trim((string) ($raw['nombre'] ?? ''));
+            $clave = trim((string) ($raw['clave_externa'] ?? ''));
+            if ($url === '' || $nombre === '' || $clave === '') {
+                // Sin URL de origen no hay fila: inventar un producto sin fuente
+                // es peor que perderlo.
+                continue;
+            }
+            $precio = self::_nullableDecimal($raw['precio_sol'] ?? null);
+            $tachado = self::_nullableDecimal($raw['precio_tachado_sol'] ?? null);
+            $matchId = isset($raw['match_id_producto']) && $raw['match_id_producto'] !== null
+                ? (int) $raw['match_id_producto']
+                : null;
+            $matchScore = isset($raw['match_score']) && $raw['match_score'] !== null
+                ? round((float) $raw['match_score'], 4)
+                : null;
+            $matchNombre = isset($raw['match_nombre']) && $raw['match_nombre'] !== null
+                ? substr(trim((string) $raw['match_nombre']), 0, 255)
+                : null;
+            $esHueco = !empty($raw['es_hueco']) ? 1 : 0;
+
+            Database::execute(
+                'INSERT INTO crm_competencia_productos (
+                    id_tenant, id_competidor, clave_externa, nombre_producto,
+                    precio_sol, precio_tachado_sol, url, capturado_en, visto_por_ultima_vez,
+                    activo, match_id_producto, match_score, match_nombre, es_hueco
+                 ) VALUES (
+                    :t, :c, :k, :n, :p, :pt, :u, :cap, :visto,
+                    1, :mid, :ms, :mn, :hueco
+                 )
+                 ON DUPLICATE KEY UPDATE
+                    nombre_producto = VALUES(nombre_producto),
+                    precio_sol = VALUES(precio_sol),
+                    precio_tachado_sol = VALUES(precio_tachado_sol),
+                    url = VALUES(url),
+                    visto_por_ultima_vez = VALUES(visto_por_ultima_vez),
+                    activo = 1,
+                    match_id_producto = VALUES(match_id_producto),
+                    match_score = VALUES(match_score),
+                    match_nombre = VALUES(match_nombre),
+                    es_hueco = VALUES(es_hueco)',
+                [
+                    't' => $tenantId,
+                    'c' => $idCompetidor,
+                    'k' => substr($clave, 0, 128),
+                    'n' => substr($nombre, 0, 255),
+                    'p' => $precio,
+                    'pt' => $tachado,
+                    'u' => substr($url, 0, 1024),
+                    'cap' => $visto,
+                    'visto' => $visto,
+                    'mid' => $matchId,
+                    'ms' => $matchScore,
+                    'mn' => $matchNombre,
+                    'hueco' => $esHueco,
+                ]
+            );
+            $upserted++;
+        }
+
+        if ($markMissingInactive) {
+            Database::execute(
+                'UPDATE crm_competencia_productos
+                    SET activo = 0
+                  WHERE id_tenant = :t
+                    AND id_competidor = :c
+                    AND visto_por_ultima_vez < :visto
+                    AND activo = 1',
+                ['t' => $tenantId, 'c' => $idCompetidor, 'visto' => $visto]
+            );
+        }
+
+        return $upserted;
+    }
+
+    /**
+     * Huecos de catálogo: productos ajenos activos sin equivalente cercano.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function competitionGaps(int $limit = 100): array
+    {
+        $tenantId = self::ensureTenantId();
+        $limit = max(1, min(500, $limit));
+        return Database::fetchAll(
+            "SELECT p.nombre_producto, p.precio_sol, p.precio_tachado_sol, p.url,
+                    p.match_score, p.match_nombre, p.visto_por_ultima_vez,
+                    c.nombre_competidor, c.slug_competidor
+               FROM crm_competencia_productos p
+               JOIN crm_competidores c ON c.id_competidor = p.id_competidor
+              WHERE p.id_tenant = :t
+                AND p.activo = 1
+                AND p.es_hueco = 1
+                AND p.url IS NOT NULL
+                AND p.url <> ''
+              ORDER BY p.visto_por_ultima_vez DESC, p.nombre_producto ASC
+              LIMIT {$limit}",
+            ['t' => $tenantId]
+        );
+    }
+
+    /** @return list<array<string, mixed>> */
+    public static function competitionStats(): array
+    {
+        $tenantId = self::ensureTenantId();
+        return Database::fetchAll(
+            'SELECT c.slug_competidor, c.nombre_competidor,
+                    SUM(CASE WHEN p.activo = 1 THEN 1 ELSE 0 END) AS activos,
+                    SUM(CASE WHEN p.activo = 1 AND p.es_hueco = 1 THEN 1 ELSE 0 END) AS huecos,
+                    MAX(p.visto_por_ultima_vez) AS ultima_vez
+               FROM crm_competidores c
+               LEFT JOIN crm_competencia_productos p
+                 ON p.id_competidor = c.id_competidor AND p.id_tenant = c.id_tenant
+              WHERE c.id_tenant = :t AND c.activo = 1
+              GROUP BY c.id_competidor, c.slug_competidor, c.nombre_competidor
+              ORDER BY c.nombre_competidor ASC',
+            ['t' => $tenantId]
+        );
+    }
+
+    private static function _nullableDecimal($value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (!is_numeric($value)) {
+            return null;
+        }
+        $n = round((float) $value, 2);
+        if ($n < 0 || $n > 1000000) {
+            return null;
+        }
+        return $n;
     }
 }

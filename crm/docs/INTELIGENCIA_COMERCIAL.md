@@ -9,19 +9,19 @@ automatizado— que está **en pausa a propósito**. Lo que sigue explica qué q
 construido, qué decisiones no conviene deshacer, y qué haría falta para retomar
 la parte parada.
 
-Estado a **2 de agosto de 2026**.
+Estado a **3 de agosto de 2026**.
 
 | Fase | Qué | Estado |
 |---|---|---|
-| 0 | Migraciones `013` + `014` | ✅ Escrita, **sin correr** |
+| 0 | Migraciones `013` + `014` | ✅ Código + SQL |
 | 1A | Campañas (`/campaigns.php`) | ✅ Código completo |
 | 1B | Oportunidades (`/opportunities.php`) + instrumentación del agente | ✅ Código completo |
-| 2 | Scraper de competidores + matching | ⏸️ **En pausa** |
-| 3 | Cruce: hueco de catálogo × demanda propia | ⏸️ **En pausa** (depende de 2) |
+| 2 | Scraper de competidores + matching | ✅ Código (Rosatel, Magia, Sorprende Lima) |
+| 3 | Cruce: hueco de catálogo × demanda propia | ⏸️ **En pausa** (siguiente corte) |
 
-**Nada de esto está desplegado.** Las migraciones no se han corrido contra el
-MySQL del hosting y las vistas no se han renderizado con datos reales. Los tests
-que pasan son contratos estáticos y unitarios, no una prueba contra la base.
+**Fase 2 lista en código.** Dominios fijados por el negocio: `rosatel.pe`,
+`magia.pe`, `sorprendelima.pe`. Crawl opt-in (`COMPETITION_CRAWL_ENABLED=1`)
+tras correr `016_competencia.sql` y subir el CRM.
 
 ---
 
@@ -172,14 +172,28 @@ contador borraría el cuándo, que es la mitad de la información. La columna
 
 ---
 
-## En pausa: el módulo de competencia
+## Fase 2 — Competencia (`/competition.php`)
 
-**Por qué se paró:** falta la lista de competidores. Un scraper no puede
-"descubrirlos" — esa es justo la parte que se inventaría datos. Sin 3-5 dominios
-concretos, la Fase 2 no arranca.
+Lista fija (no inventada):
 
-La pausa es de alcance, no de bloqueo técnico: las Fases 0, 1A y 1B no dependen
-de esto y funcionan solas.
+1. https://www.rosatel.pe/ — VTEX (host comercial `/pub/`, no `www…/api`)
+2. https://magia.pe/ — Shopify `/products.json`
+3. https://www.sorprendelima.pe/ — Shopify `/products.json`
+
+### Puesta en marcha
+
+1. Correr `crm/sql/016_competencia.sql` (seed de los 3 competidores).
+2. Subir CRM PHP (panel + `POST /api/competition/products` + `schemaState`).
+3. Redeploy agente con `COMPETITION_CRAWL_ENABLED=1`.
+4. Verificar: `python scripts/check_deploy.py …` y abrir `/competition.php`.
+
+El crawl corre en el watchdog con cooldown largo (12h por defecto), delay entre
+requests y tope por sitio. Matching por Qdrant: bajo
+`COMPETITION_MATCH_THRESHOLD` → hueco candidato.
+
+### En pausa todavía: Fase 3 (cruce con demanda)
+
+El cruce hueco × `crm_demanda_no_cubierta` es el siguiente corte.
 
 ### Lo que se puede y lo que no
 
@@ -231,29 +245,26 @@ ruido.
 legítima. La línea es respetar `robots.txt`, ir despacio, identificarse en el
 `User-Agent`, y no tocar nada detrás de login ni datos personales.
 
-### Para retomar hacen falta
+### Opcional más adelante
 
-1. **La lista de competidores** (3-5 dominios de Lima: regalos, desayunos,
-   flores). Es lo único que bloquea.
-2. Decidir si se usan los MCP de **BrightData** (scraping) o **Semrush**
-   (tráfico y keywords), que hoy están sin autorizar — se conectan desde los
-   ajustes de conectores de claude.ai.
+Decidir si se usan los MCP de **BrightData** (scraping) o **Semrush**
+(tráfico y keywords) para enriquecer; hoy el scrape propio con `httpx` basta
+para el MVP.
 
 ---
 
 ## Archivos
 
-**Migraciones** — `crm/sql/013_venta_producto_id.sql`, `crm/sql/014_demanda_no_cubierta.sql`
+**Migraciones** — `013`, `014`, `016_competencia.sql`
 
 **CRM PHP** — `public/campaigns.php`, `public/opportunities.php`,
-`views/campaigns.php`, `views/opportunities.php`, `views/layout.php` (nav),
-`public/assets/app.css`, `public/api/index.php` (`POST /demand`, `GET /schema`),
-`src/Repository.php` (`campaignPerformance`, `recordDemandMiss`, `unmetDemand`,
-`schemaState`)
+`public/competition.php`, `views/*`, `views/layout.php` (nav),
+`public/api/index.php` (`POST /demand`, `POST /competition/products`, `GET /schema`),
+`src/Repository.php`
 
-**Agente** — `app/services/demand.py`, `app/tools/executor.py`
-(`_record_demand`), `app/harness/master.py` (`set_conversation`),
-`app/crm/http_client.py` (`record_demand_miss`)
+**Agente** — `app/services/demand.py`, `competition_adapters.py`,
+`competition_crawl.py`, `competition_match.py`, `app/tools/executor.py`,
+`app/services/watchdog.py` (`check_competition`), `app/crm/http_client.py`
 
 **Despliegue** — `scripts/check_deploy.py`, `crm/docs/DEPLOY.md`
 

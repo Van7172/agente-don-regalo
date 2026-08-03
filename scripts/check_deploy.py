@@ -156,6 +156,49 @@ def _check_demand_endpoint(client: httpx.Client, base: str, token: str) -> Check
     )
 
 
+def _check_competition_endpoint(client: httpx.Client, base: str, token: str) -> Check:
+    """Sin escribir: un cuerpo sin slug basta para saber si la ruta está viva."""
+    try:
+        r = client.post(
+            f"{base}/api/competition/products",
+            headers={"X-CRM-Token": token},
+            json={},
+        )
+    except Exception as error:
+        return Check(
+            "Endpoint de competencia",
+            False,
+            f"no respondió: {type(error).__name__}",
+        )
+
+    if r.status_code == 404:
+        return Check(
+            "Endpoint de competencia",
+            False,
+            "POST /api/competition/products no existe: el crawl de Fase 2 "
+            "no podrá persistir y Competencia se quedará vacía en silencio",
+        )
+    if r.status_code == 400:
+        return Check(
+            "Endpoint de competencia",
+            True,
+            "la ruta existe y rechaza un cuerpo sin `slug`, que es lo correcto",
+        )
+    if r.status_code in (401, 403):
+        return Check(
+            "Endpoint de competencia",
+            False,
+            "la ruta existe pero el token no vale",
+        )
+    if _json(r) is None:
+        return _no_es_json("Endpoint de competencia", r)
+    return Check(
+        "Endpoint de competencia",
+        False,
+        f"respondió {r.status_code}; se esperaba 400 ante un cuerpo vacío",
+    )
+
+
 # PHP escupe el fatal en el cuerpo con status 200 si ya mandó las cabeceras, así
 # que el código de estado por sí solo daría la página por buena.
 _FATAL = ("Fatal error", "Uncaught", "Parse error")
@@ -218,8 +261,10 @@ def main() -> int:
             _check_health(client, base),
             _check_schema(client, base, token),
             _check_demand_endpoint(client, base, token),
+            _check_competition_endpoint(client, base, token),
             _check_page(client, base, "campaigns.php"),
             _check_page(client, base, "opportunities.php"),
+            _check_page(client, base, "competition.php"),
         ]
 
     for check in checks:
