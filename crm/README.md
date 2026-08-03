@@ -20,7 +20,7 @@
       index.php       inbox
       login.php
       reports.php
-      operations.php  panel de cola, errores, circuitos, latencias y handoffs
+      operaciones.php  panel de cola, errores, circuitos, latencias y handoffs
       api/index.php   API del agente (X-CRM-Token)
     sql/              migraciones MySQL
     src/              PDO, Auth, Repository
@@ -50,7 +50,7 @@
   Health: `GET https://donregalo.pe/crm/public/api/health`
 
   Panel operacional autenticado:
-  `GET https://donregalo.pe/crm/public/operations.php`.
+  `GET https://donregalo.pe/crm/public/operaciones.php`.
 
   ## Módulos del asesor
 

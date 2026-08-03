@@ -52,7 +52,25 @@ async def operations(
         "queue": await inbound_queue_operational_stats(),
         "operations": metrics_snapshot(),
         "circuits": circuit_breakers_snapshot(),
+        "competition": {
+            "enabled": settings.competition_crawl_enabled,
+            "crm_enabled": crm_http.crm_enabled(),
+            "interval_seconds": settings.competition_crawl_interval_seconds,
+        },
     }
+
+
+@router.post("/competition/crawl")
+async def competition_crawl(
+    x_agent_token: str | None = Header(default=None),
+):
+    """Dispara un crawl de competencia ya (ignora el cooldown del watchdog)."""
+    _check_token(x_agent_token)
+    from app.services import competition_crawl as crawl
+
+    summary = await crawl.run_crawl(force=True)
+    log.info("[competencia] crawl manual: %s", summary)
+    return {"ok": True, "summary": summary}
 
 
 @router.post("/outbox/send")

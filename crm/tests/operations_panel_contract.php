@@ -56,7 +56,30 @@ opsRequires($opsJs, 'duration_count', 'La media debe dividirse entre lo cronomet
 opsRequires($view, 'ops-handoffs', 'Falta tabla de handoffs');
 opsRequires($javascript, 'setInterval(refresh, 15000)', 'Falta actualización automática');
 opsRequires($javascript, 'textContent', 'Los datos dinámicos deben renderizarse como texto');
-opsRequires($layout, 'operations.php', 'Falta acceso al panel en la navegación');
+opsRequires($layout, 'operaciones.php', 'Falta acceso al panel en la navegación');
+
+$entrypoint = opsSource('public/operaciones.php');
+opsRequires($entrypoint, "view('operations'", 'operaciones.php debe pintar el panel operacional');
+if (strpos($entrypoint, "view('opportunities'") !== false) {
+    throw new RuntimeException(
+        'operaciones.php no puede cargar Oportunidades: ese era el bug de producción'
+    );
+}
+
+$legacy = opsSource('public/operations.php');
+opsRequires(
+    $legacy,
+    'operaciones.php',
+    'operations.php debe redirigir a operaciones.php (nombres demasiado parecidos '
+        . 'a opportunities.php en el hosting)'
+);
+if (strpos($legacy, "view('opportunities'") !== false
+    || strpos($legacy, "view('operations'") !== false
+) {
+    throw new RuntimeException(
+        'operations.php solo redirige: no debe renderizar vistas'
+    );
+}
 
 if (strpos($view, 'agent_internal_token') !== false || strpos($javascript, 'agent_internal_token') !== false) {
     throw new RuntimeException('El token interno no puede llegar al navegador');

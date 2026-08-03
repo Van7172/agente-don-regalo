@@ -198,12 +198,12 @@ Después, a mano:
 
 ## 7. Panel operacional
 
-1. Abrir `operations.php` y confirmar que el agente aparece **En línea**.
+1. Abrir `operaciones.php` y confirmar que el agente aparece **En línea**.
 2. Verificar cola, DLQ, circuitos, latencias, handoffs y outbox.
 
 No requiere una migración SQL adicional. Debes subir:
 
-- `public/operations.php`
+- `public/operaciones.php` (y el redirect `public/operations.php`)
 - `public/assets/operations.js`
 - `views/operations.php`
 - `src/OperationsClient.php`

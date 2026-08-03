@@ -76,7 +76,7 @@ privacidad, alertas y retención:
 ### Panel operacional
 
 El dashboard autenticado vive en
-[`crm/public/operations.php`](crm/public/operations.php). El CRM agrega sus
+[`crm/public/operaciones.php`](crm/public/operaciones.php). El CRM agrega sus
 handoffs y outbox desde MySQL y consulta el snapshot sanitizado del agente
 mediante `GET /internal/operations`. Desde allí muestra cola/PEL/DLQ de Redis,
 errores, reintentos, circuit breakers y latencias sin exponer tokens, prompts ni

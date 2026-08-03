@@ -14,8 +14,12 @@
   <div class="card elev-sm" style="margin-bottom:1rem;border-left:4px solid #c9a227;">
     <p style="margin:0;">
       Todavía no hay productos scrapeados. Eso <strong>no</strong> significa que
-      el catálogo esté completo: el crawl empieza cuando el agente corre con
-      <code>COMPETITION_CRAWL_ENABLED=1</code> y la migración <code>016</code> aplicada.
+      el catálogo esté completo. La migración <code>016</code> solo crea las
+      tablas; los productos los escribe el <em>agente</em> tras un crawl.
+      Comprueba: redeploy con el código de competencia,
+      <code>COMPETITION_CRAWL_ENABLED=1</code>, <code>WATCHDOG_ENABLED=1</code>,
+      <code>CRM_MODE=external</code>, y dispara
+      <code>POST /internal/competition/crawl</code> si no quieres esperar al tick.
     </p>
   </div>
   <?php endif; ?>

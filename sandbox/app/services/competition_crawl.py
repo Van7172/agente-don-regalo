@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -34,14 +35,34 @@ async def maybe_run_crawl() -> Optional[dict[str, Any]]:
         return None
 
     summary = await run_crawl()
-    await _marcar_hecho()
+    # Solo enfriar si hubo avance. Un primer fallo (red, CRM 404, robots)
+    # no puede castigar 12 horas de silencio.
+    if _crawl_had_progress(summary):
+        await _marcar_hecho()
+    else:
+        log.warning(
+            "[competencia] crawl sin progreso; no se marca cooldown: %s", summary
+        )
     return summary
 
 
-async def run_crawl(*, max_products: int | None = None) -> dict[str, Any]:
-    """Crawl de todos los adaptadores conocidos + upsert al CRM."""
+async def run_crawl(
+    *,
+    max_products: int | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Crawl de todos los adaptadores conocidos + upsert al CRM.
+
+    `force=True` ignora el flag de habilitación (para el trigger interno), pero
+    sigue exigiendo CRM externo: sin CRM no hay dónde guardar.
+    """
+    if not force and not settings.competition_crawl_enabled:
+        return {"skipped": True, "reason": "disabled"}
+    if not crm_http.crm_enabled():
+        return {"skipped": True, "reason": "crm_disabled"}
+
     limit = max_products if max_products is not None else settings.competition_max_products
-    summary: dict[str, Any] = {"competidores": {}, "errores": []}
+    summary: dict[str, Any] = {"competidores": {}, "errores": [], "upserted_total": 0}
     crawl_started = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
 
     async with httpx.AsyncClient(
@@ -62,13 +83,25 @@ async def run_crawl(*, max_products: int | None = None) -> dict[str, Any]:
                     "scraped": len(products),
                     "upserted": upserted,
                 }
+                summary["upserted_total"] += upserted
                 record_operation("competition.crawl", "ok", tags={"slug": slug})
             except Exception as err:
                 log.warning("[competencia] crawl %s falló: %s", slug, err)
                 summary["errores"].append({"slug": slug, "error": str(err)[:200]})
                 record_operation("competition.crawl", "error", tags={"slug": slug})
 
+    if force and _crawl_had_progress(summary):
+        await _marcar_hecho()
     return summary
+
+
+def _crawl_had_progress(summary: dict[str, Any]) -> bool:
+    if int(summary.get("upserted_total") or 0) > 0:
+        return True
+    for info in (summary.get("competidores") or {}).values():
+        if int(info.get("scraped") or 0) > 0 or int(info.get("upserted") or 0) > 0:
+            return True
+    return False
 
 
 async def _upsert_batch(
@@ -77,8 +110,6 @@ async def _upsert_batch(
     crawl_started: str,
 ) -> int:
     if not products:
-        # Aun así avisamos al CRM para que marque como inactivos los que ya no
-        # aparecen — un catálogo vacío es una señal, no un no-op.
         await crm_http.upsert_competition_products(
             slug,
             [],
@@ -87,10 +118,33 @@ async def _upsert_batch(
         )
         return 0
 
-    rows: list[dict[str, Any]] = []
+    # 1) Persistir YA el catálogo (sin matching). Si el match tarda o falla,
+    # Competencia deja de verse vacía — el hueco se calcula después.
+    plain_rows = [
+        {
+            "clave_externa": p.clave_externa,
+            "nombre": p.nombre,
+            "url": p.url,
+            "precio_sol": p.precio_sol,
+            "precio_tachado_sol": p.precio_tachado_sol,
+            "match_id_producto": None,
+            "match_score": None,
+            "match_nombre": None,
+            "es_hueco": False,
+        }
+        for p in products
+    ]
+    total = await _push_rows(slug, plain_rows, crawl_started, mark_missing_inactive=True)
+
+    # 2) Matching contra Qdrant y re-upsert con scores. Best-effort.
+    matched_rows: list[dict[str, Any]] = []
     for product in products:
-        match = await competition_match.match_product(product.nombre)
-        rows.append(
+        try:
+            match = await competition_match.match_product(product.nombre)
+        except Exception as err:
+            log.warning("[competencia] match %s/%s: %s", slug, product.clave_externa, err)
+            continue
+        matched_rows.append(
             {
                 "clave_externa": product.clave_externa,
                 "nombre": product.nombre,
@@ -103,13 +157,25 @@ async def _upsert_batch(
                 "es_hueco": bool(match.es_hueco),
             }
         )
+    if matched_rows:
+        await _push_rows(
+            slug, matched_rows, crawl_started, mark_missing_inactive=False
+        )
+    return total
 
-    # Lotes pequeños: el hosting PHP suele limitar el body.
+
+async def _push_rows(
+    slug: str,
+    rows: list[dict[str, Any]],
+    crawl_started: str,
+    *,
+    mark_missing_inactive: bool,
+) -> int:
     batch_size = 40
     total = 0
     for i in range(0, len(rows), batch_size):
         chunk = rows[i : i + batch_size]
-        last = i + batch_size >= len(rows)
+        last = mark_missing_inactive and (i + batch_size >= len(rows))
         n = await crm_http.upsert_competition_products(
             slug,
             chunk,
@@ -121,8 +187,6 @@ async def _upsert_batch(
 
 
 async def _en_cooldown() -> bool:
-    import time
-
     try:
         raw = await crm_http.get_setting(COOLDOWN_KEY)
     except Exception:
@@ -137,8 +201,6 @@ async def _en_cooldown() -> bool:
 
 
 async def _marcar_hecho() -> None:
-    import time
-
     try:
         await crm_http.put_setting(COOLDOWN_KEY, str(time.time()))
     except Exception as err:
