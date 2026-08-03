@@ -55,6 +55,74 @@ final class Media
     }
 
     /**
+     * Lo que de verdad se puede subir, no lo que nos gustaría.
+     *
+     * `MAX_BYTES` es NUESTRO tope, pero PHP tiene los suyos y llegan antes:
+     * `upload_max_filesize` y `post_max_size`, que en hosting compartido suelen
+     * venir en 2M y 8M. El panel comprobaba solo los 16 MB, así que un catálogo
+     * en PDF de 8 MB pasaba el guardia del navegador, se subía entero y el
+     * servidor lo tiraba — el asesor veía una burbuja roja por un archivo que la
+     * interfaz le había dado por bueno.
+     *
+     * Del `post_max_size` se descuenta medio mega: el cuerpo multipart lleva
+     * cabeceras, límites y el resto del formulario además del archivo, y quedarse
+     * justo en el límite es fallar por unos bytes.
+     */
+    public static function effectiveMaxBytes(): int
+    {
+        $limites = [self::MAX_BYTES];
+
+        $subida = self::iniBytes('upload_max_filesize');
+        if ($subida > 0) {
+            $limites[] = $subida;
+        }
+        $post = self::iniBytes('post_max_size');
+        if ($post > 0) {
+            $limites[] = max(0, $post - 512 * 1024);
+        }
+
+        return max(0, (int) min($limites));
+    }
+
+    /** Valor de una directiva del ini, en bytes. 0 si no hay límite. */
+    public static function iniBytes(string $directiva): int
+    {
+        return self::parseBytes((string) ini_get($directiva));
+    }
+
+    /**
+     * "2M", "8M", "128K", "1G" → bytes. 0 si no hay límite o no se puede leer.
+     *
+     * Va aparte de `iniBytes` para poder probarlo: `upload_max_filesize` y
+     * `post_max_size` son PHP_INI_PERDIR y no se dejan cambiar con `ini_set`,
+     * así que sin esta separación el parser solo se podría comprobar levantando
+     * un PHP con `-d` — y un "8M" leído como 8 bytes deja al panel rechazando
+     * cualquier archivo.
+     */
+    public static function parseBytes(string $raw): int
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return 0;
+        }
+        // "0" y "-1" en PHP significan SIN límite, no "cero bytes".
+        $valor = (int) $raw;
+        if ($valor <= 0) {
+            return 0;
+        }
+        switch (strtolower(substr($raw, -1))) {
+            case 'g':
+                return $valor * 1024 * 1024 * 1024;
+            case 'm':
+                return $valor * 1024 * 1024;
+            case 'k':
+                return $valor * 1024;
+            default:
+                return $valor;
+        }
+    }
+
+    /**
      * Una clave válida es "YYYY-MM/<32 hex>.<ext>" con una extensión de la lista
      * blanca. Nada más entra: ni rutas relativas, ni .php, ni bytes nulos.
      */

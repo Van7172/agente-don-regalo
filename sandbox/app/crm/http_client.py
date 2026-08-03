@@ -292,6 +292,36 @@ async def put_setting(key: str, value: str) -> None:
     await _request("PUT", "/api/settings", json={key: value})
 
 
+async def record_demand_miss(
+    query: str,
+    *,
+    resultado: str,
+    n_resultados: int = 0,
+    categoria: Optional[str] = None,
+    conversation_id: Optional[int] = None,
+) -> None:
+    """Anota una búsqueda que el catálogo no pudo satisfacer.
+
+    Quien llama es `services.demand`, que ya lo lanza en segundo plano y se traga
+    los errores: aquí no hay reintento ni degradación a propósito. Si el CRM
+    todavía no conoce el endpoint devolverá 404 y se perderá la fila, que es el
+    resultado correcto — al revés que el claim del outbox, donde callar dejaría
+    al equipo sin poder escribir a nadie, aquí lo único en juego es un dato de
+    análisis.
+    """
+    await _request(
+        "POST",
+        "/api/demand",
+        json={
+            "query": query,
+            "resultado": resultado,
+            "n_resultados": n_resultados,
+            "categoria": categoria,
+            "conversation_id": conversation_id,
+        },
+    )
+
+
 # El CRM viejo no conoce /settings/cas. Se detecta una vez y se deja de intentar:
 # reintentarlo en cada guardado sumaría un 404 por turno al circuit breaker.
 _cas_supported: bool = True

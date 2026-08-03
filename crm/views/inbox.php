@@ -4,7 +4,13 @@
   data-poll-thread="4000"
   data-mobile-chat="false"
   data-user-id="<?= e((string) ($user['id'] ?? '')) ?>"
-  data-user-name="<?= e((string) ($user['name'] ?? '')) ?>">
+  data-user-name="<?= e((string) ($user['name'] ?? '')) ?>"
+  <?php /* Lo que el SERVIDOR acepta, no lo que nos gustaría. El guardia del
+           panel eran 16 MB fijos mientras PHP cortaba en 2M: un catálogo en PDF
+           de 8 MB pasaba el filtro del navegador, se subía entero y volvía
+           rechazado. Ahora la cifra sale de `ini_get`, así que el asesor se
+           entera antes de esperar la subida. */ ?>
+  data-max-upload="<?= e((string) Media::effectiveMaxBytes()) ?>">
 
   <!-- Seguimientos vencidos: leads a los que tocaba volver y nadie ha vuelto.
        Va sobre la cola de ayuda porque son los únicos chats que NO se van a

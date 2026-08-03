@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.crm.models import Contact, Conversation, Message, Tenant
+from app.services.history import WA_ID_KEY, drop_current_turn
 
 
 async def ensure_default_tenant(session: AsyncSession) -> Tenant:
@@ -159,7 +160,9 @@ async def set_bot_active(session: AsyncSession, conversation_id: int, on: bool =
 
 
 async def get_conversation_history(
-    session: AsyncSession, conversation_id: int
+    session: AsyncSession,
+    conversation_id: int,
+    turn_wa_ids: Collection[str] = (),
 ) -> list[dict[str, str]]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.memory_window_hours)
     result = await session.execute(
@@ -174,12 +177,18 @@ async def get_conversation_history(
         if not content:
             continue
         if m.direction == "inbound":
-            history.append({"role": "user", "content": content})
+            history.append(
+                {"role": "user", "content": content, WA_ID_KEY: m.wa_message_id}
+            )
         elif m.sender_type in ("bot", "agent"):
             history.append({"role": "assistant", "content": content})
 
-    while history and history[-1]["role"] == "user":
-        history.pop()
+    # Aquí había un `while` que vaciaba TODOS los mensajes de usuario del final.
+    # Con un turno fusionado acertaba de casualidad, pero a un cliente que
+    # escribió tres veces sin que el bot llegara a contestar le borraba el
+    # backlog entero del contexto: el bucle no distinguía "esto ya va en el
+    # turno" de "esto se quedó sin responder". Ahora lo decide `wa_message_id`.
+    history = drop_current_turn(history, turn_wa_ids=turn_wa_ids)
     if len(history) > settings.memory_max_messages:
         history = history[-settings.memory_max_messages :]
     return history

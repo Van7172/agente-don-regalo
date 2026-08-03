@@ -82,3 +82,56 @@
     ventana esté cerrada, no se le quita al equipo la posibilidad de escribir.
 
   Contrato: `crm/tests/asesor_modulos_contract.php` (lo corre `scripts/check_crm.py`).
+
+  ## Inteligencia comercial
+
+  Dos módulos más, **escritos y sin desplegar**: **Campañas** (qué anuncio trae
+  compradores) y **Oportunidades** (qué nos piden que no tenemos). Migraciones
+  `013` y `014`, y como siempre van antes que el PHP.
+
+  Ojo con Oportunidades: la señal **no es recuperable hacia atrás** — empieza a
+  contar el día que se despliega el agente, igual que pasó con el anuncio del
+  lead en la `007`.
+
+  La parte de comparar contra la competencia está **en pausa** a la espera de la
+  lista de dominios.
+
+  Ver [`docs/INTELIGENCIA_COMERCIAL.md`](docs/INTELIGENCIA_COMERCIAL.md).
+
+  ## El nombre del adjunto (migración `015`)
+
+  `crm_outbox` no guardaba el nombre del archivo: viajaba solo en el payload del
+  push CRM→agente. Mientras el push funciona no se nota, pero cuando falla la
+  fila se queda en `pending` para que la recoja el drenaje del agente — y ahí el
+  nombre ya no existe. El PDF le llegaba al cliente como **"documento"**, sin
+  extensión, o sea que el camino de rescate entregaba un archivo que muchos
+  clientes de WhatsApp no abren, con el asesor creyendo que había salido bien.
+
+  Contrato: `crm/tests/outbox_filename_contract.php`. La mitad del agente está
+  en `tests/test_outbox_nombre_de_archivo.py`.
+
+  ## El límite de subida de los adjuntos
+
+  El guardia del panel eran 16 MB fijos (copiados de `Media::MAX_BYTES`)
+  mientras PHP corta antes, en `upload_max_filesize` / `post_max_size`, que en
+  hosting compartido suelen venir en **2M y 8M**. Un catálogo en PDF de 8 MB
+  pasaba el filtro del navegador, se subía entero, el servidor lo tiraba y el
+  asesor veía "No se envió" tras esperar la subida. Reintentar el mismo archivo
+  no podía funcionar nunca. En el log del agente no aparecía nada, con razón: el
+  envío moría en el CRM, antes de que hubiera fila en `crm_outbox`.
+
+  Dos mitades, y hacen falta las dos:
+
+  - **Subir el techo**: `public/.user.ini` (PHP-FPM/CGI) y los `php_value` del
+    `.htaccess` (mod_php) lo llevan a 16M/20M. Ningún hosting lee los dos, por
+    eso están ambos. **Los `php_value` van dentro de `<IfModule>` siempre**: sin
+    mod_php, un `php_value` suelto devuelve un 500 y tumba el panel entero.
+  - **Decir la verdad cuando el hosting no deje subirlo**:
+    `Media::effectiveMaxBytes()` cruza nuestro tope con los de PHP y la vista lo
+    publica en `data-max-upload`, así que el panel rechaza el archivo **antes**
+    de subirlo y con la cifra real.
+
+  Contrato: `crm/tests/limite_de_subida_contract.php`.
+
+  Si tras desplegar sigue fallando, mira el valor real: `Media::effectiveMaxBytes()`
+  es lo que el panel promete ahora, y el mensaje de error trae la cifra.

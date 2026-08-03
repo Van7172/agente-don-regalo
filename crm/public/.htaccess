@@ -1,4 +1,18 @@
 # Document root = public/ (subdominio) O carpeta /crm/public en el dominio
+
+# Adjuntos del asesor. El mismo tope que `.user.ini`, para el caso mod_php, que
+# no lee ese fichero. Va dentro de <IfModule> obligatoriamente: un `php_value`
+# en un servidor sin mod_php no se ignora, devuelve un 500 y tumba el panel
+# entero por intentar arreglar una subida.
+<IfModule mod_php.c>
+  php_value upload_max_filesize 16M
+  php_value post_max_size 20M
+</IfModule>
+<IfModule mod_php7.c>
+  php_value upload_max_filesize 16M
+  php_value post_max_size 20M
+</IfModule>
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
 

@@ -25,7 +25,23 @@ from app.observability import (
     reset_observability,
 )
 
-DOC = pathlib.Path(__file__).resolve().parent.parent / "docs" / "OBSERVABILIDAD.md"
+def _doc() -> pathlib.Path:
+    """La documentación, se corra desde la raíz o desde el espejo.
+
+    `sandbox/` replica `app/`, `tests/` y `evals/`, pero NO `docs/` — y hacerlo
+    sería más superficie para que diverja, que es justo el problema que el
+    espejo ya tiene. Con la ruta fija (`__file__/../../docs`) estos tres casos
+    fallaban solo en `sandbox/tests/`, buscando un `sandbox/docs/` que no
+    existe: un rojo permanente que no dice nada y enseña a ignorar la suite.
+    """
+    for base in pathlib.Path(__file__).resolve().parents:
+        candidato = base / "docs" / "OBSERVABILIDAD.md"
+        if candidato.is_file():
+            return candidato
+    return pathlib.Path(__file__).resolve().parent.parent / "docs" / "OBSERVABILIDAD.md"
+
+
+DOC = _doc()
 
 # Sufijos que Prometheus deriva de un histograma: se documenta la métrica base,
 # no cada una de sus tres caras.

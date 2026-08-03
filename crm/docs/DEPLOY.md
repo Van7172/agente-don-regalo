@@ -106,6 +106,34 @@ Después hay que subir, además de los archivos de siempre:
 **No requiere tocar el agente.** La ventana de 24 h se calcula en el CRM desde
 `crm_messages`, y ningún módulo nuevo llama al agente.
 
+### Inteligencia comercial (Campañas y Oportunidades)
+
+Ejecutar **antes de subir el PHP**:
+
+```text
+crm/sql/013_venta_producto_id.sql    → id_producto en el historial (+ backfill)
+crm/sql/014_demanda_no_cubierta.sql  → crm_demanda_no_cubierta
+```
+
+La `013` es repetible: el `UPDATE` del backfill solo toca las filas que siguen
+en NULL. El `ALTER TABLE` no lo es (dará `Duplicate column name` la segunda vez,
+que es inofensivo). La `014` usa `CREATE TABLE IF NOT EXISTS`.
+
+Subir además: `public/campaigns.php`, `public/opportunities.php`,
+`views/campaigns.php`, `views/opportunities.php`, `views/layout.php`,
+`public/assets/app.css`, `src/Repository.php` y `public/api/index.php`.
+
+**Campañas funciona solo con esto.** Oportunidades **necesita también el
+agente** (push a GitHub + redeploy): es el agente quien manda las búsquedas
+fallidas a `POST /api/demand`. Entre subir el CRM y redesplegar el agente no se
+rompe nada — la tabla existe y nadie la escribe.
+
+> **La demanda no cubierta empieza a contar el día del redeploy y no hay nada
+> anterior que recuperar.** El histórico nunca guardó qué devolvía cada
+> búsqueda, igual que pasó con el `referral` de los anuncios en la `007`.
+
+Detalle documentado en [`INTELIGENCIA_COMERCIAL.md`](INTELIGENCIA_COMERCIAL.md).
+
 ### Escritura condicional del estado (`POST /api/settings/cas`)
 
 **Sin migración SQL.** Basta subir `src/Repository.php` y `public/api/index.php`.
@@ -140,6 +168,27 @@ AGENT_INTERNAL_TOKEN=...mismo-que-crm/config.php...
 Redeploy del sandbox.
 
 ## 6. Verificar
+
+Lo primero, desde tu máquina:
+
+```bash
+python scripts/check_deploy.py \
+  --base-url https://donregalo.pe/crm/public \
+  --token EL_CRM_INTERNAL_TOKEN
+```
+
+Comprueba que el CRM responde, que **las migraciones están corridas**, que
+`POST /api/demand` existe y que las páginas nuevas cargan. Existe porque
+saltarse un paso de este documento no da un error: da una pantalla vacía, y una
+tabla de Oportunidades vacía se lee exactamente igual que "no falta nada en el
+catálogo". No escribe nada — la ruta de demanda se prueba con un cuerpo inválido
+a propósito, para no ensuciar una tabla que luego se lee como señal de negocio.
+
+Ojo con un fallo que engaña: si el MySQL no acepta la conexión, PHP devuelve un
+**fatal en HTML con status 200**. El script lo detecta y lo dice; el navegador,
+no necesariamente.
+
+Después, a mano:
 
 1. `https://donregalo.pe/crm/public/api/health` → `{"ok":true,...}`
 2. Login en `https://donregalo.pe/crm/public/login.php`

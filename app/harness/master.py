@@ -72,6 +72,7 @@ from app.observability import (
 )
 from app.prompts.compose import build_system, prompt_version
 from app.prompts.playbooks import WELCOME
+from app.services import demand, preempt
 from app.services.agent import (
     HANDOFF_DONE,
     HANDOFF_FAILED_MSG,
@@ -227,6 +228,11 @@ async def _run_master(
     use_external_crm: bool = False,
     persist=None,
 ) -> str | None:
+    # De qué chat son las búsquedas de este turno. Va por ContextVar y no por
+    # parámetro porque `execute_tool` está a varias llamadas de aquí y la
+    # atraviesan tanto el especialista como los pasos deterministas.
+    demand.set_conversation(conversation_id)
+
     turn = perceive(messages)
 
     # La entrada se evalúa antes del router, el LLM y cualquier herramienta.
@@ -298,6 +304,11 @@ async def _run_master(
     prev_intent = state.intent_last  # antes de sobrescribir: ¿venía de una derivación?
     state.intent_last = intent
 
+    # Salida temprana y barata: si el cliente ya escribió otra vez, todo lo que
+    # viene ahora (especialista, tools, LLM) se va a tirar. Aquí todavía no se
+    # ha hecho nada irreversible, así que abortar no deja rastro.
+    preempt.check()
+
     trace = Trace(
         conversation_id=conversation_id,
         intent=intent,
@@ -321,6 +332,37 @@ async def _run_master(
         use_external_crm=use_external_crm,
         persist=persist,
     )
+
+    # El turno se quedó sin voz. Casi siempre es OpenAI: un 429 sostenido agota
+    # los cuatro reintentos de `_chat_completion`, `run_specialist` se traga la
+    # excepción y devuelve `user_facing=None`. Ese None llegaba hasta `buffer`,
+    # que soltaba "se me cruzó un cable, cuéntame otra vez qué buscas" — y ahí
+    # se perdieron tres chats el 2 de agosto: uno pidió el catálogo, otro
+    # escribió "QUIERO DESAYUNO" y el tercero preguntó por los tiempos de
+    # entrega. Los tres acabaron en manos de un asesor de todas formas, pero
+    # después de gastarles un turno inútil.
+    #
+    # Pedirle al cliente que repita lo que acaba de escribir no añade nada: ya
+    # fue todo lo específico que podía ser. Y el dato para contestarle NO
+    # necesitaba modelo — "desayuno" resuelve a la categoría `desayunos` con el
+    # matcher, y el listado lo compone el código desde la API.
+    #
+    # Va aquí y no dentro de `_handle` porque `_handle_detail` devuelve su
+    # `_run_specialty` directamente: cubriendo solo la rama del final, una
+    # pregunta por el contenido de un desayuno se quedaba con la disculpa.
+    if not (result.user_facing or "").strip() and result.escalate is None:
+        rescate = await _answer_without_model(
+            intent,
+            turn,
+            state,
+            wa_id=wa_id,
+            conversation_id=conversation_id,
+            session=session,
+            use_external_crm=use_external_crm,
+            persist=persist,
+        )
+        if rescate is not None:
+            result = rescate
 
     # La barrera de salida corre ANTES de reducir y antes de enviar al cliente.
     # `user_text` son las palabras del cliente en ESTE turno (no la cita, que es
@@ -402,6 +444,12 @@ async def _run_master(
     trace.with_usage(current_turn_usage()).done().emit()
 
     if conversation_id is not None:
+        # Último punto donde este turno puede desaparecer sin dejar rastro: el
+        # estado todavía no se ha escrito y el turno nuevo lo releerá limpio. A
+        # partir de aquí se termina, porque un estado escrito a medias con una
+        # respuesta que nunca se envió es exactamente el descuadre que hace que
+        # el paso siguiente del cierre no le cuadre a nadie.
+        preempt.commit()
         await save_state(conversation_id, state, wa_id=wa_id, base=state_base)
 
     if result.escalate is not None:
@@ -490,6 +538,86 @@ async def _handle(
 
     # ── Resto: especialista LLM con toolset acotado ───────────────
     return await _run_specialty(intent, turn, state, **ctx)
+
+
+async def _answer_without_model(
+    intent: str, turn: Turn, state: ConversationState, **ctx
+) -> AgentResult | None:
+    """Contesta sin LLM cuando el especialista no pudo. `None` si no hay forma.
+
+    El catálogo no necesita un modelo: la taxonomía, la categoría y los
+    productos son llamadas a la API, y el listado lo arma `compose_product_reply`
+    con precios y fotos reales. Es el camino MÁS seguro contra alucinaciones que
+    hay en este harness, no el menos — justo el que se estaba desperdiciando.
+
+    Tres ramas, cada una por un motivo distinto:
+
+    - **Nombró una categoría** → esa, venga el intent que venga. Es la señal más
+      fuerte que puede dar un cliente y la regla de que la categoría es un
+      límite duro no se suspende porque el modelo esté caído.
+    - **Pidió el catálogo o solo saludó** → lo más pedido. "Enséñame lo que
+      tienes" se responde enseñando; en una tienda de regalos un saludo suelto
+      también.
+    - **Cualquier otra cosa** → se cede a un humano. No sabemos si preguntó por
+      los tiempos de entrega, por el Yape o por si se puede cambiar el globo, y
+      sin el modelo no hay manera de saberlo. Inventar es peor que ceder, y es
+      la misma regla de siempre: un fallo nuestro se deriva, no se narra.
+    """
+    options = await _taxonomia()
+    categoria = match_category(turn.text, options) if options else None
+
+    if categoria is not None:
+        productos = await _productos_de(categoria["slug"])
+        if productos:
+            log.info(
+                "[rescate] sin modelo; respondo con la categoría %s",
+                categoria["slug"],
+            )
+            record_operation("specialist.rescue", "categoria")
+            return AgentResult(
+                user_facing=compose_product_reply(
+                    f"Te muestro nuestros *{categoria['nombre']}* 🎁", productos
+                ),
+                artifacts=productos,
+                state_patch={"recent_options": [], "menu_depth": 0},
+            )
+
+    if intent in ("catalog_search", "greet"):
+        productos = await _destacados()
+        if productos:
+            log.info("[rescate] sin modelo; respondo con los destacados")
+            record_operation("specialist.rescue", "destacados")
+            return AgentResult(
+                user_facing=compose_product_reply(
+                    "Esto es lo que más nos piden 🎁", productos
+                ),
+                artifacts=productos,
+                state_patch={"recent_options": [], "menu_depth": 0},
+            )
+
+    conversation_id = ctx.get("conversation_id")
+    if conversation_id is None:
+        # Sin conversación no hay a quién ceder: que responda `buffer`.
+        return None
+
+    log.error(
+        "[rescate] conversation=%s el especialista no respondió y no hay nada "
+        "que enseñar (intent=%s); se deriva",
+        conversation_id,
+        intent,
+    )
+    record_operation("specialist.rescue", "handoff")
+    return AgentResult(
+        user_facing=None,
+        escalate=await perform_handoff(
+            wa_id=ctx.get("wa_id") or "",
+            conversation_id=conversation_id,
+            motivo="fallo técnico: el bot no pudo componer una respuesta",
+            use_external_crm=ctx.get("use_external_crm", False),
+            session=ctx.get("session"),
+            persist=ctx.get("persist"),
+        ),
+    )
 
 
 async def _show_something(state: ConversationState, **ctx) -> AgentResult | None:
@@ -749,6 +877,10 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     #   2. La venta en el CRM (chat en verde), para que el asesor entre sabiendo
     #      qué se vendió en vez de reconstruirlo leyendo el hilo.
     conversation_id = ctx.get("conversation_id")
+    # El pedido temporal y el verde del CRM son visibles para el equipo y no se
+    # deshacen: dejar un pedido huérfano de un turno abortado obliga a ventas a
+    # limpiarlo a mano.
+    preempt.commit()
     if meta.get("create_order") and settings.pedido_temporal_enabled:
         data = await create_temporal_order(state, ctx.get("wa_id") or "")
         if data and data.get("id_pedido_temporal"):

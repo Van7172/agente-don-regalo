@@ -884,6 +884,26 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 .table-card h4 { margin: 0 0 12px; }
 .table-scroll { overflow-x: auto; }
 
+/* Campañas: conversión por anuncio. La barra es comparativa entre filas, así
+   que el número va SIEMPRE al lado — una barra sola invita a leer proporciones
+   que no son las reales. */
+.conv-cell { display: flex; align-items: center; gap: 10px; min-width: 120px; }
+.conv-pct { font-variant-numeric: tabular-nums; min-width: 44px; }
+.conv-bar {
+  flex: 1; height: 6px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+.conv-bar-fill { display: block; height: 100%; background: var(--color-accent-600); }
+.table tr.is-muted td { opacity: 0.62; }
+
+.reports-caveats { margin-top: 24px; }
+.reports-caveats ul { margin: 0 0 12px; padding-left: 18px; }
+.reports-caveats li {
+  font-size: 13px; line-height: 1.55; margin-bottom: 8px;
+  color: color-mix(in srgb, var(--color-text) 72%, transparent);
+}
+.reports-caveats li strong { color: var(--color-text); }
+
 .reports-source {
   margin: 18px 0 0; font-size: 12px;
   color: color-mix(in srgb, var(--color-text) 50%, transparent);

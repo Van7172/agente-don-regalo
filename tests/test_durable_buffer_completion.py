@@ -12,7 +12,7 @@ async def test_waiter_se_resuelve_al_terminar_flush(monkeypatch):
     monkeypatch.setattr(buffer.settings, "buffer_seconds", 0)
     flushed = asyncio.Event()
 
-    async def fake_flush(_conversation_id, _contact_id, _wa_id, _content):
+    async def fake_flush(_conversation_id, _contact_id, _wa_id, _content, _wa_ids=None):
         await asyncio.sleep(0)
         flushed.set()
 

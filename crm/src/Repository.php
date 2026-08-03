@@ -1399,14 +1399,20 @@ final class Repository
     {
         return Database::execute(
             'INSERT INTO crm_outbox
-              (id_conversation, wa_id, content_outbox, type_outbox, media_path, reply_to_wa_id, status_outbox)
-             VALUES (:conversationId, :waId, :content, :type, :mediaPath, :replyToWaId, \'pending\')',
+              (id_conversation, wa_id, content_outbox, type_outbox, media_path, filename_outbox, reply_to_wa_id, status_outbox)
+             VALUES (:conversationId, :waId, :content, :type, :mediaPath, :filename, :replyToWaId, \'pending\')',
             [
                 'conversationId' => $input['conversationId'],
                 'waId' => $input['waId'],
                 'content' => $input['content'],
                 'type' => $input['type'] ?? 'text',
                 'mediaPath' => $input['mediaPath'] ?? null,
+                // El nombre del adjunto se GUARDA, no solo se empuja. Iba solo en
+                // el payload del push, así que cuando el push fallaba —que es
+                // cuando entra el drenaje— el nombre ya no existía y el PDF le
+                // llegaba al cliente como "documento", sin extensión. Ver la
+                // migración 015.
+                'filename' => ($input['filename'] ?? '') !== '' ? $input['filename'] : null,
                 // Mensaje al que responde el asesor: viaja hasta la Cloud API para
                 // que el cliente vea la cita en su WhatsApp.
                 'replyToWaId' => $input['replyToWaId'] ?? null,
@@ -1882,6 +1888,221 @@ final class Repository
         }
 
         return $series;
+    }
+
+    /**
+     * ¿Qué migraciones se han corrido ya en ESTA base?
+     *
+     * El orden de despliegue es SQL → CRM PHP → agente, y se hace a mano contra
+     * el MySQL del hosting. Saltarse un paso no da un error: da una pantalla
+     * vacía. Y una tabla de Oportunidades vacía se lee exactamente igual que
+     * "no falta nada en el catálogo", que es la conclusión contraria a la
+     * verdadera. Esto convierte ese silencio en una respuesta comprobable.
+     *
+     * Se comprueba una columna concreta por migración, no la tabla a secas: las
+     * que añaden columnas (`007`, `012`, `013`) corren sobre tablas que YA
+     * existen, así que preguntar por la tabla las daría por aplicadas siempre.
+     *
+     * @return array{ok: bool, faltan: list<string>, migraciones: array<string, bool>}
+     */
+    public static function schemaState(): array
+    {
+        // migración => [tabla, columna]. Añadir aquí cada migración nueva que
+        // el código dé por hecha.
+        $esperado = [
+            '007_lead_anuncio' => ['crm_conversations', 'ad_source_id'],
+            '012_venta_manual' => ['crm_ventas_historiales', 'origen_venta_historial'],
+            '013_venta_producto_id' => ['crm_ventas_historiales', 'id_producto_venta_historial'],
+            '014_demanda_no_cubierta' => ['crm_demanda_no_cubierta', 'consulta_demanda'],
+        ];
+
+        $rows = Database::fetchAll(
+            'SELECT TABLE_NAME AS t, COLUMN_NAME AS c
+               FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()',
+            []
+        );
+        $presentes = [];
+        foreach ($rows as $row) {
+            $presentes[strtolower((string) $row['t']) . '.' . strtolower((string) $row['c'])] = true;
+        }
+
+        $migraciones = [];
+        $faltan = [];
+        foreach ($esperado as $nombre => $par) {
+            $clave = strtolower($par[0]) . '.' . strtolower($par[1]);
+            $hay = isset($presentes[$clave]);
+            $migraciones[$nombre] = $hay;
+            if (!$hay) {
+                $faltan[] = $nombre;
+            }
+        }
+
+        return [
+            'ok' => $faltan === [],
+            'faltan' => $faltan,
+            'migraciones' => $migraciones,
+        ];
+    }
+
+    /**
+     * Una búsqueda que el catálogo no pudo satisfacer.
+     *
+     * Cada miss es una fila, sin unicidad ni contador: dos personas que piden lo
+     * mismo el mismo día son dos señales, no una, y agrupando por fecha se ve si
+     * algo sube —una tendencia, una fecha del calendario— o si fue un caso
+     * suelto. Un contador acumulado borraría el cuándo.
+     *
+     * La conversación se valida contra el tenant antes de guardarla: el id llega
+     * del agente y una FK rota tumbaría el INSERT entero por un dato que es
+     * accesorio. Sin conversación la señal de demanda sigue valiendo.
+     */
+    public static function recordDemandMiss(
+        string $query,
+        string $resultado = 'vacio',
+        int $nResultados = 0,
+        ?string $categoria = null,
+        ?int $conversationId = null
+    ): void {
+        $tenantId = self::ensureTenantId();
+        $query = trim($query);
+        if ($query === '') {
+            return;
+        }
+        if (!in_array($resultado, ['vacio', 'aproximado'], true)) {
+            $resultado = 'vacio';
+        }
+
+        if ($conversationId !== null) {
+            $exists = Database::fetchOne(
+                'SELECT id_conversation FROM crm_conversations
+                 WHERE id_tenant = :t AND id_conversation = :c LIMIT 1',
+                ['t' => $tenantId, 'c' => $conversationId]
+            );
+            if (!$exists) {
+                $conversationId = null;
+            }
+        }
+
+        Database::execute(
+            'INSERT INTO crm_demanda_no_cubierta
+                (id_tenant, id_conversation, consulta_demanda, categoria_demanda,
+                 resultado_demanda, n_resultados_demanda)
+             VALUES (:t, :c, :q, :cat, :res, :n)',
+            [
+                't' => $tenantId,
+                'c' => $conversationId,
+                // El ancho de la columna. El agente ya corta, pero este endpoint
+                // es la frontera: con el modo estricto apagado MySQL truncaría
+                // en silencio y nadie se enteraría de que faltan términos.
+                'q' => mb_substr($query, 0, 255),
+                'cat' => $categoria !== null ? mb_substr(trim($categoria), 0, 120) : null,
+                'res' => $resultado,
+                'n' => max(0, $nResultados),
+            ]
+        );
+    }
+
+    /**
+     * Lo más pedido que no tenemos, agrupado.
+     *
+     * Ordena por vacíos y no por total a propósito: un término que se resolvió
+     * con alternativas dejó al cliente algo que comprar, y uno que no encontró
+     * nada lo dejó sin nada. Diez veces "globos metálicos" sin resultado pesa
+     * más que treinta con alternativa.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function unmetDemand(?string $from, ?string $to, int $limit = 50): array
+    {
+        $tenantId = self::ensureTenantId();
+        $from = $from ?: date('Y-m-d', strtotime('-30 days'));
+        $to = $to ?: date('Y-m-d');
+        $limit = max(1, min(200, $limit));
+
+        return Database::fetchAll(
+            "SELECT
+                consulta_demanda,
+                COUNT(*) AS veces,
+                SUM(resultado_demanda = 'vacio') AS veces_vacio,
+                SUM(resultado_demanda = 'aproximado') AS veces_aproximado,
+                COUNT(DISTINCT id_conversation) AS chats,
+                MAX(categoria_demanda) AS categoria,
+                MAX(fecha_creacion) AS ultima_vez
+             FROM crm_demanda_no_cubierta
+             WHERE id_tenant = :t
+               AND fecha_creacion BETWEEN :f AND :to
+             GROUP BY consulta_demanda
+             ORDER BY veces_vacio DESC, veces DESC
+             LIMIT {$limit}",
+            [
+                't' => $tenantId,
+                'f' => $from . ' 00:00:00',
+                'to' => $to . ' 23:59:59',
+            ]
+        );
+    }
+
+    /**
+     * Qué anuncio trae compradores y cuál trae curiosos.
+     *
+     * `ad_source_id` se captura desde la migración 007 y hasta ahora solo se
+     * pintaba como tarjeta en el inbox: servía para que el asesor supiera de
+     * dónde venía ESE chat, pero nadie podía sumar. Cruzarlo con las ventas
+     * responde la pregunta cara — dos anuncios que traen los mismos leads
+     * pueden cerrar cantidades muy distintas, y sin esto se optimiza a ciegas
+     * por volumen de conversaciones.
+     *
+     * **El rango filtra por llegada del lead, no por cierre de la venta.** Es
+     * una cohorte: de los leads que entraron en estas fechas, cuántos
+     * compraron (cuando sea que compraran). Rangear las ventas por su fecha de
+     * cierre mezclaría numerador y denominador —ventas de leads de otro
+     * periodo sobre los leads de este— y daría una conversión que puede pasar
+     * del 100%. A cambio, la cohorte reciente sale artificialmente baja: sus
+     * leads aún no han tenido tiempo de cerrar. La vista lo advierte.
+     *
+     * Las conversaciones sin anuncio salen en su propia fila en vez de
+     * descartarse: son la referencia contra la que se comparan las campañas, e
+     * incluyen todo lo anterior a la migración 007, que no es recuperable.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function campaignPerformance(?string $from, ?string $to): array
+    {
+        $tenantId = self::ensureTenantId();
+        $from = $from ?: date('Y-m-d', strtotime('-30 days'));
+        $to = $to ?: date('Y-m-d');
+
+        return Database::fetchAll(
+            "SELECT
+                c.ad_source_id,
+                MAX(c.ad_headline)   AS ad_headline,
+                MAX(c.ad_source_url) AS ad_source_url,
+                MAX(c.ad_source_type) AS ad_source_type,
+                MIN(c.fecha_creacion) AS primer_lead,
+                COUNT(DISTINCT c.id_conversation) AS leads,
+                -- CASE dentro de COUNT(DISTINCT ...) y no SUM(cond): el LEFT
+                -- JOIN duplica la conversación por cada venta, y un SUM
+                -- contaría dos veces al mismo cliente atendido por un humano.
+                COUNT(DISTINCT CASE WHEN c.mode_conversation = 'HUMAN'
+                                    THEN c.id_conversation END) AS leads_human,
+                COUNT(DISTINCT v.id_venta_historial) AS ventas,
+                COALESCE(SUM(v.monto_venta_historial), 0) AS monto
+             FROM crm_conversations c
+             LEFT JOIN crm_ventas_historiales v
+                    ON v.id_conversation = c.id_conversation
+                   AND v.id_tenant = c.id_tenant
+             WHERE c.id_tenant = :t
+               AND c.fecha_creacion BETWEEN :f AND :to
+             GROUP BY c.ad_source_id
+             ORDER BY leads DESC, ventas DESC
+             LIMIT 100",
+            [
+                't' => $tenantId,
+                'f' => $from . ' 00:00:00',
+                'to' => $to . ' 23:59:59',
+            ]
+        );
     }
 
     /**

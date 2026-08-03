@@ -119,7 +119,13 @@
     name: root.dataset.userName || "",
   };
 
-  const MAX_BYTES = 16 * 1024 * 1024;
+  // Lo que el servidor acepta de verdad: `Media::effectiveMaxBytes()` cruza
+  // nuestro tope con `upload_max_filesize` y `post_max_size`. Estaba fijo en
+  // 16 MB mientras PHP cortaba en 2M, así que el panel daba por bueno un
+  // archivo que el servidor iba a rechazar y el asesor solo veía la burbuja
+  // roja al final de la subida. El respaldo son los 16 MB de siempre, por si
+  // la vista es antigua.
+  const MAX_BYTES = Number(root.dataset.maxUpload || 0) || 16 * 1024 * 1024;
   const MAX_ATTACH = 10;
 
   let conversations = [];
@@ -1344,7 +1350,12 @@
 
   function addPendingFile(file, name) {
     if (file.size > MAX_BYTES) {
-      showError(`El archivo pesa ${humanSize(file.size)}; el máximo es 16 MB.`);
+      // La cifra sale del servidor: decir "16 MB" cuando el hosting corta en 2
+      // es lo que hacía que el asesor reintentara el mismo archivo.
+      showError(
+        `El archivo pesa ${humanSize(file.size)} y el servidor acepta hasta ` +
+          `${humanSize(MAX_BYTES)}. Comprímelo o compártelo por enlace.`
+      );
       return;
     }
     if (pendingFiles.length >= MAX_ATTACH) {

@@ -627,6 +627,46 @@ try {
         ]);
     }
 
+    // GET /schema — qué migraciones tiene corridas esta base.
+    //
+    // Va con token y NO dentro de `/health`, que es público: el esquema le
+    // dice a cualquiera qué versión del CRM corre y qué columnas tiene. Es lo
+    // que consulta `scripts/check_deploy.py` después de subir, para que
+    // saltarse una migración dé un error en vez de una pantalla vacía.
+    if ($path === '/schema' && $method === 'GET') {
+        Auth::assertInternalToken();
+        Http::jsonOk(['ok' => true, 'schema' => Repository::schemaState()]);
+    }
+
+    // POST /demand — el agente buscó algo y el catálogo no lo tenía.
+    //
+    // No es recuperable hacia atrás: el histórico no guarda qué devolvió cada
+    // búsqueda, así que solo cuenta desde que esto existe. Responde 200 aunque
+    // la fila no se llegue a escribir — el agente lo manda en segundo plano y
+    // no reintenta, y un error aquí solo serviría para sumar fallos al circuit
+    // breaker por un dato que no afecta a ninguna conversación.
+    if ($path === '/demand' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        $query = trim((string) ($body['query'] ?? ''));
+        if ($query === '') {
+            Http::jsonError('query required');
+        }
+        $conversationId = isset($body['conversation_id']) && $body['conversation_id'] !== null
+            ? (int) $body['conversation_id']
+            : null;
+        Repository::recordDemandMiss(
+            $query,
+            (string) ($body['resultado'] ?? 'vacio'),
+            (int) ($body['n_resultados'] ?? 0),
+            isset($body['categoria']) && $body['categoria'] !== null
+                ? (string) $body['categoria']
+                : null,
+            $conversationId
+        );
+        Http::jsonOk(['ok' => true]);
+    }
+
     // POST /media — sube un archivo y devuelve su clave de almacenamiento.
     if ($path === '/media' && $method === 'POST') {
         // Cuando el archivo pasa del límite de PHP (`upload_max_filesize` /
@@ -749,12 +789,14 @@ try {
         // El asesor también cita fotos (las suyas o las del cliente).
         $replyQuotedMedia = $replyCitado['media_url'] ?? null;
 
+        $filename = trim((string) ($body['filename'] ?? ''));
         $outboxId = Repository::enqueueOutbox([
             'conversationId' => $convId,
             'waId' => $conv['wa_id'],
             'content' => $content,
             'type' => $type,
             'mediaPath' => $mediaPath !== '' ? $mediaPath : null,
+            'filename' => $filename,
             'replyToWaId' => $replyToWaId,
         ]);
         // Marca actividad del asesor para el auto-releaser HUMAN→AI del agente.
@@ -787,7 +829,7 @@ try {
             'conversation_id' => $convId,
             'type' => $type,
             'media_path' => $mediaPath !== '' ? $mediaPath : null,
-            'filename' => (string) ($body['filename'] ?? ''),
+            'filename' => $filename,
             'reply_to_wa_id' => $replyToWaId,
             'quoted_text' => $replyQuoted,
             'quoted_media_url' => $replyQuotedMedia,

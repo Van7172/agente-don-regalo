@@ -15,12 +15,14 @@ from app.crm import repository as repo
 from app.crm.models import Message
 from app.db import SessionLocal
 from app.prompts.compose import profile_block
+from app.services import preempt
 from app.services.agent import HANDOFF_DONE
 from app.harness.master import run_master
 from app.harness.quoting import build_quote_marker
 from app.harness.releaser import REENGAGE_MSG, try_release_conversation
 from app.harness.state import load_state, save_state
 from app.services.content import collapse_parts, inbound_to_parts
+from app.services.history import WA_ID_KEY, drop_current_turn
 from app.services.messenger import (
     human_delay,
     notify_team,
@@ -277,6 +279,9 @@ async def _enqueue_external(
         contact_id=contact_id,
         wa_id=wa_id,
         parts=parts,
+        # El mensaje ya está persistido en el CRM: su id es lo que permite
+        # quitarlo del historial en vez de mandárselo dos veces al modelo.
+        wa_message_id=msg.wa_message_id or "",
     )
     return {"status": "buffered", "conversation_id": conversation_id}, completion
 
@@ -331,6 +336,9 @@ async def _enqueue_local(
         contact_id=contact_id,
         wa_id=wa_id,
         parts=parts,
+        # El mensaje ya está persistido en el CRM: su id es lo que permite
+        # quitarlo del historial en vez de mandárselo dos veces al modelo.
+        wa_message_id=msg.wa_message_id or "",
     )
     return {"status": "buffered", "conversation_id": conversation_id}, completion
 
@@ -341,6 +349,7 @@ async def _append_to_buffer(
     contact_id: int,
     wa_id: str,
     parts: list,
+    wa_message_id: str = "",
 ) -> asyncio.Future[None]:
     completion: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     async with _buffers_lock:
@@ -350,12 +359,31 @@ async def _append_to_buffer(
         if not buf:
             buf = {
                 "parts": [],
+                # Los `wa_message_id` de los mensajes que acabarán en este turno.
+                # El CRM ya los tiene guardados (se persisten al entrar por el
+                # webhook, antes de agrupar), así que sin esta lista el historial
+                # que ve el modelo trae otra vez lo que ya va como turno.
+                "wa_ids": [],
                 "contact_id": contact_id,
                 "wa_id": wa_id,
                 "waiters": [],
             }
             _buffers[conversation_id] = buf
+        # El debounce solo cubre el hueco ANTES de arrancar el turno. Si el
+        # turno ya está corriendo —y uno con LLM y tools tarda segundos— se
+        # intenta tumbarlo: devuelve lo que estaba respondiendo y lo contestamos
+        # todo junto. Si ya habló o ya escribió, `preempt` devuelve vacío y esto
+        # es el comportamiento de siempre.
+        rescatadas, ids_rescatados = preempt.preempt(conversation_id)
+        if rescatadas:
+            buf["parts"] = rescatadas + buf["parts"]
+            # Los ids vuelven con sus partes, siempre. Si un turno rescatado
+            # recuperase el contenido sin ellos, ese mensaje seguiría en el
+            # historial Y en el turno: el modelo lo vería dos veces.
+            buf["wa_ids"] = ids_rescatados + buf.setdefault("wa_ids", [])
         buf["parts"].extend(parts)
+        if wa_message_id:
+            buf.setdefault("wa_ids", []).append(wa_message_id)
         buf["contact_id"] = contact_id
         buf["wa_id"] = wa_id
         buf.setdefault("waiters", []).append(completion)
@@ -385,6 +413,7 @@ async def _flush_buffer(conversation_id: int) -> None:
 
     contact_id = buf["contact_id"]
     wa_id = buf["wa_id"]
+    turn_wa_ids = list(buf.get("wa_ids") or [])
     user_content = collapse_parts(buf["parts"])
     if not user_content:
         for waiter in waiters:
@@ -392,11 +421,28 @@ async def _flush_buffer(conversation_id: int) -> None:
                 waiter.set_result(None)
         return
 
+    # A partir de aquí el turno es abortable: si llega otro mensaje del mismo
+    # cliente antes de que este turno haya hablado o escrito nada, se suelta y
+    # las partes vuelven al buffer para responderlas juntas.
+    guard = preempt.begin(conversation_id, buf["parts"], turn_wa_ids)
     try:
         if _use_external_crm():
-            await _flush_external(conversation_id, contact_id, wa_id, user_content)
+            await _flush_external(
+                conversation_id, contact_id, wa_id, user_content, turn_wa_ids
+            )
         else:
-            await _flush_local(conversation_id, contact_id, wa_id, user_content)
+            await _flush_local(
+                conversation_id, contact_id, wa_id, user_content, turn_wa_ids
+            )
+    except preempt.TurnAborted as abortado:
+        log.info("[BUFFER] conversation=%s turno soltado: %s", conversation_id, abortado)
+        # Los waiters se resuelven OK a propósito: el mensaje NO se perdió, lo
+        # va a contestar el turno que viene. Marcarlos como fallidos haría que
+        # una cola durable reintentara el mismo mensaje y el cliente lo vería
+        # respondido dos veces.
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
     except BaseException as error:
         for waiter in waiters:
             if not waiter.done():
@@ -406,6 +452,8 @@ async def _flush_buffer(conversation_id: int) -> None:
         for waiter in waiters:
             if not waiter.done():
                 waiter.set_result(None)
+    finally:
+        preempt.finish(guard)
 
 
 async def _build_messages(profile: dict, history: list, user_content) -> list:
@@ -426,6 +474,10 @@ async def _build_messages(profile: dict, history: list, user_content) -> list:
 
 async def _send_reply_segments(wa_id: str, conversation_id: int, reply: str, persist) -> None:
     """Envía segmentos. Cards de producto casi sin pausa; texto con delay corto."""
+    # La respuesta es lo más irreversible que hace un turno. Si el cliente
+    # escribió otra vez mientras se componía, se suelta aquí: todavía no ha
+    # visto nada y el turno siguiente le contestará a las dos cosas.
+    preempt.commit()
     segments = split_reply(reply)
     for i, segment in enumerate(segments):
         if segment["type"] == "image":
@@ -444,7 +496,11 @@ async def _send_reply_segments(wa_id: str, conversation_id: int, reply: str, per
 
 
 async def _flush_external(
-    conversation_id: int, contact_id: int, wa_id: str, user_content
+    conversation_id: int,
+    contact_id: int,
+    wa_id: str,
+    user_content,
+    turn_wa_ids: list[str] | None = None,
 ) -> None:
     detail = await crm_http.get_conversation(conversation_id)
     memory = await crm_http.get_memory(wa_id) or {}
@@ -471,10 +527,19 @@ async def _flush_external(
         role = m.get("role") or ("user" if m.get("direction") == "inbound" else "assistant")
         if role in ("user", "assistant", "human"):
             mapped = "assistant" if role == "human" else role
-            history.append({"role": mapped, "content": m.get("content") or ""})
-    # El último inbound ya está en CRM; evitamos duplicarlo si coincide con user_content
-    if history and history[-1].get("role") == "user":
-        history = history[:-1]
+            history.append({
+                "role": mapped,
+                "content": m.get("content") or "",
+                # El id viaja hasta el recorte y no más allá: `drop_current_turn`
+                # lo quita antes de que esto llegue al modelo.
+                WA_ID_KEY: m.get("wa_message_id"),
+            })
+    # Los mensajes de este turno ya están en el CRM (se persisten al entrar por
+    # el webhook, antes de agruparlos), así que sin este recorte el modelo los ve
+    # dos veces. La regla vive en `services.history`, una sola vez para los dos
+    # caminos: aquí había una copia que descartaba un mensaje y en el camino
+    # local otra que los descartaba todos.
+    history = drop_current_turn(history, turn_wa_ids=turn_wa_ids or ())
 
     messages = await _build_messages(profile, history, user_content)
 
@@ -513,6 +578,7 @@ async def _flush_external(
             # Recovery suave: el bot sigue a cargo; solo el handoff explícito
             # o la cuota agotada deben pasar a humano.
             log.warning("[OUT] conversation=%s sin respuesta; recovery suave", conversation_id)
+            preempt.commit()
             wa_mid = await send_message(wa_id, _FALLBACK_SOFT_MSG)
             await persist(content=_FALLBACK_SOFT_MSG, wa_message_id=wa_mid, media_url=None)
             record_fallback_event()
@@ -525,11 +591,17 @@ async def _flush_external(
 
 
 async def _flush_local(
-    conversation_id: int, contact_id: int, wa_id: str, user_content
+    conversation_id: int,
+    contact_id: int,
+    wa_id: str,
+    user_content,
+    turn_wa_ids: list[str] | None = None,
 ) -> None:
     async with SessionLocal() as session:
         profile_task = repo.get_contact_attributes(session, contact_id)
-        history_task = repo.get_conversation_history(session, conversation_id)
+        history_task = repo.get_conversation_history(
+            session, conversation_id, turn_wa_ids or ()
+        )
         profile, history = await asyncio.gather(profile_task, history_task)
         messages = await _build_messages(profile, history, user_content)
 
@@ -570,6 +642,7 @@ async def _flush_local(
                 await _send_reply_segments(wa_id, conversation_id, reply, persist)
             else:
                 log.warning("[OUT] conversation=%s sin respuesta; recovery suave", conversation_id)
+                preempt.commit()
                 wa_mid = await send_message(wa_id, _FALLBACK_SOFT_MSG)
                 await persist(content=_FALLBACK_SOFT_MSG, wa_message_id=wa_mid, media_url=None)
                 await notify_team(

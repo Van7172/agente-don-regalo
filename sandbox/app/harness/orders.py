@@ -147,6 +147,24 @@ def display_fecha(value: str) -> str:
         return value or ""
 
 
+_DIAS_NOMBRE = (
+    "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo",
+)
+
+
+def weekday_name(value: str) -> str:
+    """Día de la semana de un ISO, en español. Vacío si no se puede leer.
+
+    Devolverlo al confirmar no es adorno: es lo único que le demuestra al
+    cliente que entendimos SU aclaración ("Jueves") y no otra cosa. Un
+    "anotado para el 06/08/26" no responde a lo que preguntó.
+    """
+    try:
+        return _DIAS_NOMBRE[date.fromisoformat(value).weekday()]
+    except (TypeError, ValueError, IndexError):
+        return ""
+
+
 def build_body(
     state: ConversationState, wa_id: str, *, id_distrito: int | None = None
 ) -> dict | None:

@@ -12,6 +12,7 @@ from app.config import settings
 from app.harness import taxonomy
 from app.harness.taxonomy import RECIPIENT_WORDS, match_recipient, parse_filtros
 from app.observability import audit_event, record_operation
+from app.services import demand
 from app.tools import catalog, mcp_client, search
 
 log = logging.getLogger(__name__)
@@ -426,6 +427,41 @@ async def _category_fallback(
     return None
 
 
+def _record_demand(args: dict, result: object) -> None:
+    """Anota lo que el cliente pidió y no tenemos. Nunca levanta ni espera.
+
+    Se registra la consulta ORIGINAL, no la que acabó funcionando: si "unicornio
+    de peluche gigante" solo encontró algo al acortarse a "peluche", lo que
+    falta en el catálogo es el unicornio gigante. Guardar "peluche" diría que
+    nos falta justo lo que sí tenemos.
+
+    `aproximado` y vacío se separan porque son dos carencias distintas y una es
+    peor que la otra: en la primera el cliente se llevó una alternativa y pudo
+    comprar igual; en la segunda se fue con las manos vacías.
+    """
+    try:
+        original = str(args.get("q") or "").strip()
+        if not original:
+            return
+        encontrados = result_product_count(result)
+        if encontrados == 0:
+            demand.record_miss(
+                original,
+                resultado=demand.VACIO,
+                categoria=args.get("categoria") or None,
+            )
+        elif isinstance(result, dict) and result.get("aproximado"):
+            demand.record_miss(
+                original,
+                resultado=demand.APROXIMADO,
+                n_resultados=encontrados,
+                categoria=args.get("categoria") or None,
+            )
+    except Exception as error:
+        # Contar la demanda no puede tumbar la búsqueda que sí funcionó.
+        log.warning("[demanda] no pude anotar la carencia: %s", error)
+
+
 async def execute_tool(name: str, args: dict) -> str:
     """Ejecuta una herramienta y devuelve el resultado como string JSON."""
     started = time.monotonic()
@@ -477,6 +513,13 @@ async def execute_tool(name: str, args: dict) -> str:
                     if por_categoria is not None:
                         result = por_categoria
 
+                # Agotada la escalera, lo que quede sin resolver es demanda que
+                # no cubrimos. Se anota aquí y no dentro de cada peldaño porque
+                # un escalón que falla no es una carencia mientras el siguiente
+                # acierte: contarlos por separado convertiría una búsqueda en
+                # hasta cuatro señales de un producto que sí teníamos.
+                _record_demand(args, result)
+
             elif name == "catalogo_categoria":
                 args = dict(args or {})
                 slug = (args.get("slug") or "").strip("/")
@@ -502,6 +545,14 @@ async def execute_tool(name: str, args: dict) -> str:
                         sem["aproximado"] = True
                         sem["categoria_pedida"] = slug
                         result = sem
+
+                # Una categoría entera sin productos es la carencia más clara
+                # que hay: el cliente ni siquiera pidió algo raro, pidió una
+                # rama del menú que le enseñamos nosotros.
+                if slug:
+                    _record_demand(
+                        {"q": slug.replace("-", " "), "categoria": slug}, result
+                    )
 
             elif name in _CATALOG_TOOLS:
                 result = await _pick(name, _CATALOG_TOOLS[name])(client, args or {})

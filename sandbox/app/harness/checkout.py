@@ -9,7 +9,12 @@ from typing import Any
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
 from app.harness.holidays import closed_delivery_reply, is_closed_delivery
-from app.harness.orders import display_fecha, lima_today, normalize_fecha
+from app.harness.orders import (
+    display_fecha,
+    lima_today,
+    normalize_fecha,
+    weekday_name,
+)
 from app.guardrails import is_courtesy_text
 from app.harness.state import ConversationState
 
@@ -76,6 +81,35 @@ _RANGE_RE = re.compile(
 _AMPM_RE = re.compile(r"\b(\d{1,2})\s*(?::\d{2})?\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)")
 _BARE_HOUR_RE = re.compile(r"\b(?:a\s+las\s+|las\s+)?(\d{1,2})\b")
 
+# Marcas de que el texto habla de una HORA. Sin ninguna de ellas, un texto que
+# además se lee como fecha NO puede tomarse por una hora.
+_TIME_HINT_RE = re.compile(
+    r"\bam\b|\bpm\b|\ba\.?\s*m\.?\b|\bp\.?\s*m\.?\b|\d\s*:\s*\d{2}|"
+    r"\bhoras?\b|\ba\s+las\b"
+)
+
+
+def _is_date_not_hour(text: str) -> bool:
+    """El texto es una FECHA y nada en él sugiere una hora.
+
+    Los dos caminos numéricos de este módulo leían fechas como franjas, y en
+    silencio: `_BARE_HOUR_RE` agarraba el "06" de «06 de agosto 2026», lo
+    convertía en las 18:00 (la regla "sin am/pm, de 1 a 6 es PM") y devolvía
+    *Tarde-noche*; y el atajo del menú, que mira el primer carácter, leía
+    «5 de agosto» como la opción 5. Las dos salidas eran la misma: una entrega
+    agendada de 4 a 7 PM que el cliente nunca pidió, sin error, sin reintento y
+    sin nada en la traza. El motorizado sale a la hora equivocada y el primero
+    en enterarse es quien recibe el regalo.
+
+    Pasa cuando el cliente contesta la fecha un segundo tarde, con el paso ya
+    en `schedule`. Las franjas por NOMBRE no se tocan: en este paso "mañana" es
+    la franja horaria, no el día, y esa lectura la resuelven los
+    `_LABEL_PATTERNS` antes de llegar aquí.
+    """
+    if _TIME_HINT_RE.search(_norm(text)):
+        return False
+    return normalize_fecha(text) is not None
+
 
 def recognized_window(text: str) -> str | None:
     """Franja que nombra el texto, exista o no ese día; `None` si no se reconoce.
@@ -103,8 +137,11 @@ def recognized_window(text: str) -> str | None:
         if re.search(pattern, raw):
             return label
 
+    # Último recurso: un número suelto. Es el que confunde una fecha con una
+    # hora, así que aquí sí se comprueba (los patrones por nombre, arriba, ya
+    # decidieron y son inequívocos).
     m = _BARE_HOUR_RE.search(raw)
-    if m:
+    if m and not _is_date_not_hour(text):
         return _label_for_hour(int(m.group(1)))
 
     return None
@@ -117,7 +154,13 @@ def parse_schedule(
     if not raw:
         return None
     schedule_map = schedule_map_for(delivery_date)
-    if raw[0] in schedule_map and (len(raw) == 1 or not raw[1].isdigit()):
+    if (
+        raw[0] in schedule_map
+        and (len(raw) == 1 or not raw[1].isdigit())
+        # "5 de agosto" empieza por "5" y no es la opción 5. Un "5" pelado sí:
+        # `normalize_fecha` no ve ninguna fecha en un número suelto.
+        and not _is_date_not_hour(raw)
+    ):
         return schedule_map[raw[0]]
 
     label = recognized_window(raw)
@@ -345,6 +388,52 @@ def _advance(
             return _courtesy(state, meta, f"¿En qué horario te llega mejor? 🕐\n{opciones}")
         slot = parse_schedule(text, state.date)
         if slot is None:
+            # ¿Está contestando a la pregunta ANTERIOR? En WhatsApp se escribe a
+            # ráfagas: un cliente mandó «06 de agosto 2026» y, un momento
+            # después, «Jueves» — la misma respuesta, aclarada. Para entonces el
+            # paso ya había avanzado, así que su aclaración la recibió el parser
+            # de franjas, que no sabe qué es un jueves, y le contestó "no logré
+            # cuadrar «Jueves»" gastándole un reintento de tres. El texto no era
+            # basura: `normalize_fecha` lo resuelve al día exacto que acabábamos
+            # de guardar. El problema de timing es nuestro y no se le cobra a él.
+            #
+            # Va DESPUÉS de `parse_schedule` a propósito: aquí "mañana" es la
+            # franja horaria, no el día, y quien ya respondió una franja válida
+            # nunca llega hasta esta rama.
+            tardia = normalize_fecha(text, today=today) if _is_date_not_hour(text) else None
+            if tardia is not None:
+                efectivo = today or lima_today()
+                if tardia < efectivo.isoformat():
+                    return _again(
+                        state,
+                        meta,
+                        (
+                            f"Esa fecha ({display_fecha(tardia)}) ya pasó 😅 "
+                            f"Seguimos con el {display_fecha(state.date)}, ¿o "
+                            f"prefieres otro día?",
+                        ),
+                    )
+                if is_closed_delivery(tardia):
+                    return _again(state, meta, (closed_delivery_reply(),))
+                etiqueta = f"{weekday_name(tardia)} {display_fecha(tardia)}".strip()
+                if tardia == state.date:
+                    # Confirma lo que ya teníamos: se acusa y NO gasta reintento.
+                    return (
+                        state,
+                        f"¡Exacto, {etiqueta}! Ya lo tengo anotado 👍\n"
+                        f"Solo me falta el horario 🕐\n{opciones}",
+                        meta,
+                    )
+                # Otra fecha: no es una aclaración, es una corrección.
+                state.date = tardia
+                return (
+                    state,
+                    f"Listo, lo dejamos para el {etiqueta} 👍\n"
+                    f"¿En qué horario prefieres que llegue? 🕐\n"
+                    f"{schedule_options_for(state.date)}",
+                    meta,
+                )
+
             # Entender la franja y que no salga ese día NO es lo mismo que no
             # entender nada. Repetir el menú entero servía para ambos casos —
             # y por eso no servía para ninguno.

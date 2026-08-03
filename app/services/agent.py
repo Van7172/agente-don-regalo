@@ -38,6 +38,7 @@ from app.observability import (
     record_operation,
 )
 from app.resilience import circuit_breaker
+from app.services import preempt
 from app.services.messenger import notify_team, send_message, set_typing
 from app.tools import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS, execute_tool
 
@@ -272,12 +273,22 @@ def _filler_for_tools(tool_calls: list) -> str | None:
     return None
 
 
-async def _say(wa_id: str, text: str, persist) -> str | None:
+async def _say(wa_id: str, text: str, persist, *, commits: bool = True) -> str | None:
     """Envía por WhatsApp y deja constancia en el CRM.
 
     Lo que se envía sin persistir el asesor NO lo ve: el hilo del inbox queda
     con huecos respecto a lo que el cliente tiene en su WhatsApp.
+
+    Hablarle al cliente es el punto de no retorno por excelencia: a partir de
+    aquí el turno ya no puede abortarse aunque llegue otro mensaje. La
+    excepción son los fillers (`commits=False`): "Un momento, ya te ayudo 😊"
+    no dice nada que pueda volverse falso, y si comprometiera el turno la
+    preempción moriría a los 0.7s. Ver `services.preempt`.
     """
+    if commits:
+        preempt.commit()
+    else:
+        preempt.check()
     wa_mid = await send_message(wa_id, text)
     if persist is not None:
         try:
@@ -342,6 +353,12 @@ async def perform_handoff(
     Fiestas Patrias 28–29/07/2026: no hay asesores. Se avisa y el bot sigue;
     no se pone HUMAN ni se encola AYUDA.
     """
+    # Ceder el chat toca el CRM, avisa al equipo y le habla al cliente: nada de
+    # eso se deshace. A partir de aquí el turno se termina aunque llegue otro
+    # mensaje — un handoff a medias (conversación en HUMAN, equipo avisado, y
+    # un turno nuevo comportándose como si nada) es peor que responder tarde.
+    preempt.commit()
+
     is_payment = is_payment_reason(motivo)
 
     # Acceso por módulo (no `from … import fn`): así los tests pueden
@@ -536,13 +553,17 @@ async def run_specialist(
             await asyncio.sleep(0.7)
             if filler_sent or conversation_id is None:
                 return
-            await _say(wa_id, "Un momento, ya te ayudo 😊", persist)
+            await _say(wa_id, "Un momento, ya te ayudo 😊", persist, commits=False)
             await set_typing(conversation_id, True)
             filler_sent = True
             _filler_conversations.add(conversation_id)
             if len(_filler_conversations) > 5000:
                 _filler_conversations.clear()
         except asyncio.CancelledError:
+            return
+        except preempt.TurnAborted:
+            # Llegó otro mensaje: el turno se va a soltar y este aviso ya no
+            # tiene a quién avisar. No es un fallo del filler.
             return
         except Exception as e:
             log.warning("[FILLER] early failed: %s", e)
@@ -707,7 +728,7 @@ async def run_specialist(
                     if filler:
                         if early_filler_task and not early_filler_task.done():
                             early_filler_task.cancel()
-                        await _say(wa_id, filler, persist)
+                        await _say(wa_id, filler, persist, commits=False)
                         await set_typing(conversation_id, True)
                         filler_sent = True
                         _filler_conversations.add(conversation_id)
@@ -909,8 +930,34 @@ async def run_specialist(
                 artifacts=artifacts,
                 tools_used=tools_used,
             )
+    except preempt.TurnAborted:
+        # No es un fallo del bucle: el cliente escribió otra vez y este turno se
+        # suelta. Tiene que salir intacto — si cayera en el `except Exception`
+        # de abajo se registraría como "el bucle murió", devolvería None y el
+        # rescate de `master` acabaría cediéndole el chat a un humano por un
+        # turno que simplemente sobraba.
+        raise
     except Exception as e:
-        log.error("Error en el bucle del agente: %s", e)
+        # Tres chats se perdieron el 2 de agosto por caer aquí y esta línea
+        # decía solo "Error en el bucle del agente: ...". Sin el tipo de la
+        # excepción, sin traza y sin conversación, no había forma de saber si
+        # fue OpenAI, una tool o un bug nuestro — así que el turno siguiente
+        # volvía a fallar igual. Va como métrica además de log: un pico de esto
+        # es una caída, y sale en `/metrics` sin tener que abrir el servidor.
+        log.exception(
+            "[AGENTE] conversation=%s el bucle murió (%s): %s",
+            conversation_id,
+            type(e).__name__,
+            e,
+        )
+        record_operation("specialist.loop", "error")
+        audit_event(
+            "specialist.loop",
+            "error",
+            conversation_id=conversation_id,
+            error_type=type(e).__name__,
+            tool_count=len(tools_used),
+        )
         return AgentResult(user_facing=None, artifacts=artifacts, tools_used=tools_used)
     finally:
         if early_filler_task and not early_filler_task.done():

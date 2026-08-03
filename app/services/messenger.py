@@ -273,6 +273,39 @@ async def _to_whatsapp_audio(data: bytes, mime: str) -> tuple[bytes, str, str]:
     return out, "audio/ogg", "nota-de-voz.ogg"
 
 
+# Lo que el asesor adjunta de verdad. Solo hace falta para el último recurso:
+# con nombre real no se mira esta tabla.
+_DOC_EXT_BY_MIME = {
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "text/plain": ".txt",
+    "text/csv": ".csv",
+    "application/zip": ".zip",
+}
+
+
+def _document_name(filename: str, mime: str) -> str:
+    """Nombre con el que el cliente verá el archivo. Nunca sin extensión.
+
+    El nombre real llega salvo que el CRM no lo tenga (una fila anterior a la
+    migración 015). El respaldo era "documento" a secas, y un archivo sin
+    extensión es un archivo que varios clientes de WhatsApp no abren: el asesor
+    da el envío por bueno y el cliente se queda con algo inservible. Si sabemos
+    el mime, sabemos la extensión.
+    """
+    name = (filename or "").strip()
+    if name:
+        return name
+    return "documento" + _DOC_EXT_BY_MIME.get(
+        (mime or "").split(";")[0].strip().lower(), ""
+    )
+
+
 async def send_media(
     wa_id: str,
     kind: str,
@@ -296,7 +329,7 @@ async def send_media(
         media_id = await whatsapp_client.upload_media(data, mime, filename)
         result = await whatsapp_client.send_image_id(wa_id, media_id, caption)
     else:
-        name = filename or "documento"
+        name = _document_name(filename, mime)
         media_id = await whatsapp_client.upload_media(data, mime, name)
         result = await whatsapp_client.send_document_id(wa_id, media_id, name, caption)
 

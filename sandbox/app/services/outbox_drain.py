@@ -146,6 +146,14 @@ async def drain_pending_outbox(limit: int = 10) -> int:
         content = str(_row_field(row, "content_outbox", "content", default="") or "")
         msg_type = str(_row_field(row, "type_outbox", "type", default="text") or "text")
         media_path = _row_field(row, "media_path", "mediaPath")
+        # Iba hardcodeado a "": `send_media` caía en su valor por defecto y el
+        # cliente recibía «catalogodedesayunos.pdf» como un archivo llamado
+        # "documento", sin extensión. Este camino es el de rescate —solo corre
+        # cuando el push del CRM falló—, así que el fallo salía justo cuando
+        # nadie lo estaba mirando. El nombre lo persiste la migración 015; en un
+        # CRM sin actualizar la columna no viene y se degrada al comportamiento
+        # de antes en vez de romper el envío.
+        filename = str(_row_field(row, "filename_outbox", "filename", default="") or "")
         reply_to = _row_field(row, "reply_to_wa_id", "replyToWaId")
         conversation_id = _row_field(row, "id_conversation", "conversation_id", "conversationId")
         try:
@@ -164,7 +172,7 @@ async def drain_pending_outbox(limit: int = 10) -> int:
                 outbox_id=outbox_id,
                 msg_type=msg_type,
                 media_path=str(media_path) if media_path else None,
-                filename="",
+                filename=filename,
                 reply_to_wa_id=str(reply_to) if reply_to else None,
             )
             if res.get("status") == "skipped":
