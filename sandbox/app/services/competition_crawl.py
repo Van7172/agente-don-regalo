@@ -84,11 +84,17 @@ async def run_crawl(
                     "upserted": upserted,
                 }
                 summary["upserted_total"] += upserted
-                record_operation("competition.crawl", "ok", tags={"slug": slug})
+                # El competidor va en el NOMBRE, como `tool.{name}`:
+                # `record_operation` no acepta etiquetas. Pasarlas como `tags=`
+                # levantaba un TypeError — y como la misma llamada estaba dentro
+                # del `except`, el manejador reventaba también y se llevaba por
+                # delante todo el crawl. Un 500 en el trigger manual y un
+                # `log.warning` invisible en el tick del watchdog.
+                record_operation(f"competition.crawl.{slug}", "ok")
             except Exception as err:
                 log.warning("[competencia] crawl %s falló: %s", slug, err)
                 summary["errores"].append({"slug": slug, "error": str(err)[:200]})
-                record_operation("competition.crawl", "error", tags={"slug": slug})
+                record_operation(f"competition.crawl.{slug}", "error")
 
     if force and _crawl_had_progress(summary):
         await _marcar_hecho()
