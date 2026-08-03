@@ -205,3 +205,110 @@ async def test_maybe_run_crawl_no_propaga_al_watchdog(crawl_listo, monkeypatch):
 
     assert summary is not None
     assert summary["errores"]
+
+
+# ── Rate limit: un 429 no es un "no", es un "ahora no" ────────────────
+
+@pytest.mark.asyncio
+async def test_un_429_se_reintenta_en_vez_de_rendirse(crawl_listo, monkeypatch):
+    """El caso vivo del 03-08: Shopify daba 429 en la PRIMERA página.
+
+    El adapter pedía una sola vez y abandonaba, así que magia.pe y
+    sorprendelima quedaban en cero mientras sus catálogos estaban llenos —
+    desde una IP residencial los mismos endpoints devuelven 200.
+    """
+    intentos = {"n": 0}
+
+    class R:
+        def __init__(self, code):
+            self.status_code = code
+            self.headers = {}
+
+    async def fake_get(url, **_kw):
+        intentos["n"] += 1
+        return R(429 if intentos["n"] < 3 else 200)
+
+    visto = {}
+
+    async def adapter(fetch, _limit):
+        visto["resp"] = await fetch("https://magia.pe/products.json")
+        return [_producto(1)]
+
+    _adaptadores(monkeypatch, {"magia": adapter})
+    monkeypatch.setattr(competition_crawl.asyncio, "sleep", _no_dormir)
+    monkeypatch.setattr(
+        competition_crawl.httpx, "AsyncClient", _cliente_falso(fake_get)
+    )
+
+    await competition_crawl.run_crawl(force=True)
+
+    assert intentos["n"] == 3, "tiene que reintentar hasta que deje de dar 429"
+    assert visto["resp"].status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_se_respeta_retry_after_del_servidor(crawl_listo, monkeypatch):
+    """Es el sitio diciendo a qué ritmo tolera que le pidamos."""
+    esperas: list[float] = []
+
+    class R:
+        status_code = 429
+        headers = {"retry-after": "7"}
+
+    async def fake_get(_url, **_kw):
+        return R()
+
+    async def adapter(fetch, _limit):
+        await fetch("https://magia.pe/products.json")
+        return []
+
+    async def espia_sleep(segundos):
+        esperas.append(segundos)
+
+    _adaptadores(monkeypatch, {"magia": adapter})
+    monkeypatch.setattr(competition_crawl.asyncio, "sleep", espia_sleep)
+    monkeypatch.setattr(
+        competition_crawl.httpx, "AsyncClient", _cliente_falso(fake_get)
+    )
+
+    await competition_crawl.run_crawl(force=True)
+
+    assert 7.0 in esperas, f"debía esperar los 7s que pidió el servidor: {esperas}"
+
+
+def test_un_retry_after_absurdo_se_acota():
+    """Llega como texto de un tercero y esto corre dentro del tick del watchdog."""
+    class R:
+        headers = {"retry-after": "3600"}
+
+    assert competition_crawl._retry_after(R(), 1) == competition_crawl._FETCH_BACKOFF_CAP
+
+
+def test_sin_retry_after_el_backoff_crece_y_se_acota():
+    class R:
+        headers = {}
+
+    seguidos = [competition_crawl._retry_after(R(), i) for i in (1, 2, 3, 10)]
+    assert seguidos[0] < seguidos[1] < seguidos[2], "tiene que crecer"
+    assert seguidos[3] == competition_crawl._FETCH_BACKOFF_CAP
+
+
+async def _no_dormir(_segundos):
+    return None
+
+
+def _cliente_falso(get_fn):
+    class FakeClient:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def get(self, url, **kw):
+            return await get_fn(url, **kw)
+
+    return FakeClient

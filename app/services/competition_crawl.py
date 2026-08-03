@@ -23,6 +23,36 @@ log = logging.getLogger(__name__)
 
 COOLDOWN_KEY = "competition_crawl_last"
 
+# Rate limit y caídas pasajeras del sitio ajeno. 429 es el que importa: es lo
+# que devuelve Shopify a la IP del contenedor.
+_FETCH_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+_FETCH_MAX_ATTEMPTS = 4
+# Tope de espera POR reintento. El crawl vive dentro del tick del watchdog; un
+# `Retry-After` de una hora no puede secuestrarlo.
+_FETCH_BACKOFF_CAP = 20.0
+
+
+def _retry_after(resp: Any, intento: int) -> float:
+    """Cuánto esperar: lo que pida el servidor, si lo pide y es razonable.
+
+    `Retry-After` manda sobre nuestro backoff — es el sitio diciendo a qué ritmo
+    tolera que le pidamos, y respetarlo es la diferencia entre un crawler
+    educado y uno al que acaban baneando. Pero se acota igual: llega como texto
+    de un tercero y puede venir en horas.
+    """
+    cabecera = ""
+    try:
+        cabecera = (resp.headers or {}).get("retry-after", "") or ""
+    except Exception:
+        cabecera = ""
+    try:
+        pedido = float(str(cabecera).strip())
+    except (TypeError, ValueError):
+        pedido = 0.0
+    if pedido > 0:
+        return min(pedido, _FETCH_BACKOFF_CAP)
+    return min(2.0 ** intento, _FETCH_BACKOFF_CAP)
+
 
 async def maybe_run_crawl() -> Optional[dict[str, Any]]:
     """Corre un crawl si está habilitado y pasó el intervalo. None = skip."""
@@ -72,8 +102,38 @@ async def run_crawl(
     ) as client:
 
         async def fetch(url: str) -> httpx.Response:
-            await asyncio.sleep(settings.competition_request_delay_seconds)
-            return await client.get(url)
+            """Una petición educada, con reintento ante rate limit.
+
+            Shopify devolvía **429 en la PRIMERA página** de magia.pe y de
+            sorprendelima, y el adapter se rendía ahí: dos de los tres
+            competidores en cero. Desde una IP residencial los mismos endpoints
+            dan 200, así que el límite es de la IP del contenedor, no de nuestro
+            volumen — pedirlo una sola vez y abandonar era garantizar el cero.
+
+            Un 429 no es un "no": es un "ahora no". La respuesta correcta —y la
+            educada— es esperar lo que pida el servidor y volver, igual que ya
+            hace `_chat_completion_unprotected` con OpenAI. Si tras los
+            reintentos sigue negando, se devuelve el 429 y el adapter levanta
+            `CrawlBlocked` con el motivo, que es lo que hay que leer.
+
+            La espera va acotada a propósito: esto corre dentro del tick del
+            watchdog, y un `Retry-After: 3600` no puede dejar colgado el resto.
+            """
+            espera = settings.competition_request_delay_seconds
+            resp = None
+            for intento in range(1, _FETCH_MAX_ATTEMPTS + 1):
+                await asyncio.sleep(espera)
+                resp = await client.get(url)
+                if resp.status_code not in _FETCH_RETRY_STATUS:
+                    return resp
+                if intento == _FETCH_MAX_ATTEMPTS:
+                    break
+                espera = _retry_after(resp, intento)
+                log.info(
+                    "[competencia] %s → HTTP %s; reintento %s/%s en %.1fs",
+                    url, resp.status_code, intento, _FETCH_MAX_ATTEMPTS, espera,
+                )
+            return resp  # type: ignore[return-value]
 
         for slug, adapter in ADAPTERS.items():
             try:
