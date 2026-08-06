@@ -48,7 +48,7 @@ from app.harness.quoting import split_quote
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
-from app.harness.router import classify
+from app.harness.router import classify, classify_rules
 from app.harness.state import ConversationState, load_state, save_state
 from app.harness.stock import is_available, unavailable_message
 from app.harness.taxonomy import (
@@ -71,6 +71,7 @@ from app.observability import (
     record_operation,
 )
 from app.prompts.compose import build_system, prompt_version
+from app.prompts.facts import render_facts
 from app.prompts.playbooks import WELCOME
 from app.services import demand, preempt
 from app.services.agent import (
@@ -381,6 +382,10 @@ async def _run_master(
         tools_used=result.tools_used,
         agent=spec_for(intent).name,
         menu_owned=bool(result.state_patch.get("recent_options")),
+        # La tarifa de envío salió de `distritos_cobertura`, no del modelo: sin
+        # declararla, un turno que contesta cobertura Y catálogo a la vez marca
+        # el envío como precio inventado y la barrera tira la prosa entera.
+        sourced_prices=result.sourced_prices,
     )
     violations = list(guarded.violations)
 
@@ -498,12 +503,7 @@ async def _handle(
 
     # ── Cobertura: determinista, sin LLM ──────────────────────────
     if intent == "coverage":
-        raw = await resolve_coverage(turn.text, state)
-        return AgentResult(
-            user_facing=raw.get("user_facing") or raw.get("structured", {}).get("ask"),
-            state_patch=raw.get("state_patch") or {},
-            tools_used=["distritos_cobertura"],
-        )
+        return await _handle_coverage(turn, state, **ctx)
 
     # ── Cierre: máquina de estados, sin LLM ───────────────────────
     if intent == "checkout" or (
@@ -511,9 +511,30 @@ async def _handle(
     ):
         return await _handle_checkout(turn, state, **ctx)
 
+    # ── Políticas + producto en el mismo turno ────────────────────
+    # "¿Qué contiene ese desayuno? ¿y aceptan yape?" cae en un lado o en el otro
+    # según si ya se enseñaron productos: con listado previo gana `product_detail`
+    # y se pierde el yape; sin él gana `policy_faq` y se pierde el desayuno. Los
+    # dos enrutados son correctos — lo que faltaba es que el que habla llevara el
+    # dato del otro. Misma regla que en cobertura: la voz es de lo comercial,
+    # porque una política cabe en dos frases y un producto necesita ficha.
+    if intent == "policy_faq":
+        comercial = await _commercial_intent(turn.text, state)
+        if comercial is not None:
+            log.info("[turno-mixto] política + %s; la voz se la queda %s", comercial, comercial)
+            record_operation("turn.multi_intent", "policy_commercial")
+            intent = comercial
+
+    # Los FACTS se componen POR AGENTE: `detail` solo lleva `pricing` y `catalog`
+    # ni eso, así que ninguno de los dos podría contestar por el pago aunque
+    # quisiera. Se le pasa SOLO la política que se preguntó.
+    politica = (
+        _policy_fact_block(turn.text) if intent in _COMMERCIAL_INTENTS else ""
+    )
+
     # ── Detalle: el contenido se trae en código, no se le pide al modelo ──
     if intent == "product_detail":
-        return await _handle_detail(turn, state, **ctx)
+        return await _handle_detail(turn, state, extra_system=politica, **ctx)
 
     # ── ¿Responde a un menú NUESTRO? Se resuelve en código, venga el intent que
     #    venga. Esto colgaba de `intent == "catalog_search"`, y ahí estaba el
@@ -537,7 +558,7 @@ async def _handle(
             return rescate
 
     # ── Resto: especialista LLM con toolset acotado ───────────────
-    return await _run_specialty(intent, turn, state, **ctx)
+    return await _run_specialty(intent, turn, state, extra_system=politica, **ctx)
 
 
 async def _answer_without_model(
@@ -618,6 +639,186 @@ async def _answer_without_model(
             persist=ctx.get("persist"),
         ),
     )
+
+
+# El buffer une la ráfaga de mensajes de WhatsApp en UN turno
+# (`collapse_parts`), así que el turno con dos intenciones no es un caso raro:
+# es la forma normal de escribir de un cliente. Se parte por saltos de línea
+# —el propio separador del buffer—, por fin de frase y por la "y" que enlaza dos
+# peticiones. La coma NO separa: "Quiero este peluche, para el viernes, a
+# Miraflores" es un solo pedido de cierre y trocearlo lo rompería.
+_CLAUSE_SEP = re.compile(r"[\n.?!;]+|\s+y\s+(?=[a-zA-ZáéíóúñÁÉÍÓÚÑ¿])", re.I)
+
+
+def _clauses(text: str) -> list[str]:
+    return [c.strip() for c in _CLAUSE_SEP.split(text or "") if len(c.strip()) > 2]
+
+
+_COMMERCIAL_INTENTS = ("catalog_search", "product_detail")
+
+
+async def _commercial_intent(text: str, state: ConversationState) -> str | None:
+    """Qué pide el turno del lado comercial, si es que pide algo. `None` si nada.
+
+    Dos señales, porque ninguna sola basta y se tapan los huecos mutuamente:
+
+    - **La cláusula suelta.** Clasificar cada trozo con las reglas de siempre
+      reconoce "cuánto cuesta el ramo de rosas" como catálogo y "qué contiene
+      ese desayuno" como detalle. Se le escapa "Hola, quiero un desayuno…",
+      donde el "Hola" se lleva la cláusula entera a `greet`.
+    - **La categoría.** `match_category` sí ve ese "desayuno". Es preciso pero
+      conservador —devuelve `None` ante la duda— y por eso no reconoce "el ramo
+      de rosas".
+
+    Va con el estado REAL, no con uno vacío: `product_detail` solo se activa si
+    ya se enseñaron productos (`shown_product_ids`), que es justo la condición
+    que distingue "¿qué contiene?" —una pregunta sobre algo que el cliente ya
+    vio— de una búsqueda nueva.
+
+    Conservador a propósito en los dos frentes: un falso positivo secuestraría
+    una pregunta pura ("¿cuánto es el envío a Miraflores?", "¿aceptan yape?") y
+    le soltaría un catálogo a quien solo quería un dato. Peor que el problema
+    que esto arregla.
+    """
+    # La de cláusulas va primero porque es CPU pura; la taxonomía está cacheada
+    # con TTL, pero aun así abre un cliente HTTP para leer la caché.
+    for clause in _clauses(text):
+        rules = classify_rules(clause, state)
+        if rules.intent in _COMMERCIAL_INTENTS and rules.confidence >= 0.5:
+            return rules.intent
+    if match_category(text, await _taxonomia()) is not None:
+        return "catalog_search"
+    return None
+
+
+# Qué bloque de FACTS necesita cada pregunta de políticas. El orden importa: la
+# primera que casa manda, y se inyecta SOLO ese bloque — volcarle al modelo las
+# cuatro políticas para que conteste "sí, aceptamos Yape" es prompt que se paga
+# en cada turno y ruido del que extrapolar.
+_POLICY_SLICES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "payment",
+        re.compile(
+            r"yape|plin|tarjeta|transferenc|dep[oó]sito|efectivo|contra\s*entrega|"
+            r"contraentrega|pagar|pago|paypal|payu|cuenta|cci",
+            re.I,
+        ),
+    ),
+    (
+        "returns",
+        re.compile(r"devoluci|devolver|cambio|cancel|garant|reclam", re.I),
+    ),
+    (
+        "delivery",
+        re.compile(r"horario|hora|demora|tarda|cu[aá]ndo\s+lleg|plazo|mismo\s+d[ií]a", re.I),
+    ),
+    ("contact", re.compile(r"tel[eé]fono|correo|email|llamar|direcci[oó]n|sede", re.I)),
+)
+
+
+def _policy_fact_block(text: str) -> str:
+    """La política que el turno pregunta, como hecho para un agente comercial.
+
+    El caso: "¿Qué contiene ese desayuno? ¿y aceptan yape?" — el detalle se
+    queda la voz (es lo que el cliente quiere comprar) y la mitad del pago se
+    perdía entera, porque los FACTS se componen POR AGENTE y `detail` solo lleva
+    `pricing`. El agente no tenía los métodos de pago ni aunque quisiera.
+
+    No es un problema de enrutado: los dos intents son correctos. Es que el
+    system del que habla no llevaba el dato.
+    """
+    for nombre, patron in _POLICY_SLICES:
+        if patron.search(text or ""):
+            return (
+                "EL CLIENTE PREGUNTA TAMBIÉN POR ESTO. Contéstalo en una o dos "
+                "frases al final, sin cambiar de tema ni repetir el bloque "
+                "entero:\n\n" + render_facts((nombre,))
+            )
+    return ""
+
+
+def _coverage_fact(structured: dict) -> str:
+    """La cobertura ya resuelta, como hecho del sistema para el especialista."""
+    nombre = structured.get("resolved_district")
+    fee = structured.get("fee_sol")
+    linea = f"- Sí llegamos a {nombre}."
+    if fee is not None:
+        linea += f" El envío cuesta S/{float(fee):.2f}."
+    return (
+        "COBERTURA YA RESUELTA POR EL SISTEMA (no la vuelvas a preguntar ni la "
+        "consultes):\n"
+        f"{linea}\n"
+        "Menciónalo en una frase corta junto a los productos, con ESE importe "
+        "exacto. No inventes otras tarifas ni plazos."
+    )
+
+
+async def _handle_coverage(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+    """Cobertura — y el producto, si el turno traía las dos cosas.
+
+    Medido sobre turnos reales: "quiero un desayuno para mañana, ¿llegan a
+    SMP?" salía como `coverage` con 0.95 de confianza y **el desayuno se
+    descartaba en silencio**. Un nombre de distrito es una señal facilísima de
+    detectar, así que la mitad logística se comía a la mitad comercial — justo
+    al revés de lo que conviene, porque la cobertura cabe en una frase
+    subordinada y un catálogo no: necesita fotos, precios y lista.
+
+    La regla es **un turno, una voz**: lo comercial se queda el micrófono y la
+    cobertura entra como hecho en el system del especialista. No se lanzan dos
+    agentes — dos especialistas llevan cada uno el CORE con su identidad, así
+    que concatenarlos da dos saludos y dos cierres, y ambos querrían componer su
+    propio listado de productos.
+
+    Se cae a la cobertura sola en tres casos, y los tres tienen motivo:
+    el cierre en marcha (ahí el distrito ES el paso del formulario), la
+    cobertura sin resolver (necesita PREGUNTAR, y una pregunta no cabe como dato
+    subordinado) y el especialista mudo (mejor la tarifa que nada).
+    """
+    raw = await resolve_coverage(turn.text, state)
+    structured = raw.get("structured") or {}
+    patch = raw.get("state_patch") or {}
+    fee = structured.get("fee_sol")
+
+    solo_cobertura = AgentResult(
+        user_facing=raw.get("user_facing") or structured.get("ask"),
+        state_patch=patch,
+        tools_used=["distritos_cobertura"],
+        sourced_prices=[float(fee)] if fee is not None else [],
+    )
+
+    if state.checkout_step not in ("idle", ""):
+        return solo_cobertura
+    if not structured.get("resolved_district") or not structured.get("covered"):
+        return solo_cobertura
+    comercial = await _commercial_intent(turn.text, state)
+    if comercial is None:
+        return solo_cobertura
+
+    log.info(
+        "[turno-mixto] cobertura resuelta (%s); la voz se la queda el catálogo",
+        structured.get("resolved_district"),
+    )
+    record_operation("turn.multi_intent", "coverage_catalog")
+
+    result = await _run_specialty(
+        "catalog_search",
+        turn,
+        state,
+        extra_system=_coverage_fact(structured),
+        **ctx,
+    )
+    if not (result.user_facing or "").strip():
+        # Sin catálogo que enseñar, la tarifa sigue siendo una respuesta útil.
+        return solo_cobertura
+
+    # El distrito y la tarifa se guardan igual: es lo que deja el cierre medio
+    # hecho cuando el cliente elija. Primero el patch de cobertura para que el
+    # del especialista mande si tocan la misma clave.
+    result.state_patch = {**patch, **result.state_patch}
+    result.tools_used = ["distritos_cobertura", *result.tools_used]
+    if fee is not None:
+        result.sourced_prices = [*result.sourced_prices, float(fee)]
+    return result
 
 
 async def _show_something(state: ConversationState, **ctx) -> AgentResult | None:
@@ -905,7 +1106,9 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     return AgentResult(user_facing=None, escalate=escalate)
 
 
-async def _handle_detail(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+async def _handle_detail(
+    turn: Turn, state: ConversationState, *, extra_system: str = "", **ctx
+) -> AgentResult:
     """Detalle de producto con el contenido ya en la mano.
 
     "¿Qué contiene?" solo la puede responder `GET /productos/{id}`: el listado
@@ -927,7 +1130,12 @@ async def _handle_detail(turn: Turn, state: ConversationState, **ctx) -> AgentRe
         "product_detail",
         turn,
         state,
-        extra_system=_render_contenido(detalle),
+        # El contenido del producto primero: es lo que se preguntó. La política
+        # va detrás, como apostilla — al revés, el modelo abre hablando del Yape
+        # a quien preguntó qué trae el desayuno.
+        extra_system="\n\n".join(
+            b for b in (_render_contenido(detalle), extra_system) if b
+        ),
         fallback_artifacts=_artifacts_from(detalle),
         **ctx,
     )

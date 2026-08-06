@@ -13,6 +13,7 @@ convierte esos parches en una red de regresión.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.guardrails.privacy import find_contacts
@@ -277,20 +278,35 @@ def no_uncomposed_menu(reply: str, *, menu_owned: bool) -> Violation | None:
     return Violation("no_uncomposed_menu", "menú numerado que no compuso el código")
 
 
-def prices_are_sourced(reply: str, artifacts: list[Product]) -> Violation | None:
+def prices_are_sourced(
+    reply: str,
+    artifacts: list[Product],
+    extra_sourced: Iterable[float] = (),
+) -> Violation | None:
     """Todo precio en soles debe venir de una tool, no del modelo.
 
     Es el fallo más caro del negocio: un precio inventado que el cliente da por
-    bueno. Si el turno no citó productos, no hay nada contra qué comparar.
+    bueno. Si el turno no tiene ningún importe respaldado, no hay nada contra
+    qué comparar y no se opina.
+
+    `extra_sourced` son importes que salieron de una tool pero no son el precio
+    de un producto — hoy solo la tarifa de envío. Sin ellos, un turno que
+    contesta a la vez "estos son los desayunos" y "el envío a SMP son S/15"
+    marcaba el envío como inventado y la barrera tiraba la prosa entera. Lo que
+    se declara es un importe concreto, no una exención: cualquier otra cifra de
+    la respuesta se sigue comprobando igual.
     """
-    if not reply or not artifacts:
+    if not reply:
         return None
 
     respaldados = {
         f"{float(v):.2f}"
-        for p in artifacts
+        for p in artifacts or []
         for v in (p.precio_sol,)
         if v is not None
+    }
+    respaldados |= {
+        f"{float(v):.2f}" for v in extra_sourced if v is not None
     }
     if not respaldados:
         return None
@@ -406,6 +422,7 @@ def check_reply(
     tools_used: list[str] | tuple[str, ...] = (),
     agent: str = "",
     menu_owned: bool = True,
+    sourced_prices: Iterable[float] = (),
 ) -> list[Violation]:
     """Todas las invariantes aplicables a una respuesta. Lista vacía = limpia.
 
@@ -423,7 +440,7 @@ def check_reply(
         no_system_prompt_leak(reply),
         no_third_party_contact(reply, state, user_text),
         image_urls_on_own_line(reply),
-        prices_are_sourced(reply, artifacts),
+        prices_are_sourced(reply, artifacts, sourced_prices),
         no_raw_product_ids(reply),
         no_uncomposed_menu(reply, menu_owned=menu_owned),
         unsupported_capability_claim(
@@ -544,6 +561,7 @@ def guard_reply(
     tools_used: list[str] | tuple[str, ...] = (),
     agent: str = "",
     menu_owned: bool = True,
+    sourced_prices: Iterable[float] = (),
 ) -> GuardrailResult:
     """Fachada runtime: evaluar y sanear una respuesta en una sola operación."""
     products = artifacts or []
@@ -555,6 +573,7 @@ def guard_reply(
         tools_used=tools_used,
         agent=agent,
         menu_owned=menu_owned,
+        sourced_prices=sourced_prices,
     )
     safe = sanitize_reply(reply, violations, products)
     return GuardrailResult(

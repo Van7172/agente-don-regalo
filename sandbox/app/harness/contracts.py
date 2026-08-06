@@ -108,6 +108,19 @@ class AgentResult:
     escalate: Optional[EscalateReason] = None
     confidence: float = 1.0
     tools_used: list[str] = field(default_factory=list)
+    # Importes en soles que SÍ salieron de una tool en este turno pero no son el
+    # precio de un producto — hoy solo la tarifa de envío de `distritos_cobertura`.
+    #
+    # `prices_are_sourced` compara contra `artifacts`, así que un turno con
+    # productos Y cobertura marcaría el envío como precio inventado y la barrera
+    # descartaría la prosa entera. La respuesta de cobertura sola se libra por
+    # accidente: no lleva artifacts y la invariante sale antes de comparar.
+    #
+    # Va como lista de importes y no como un `bool` que apague la regla: lo que
+    # se declara es "S/15.00 vino de una tool", no "en este turno no mires los
+    # precios". Un importe distinto en la misma respuesta sigue siendo un
+    # invento y sigue bloqueando.
+    sourced_prices: list[float] = field(default_factory=list)
 
     @property
     def product_ids(self) -> list[int]:
