@@ -135,3 +135,29 @@
 
   Si tras desplegar sigue fallando, mira el valor real: `Media::effectiveMaxBytes()`
   es lo que el panel promete ahora, y el mensaje de error trae la cifra.
+
+  ## El panel suena con cada mensaje del cliente
+
+  El aviso sonoro solo saltaba en dos transiciones: handoff y lead nuevo. O sea
+  que mientras el agente atendía —que es la mayoría del tiempo— el panel estaba
+  mudo, y el equipo que sigue las conversaciones aunque no las lleve se enteraba
+  tarde o no se enteraba. Ahora suena **cada mensaje entrante**, tenga el chat la
+  IA o un asesor. Sonar no es tomar el chat: el aviso no toca el modo.
+
+  - **La señal es `window.last_inbound_at`**, que sale de los mensajes `inbound`
+    reales. `last_message_at` no vale: también lo mueven el bot y el asesor, y
+    eso no es "llegó un mensaje".
+  - **Marca de agua por conversación**, no "cambió la lista": la bandeja se
+    refresca cada 4 s y el mismo mensaje pitaría en cada tick. Solo suena cuando
+    la hora avanza.
+  - **Un pitido por refresco.** El primer mensaje de un lead es a la vez
+    "entrante", "lead nuevo" y a veces "handoff"; tres pitidos pegados se oyen
+    como una avería. Gana el más urgente.
+  - **Dos tonos distintos.** El handoff sube (880→1320); un mensaje normal es un
+    toque corto y más grave. Si todo sonara igual, el urgente dejaría de
+    distinguirse y el equipo silenciaría la pestaña.
+  - **La primera carga siembra, no avisa** — abrir el panel por la mañana no
+    suelta una ráfaga de pitidos por los chats de ayer.
+
+  Contrato: `crm/tests/aviso_mensaje_entrante_contract.php`. Es **solo CRM**: no
+  hay cambios en el agente ni migraciones, basta con subir `public/assets/inbox.js`.

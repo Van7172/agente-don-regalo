@@ -1488,16 +1488,27 @@
     loadFollowups(id);
   }
 
-  // ── aviso sonoro del handoff ────────────────────────────────
+  // ── avisos sonoros ──────────────────────────────────────────
   //
   // Los vendedores no viven mirando el panel. Cuando el agente cede el control
-  // ("necesita ayuda humana"), hay un cliente esperando AHORA. El pitido solo
-  // suena en la TRANSICIÓN, nunca en cada refresco: un panel que pita cada cuatro
+  // ("necesita ayuda humana"), hay un cliente esperando AHORA. El pitido suena
+  // en la TRANSICIÓN, nunca en cada refresco: un panel que pita cada cuatro
   // segundos se silencia el primer día y deja de servir para nada.
+  //
+  // Además suena CADA mensaje que llega del cliente, tenga el chat el agente o
+  // un asesor: el equipo revisa las conversaciones aunque las lleve la IA, y un
+  // aviso que solo salta cuando el bot se rinde deja ciego justo al que quiere
+  // mirar antes. Sonar no es tomar el chat: el aviso no cambia el modo.
 
   let audioCtx = null;
 
-  function beep() {
+  // Dos avisos distintos a propósito. El handoff sube (880→1320) y significa
+  // "hay alguien esperando"; un mensaje cualquiera es un toque corto y más
+  // grave. Si todo sonara igual, el urgente dejaría de distinguirse.
+  const TONO_URGENTE = { notas: [880, 1320], volumen: 0.25 };
+  const TONO_MENSAJE = { notas: [660], volumen: 0.16 };
+
+  function beep(tono = TONO_URGENTE) {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
@@ -1506,13 +1517,13 @@
       if (audioCtx.state === "suspended") audioCtx.resume();
 
       const now = audioCtx.currentTime;
-      [880, 1320].forEach((freq, i) => {
+      tono.notas.forEach((freq, i) => {
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.type = "sine";
         osc.frequency.value = freq;
         gain.gain.setValueAtTime(0.0001, now + i * 0.18);
-        gain.gain.exponentialRampToValueAtTime(0.25, now + i * 0.18 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(tono.volumen, now + i * 0.18 + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.18 + 0.16);
         osc.connect(gain).connect(audioCtx.destination);
         osc.start(now + i * 0.18);
@@ -1523,8 +1534,20 @@
     }
   }
 
+  // Un solo pitido por refresco. El primer mensaje de un lead nuevo es a la vez
+  // "mensaje entrante" y "lead nuevo", y si el agente cede el chat son tres
+  // avisos del MISMO hecho: tres pitidos pegados se oyen como una avería, no
+  // como un aviso. Gana el más urgente, que es el que se evalúa primero.
+  let beepGastado = false;
+
+  function beepUnaVez(tono) {
+    if (beepGastado) return;
+    beepGastado = true;
+    beep(tono);
+  }
+
   function notifyHandoff(conv) {
-    beep();
+    beepUnaVez(TONO_URGENTE);
     if (document.hidden && "Notification" in window && Notification.permission === "granted") {
       new Notification("Don Regalo pidió ayuda", {
         body: `${displayName(conv)} necesita un asesor ahora.`,
@@ -1534,11 +1557,23 @@
   }
 
   function notifyNewLead(conv) {
-    beep();
+    beepUnaVez(TONO_URGENTE);
     if (document.hidden && "Notification" in window && Notification.permission === "granted") {
       new Notification("Lead nuevo", {
         body: `${displayName(conv)} escribió por primera vez.`,
         tag: `lead-${conv.id}`,
+      });
+    }
+  }
+
+  function notifyInbound(conv) {
+    beepUnaVez(TONO_MENSAJE);
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      new Notification(`Mensaje de ${displayName(conv)}`, {
+        body: conv.last_message || "Escribió por WhatsApp.",
+        // Por conversación: el segundo mensaje reemplaza al primero en vez de
+        // apilar cinco globos del mismo cliente.
+        tag: `msg-${conv.id}`,
       });
     }
   }
@@ -1576,6 +1611,45 @@
     if (nuevos.length) notifyNewLead(nuevos[0]);
   }
 
+  // Marca de agua por conversación: la hora del último mensaje del CLIENTE que
+  // ya avisamos. Suena solo cuando avanza, así que un refresco que devuelve lo
+  // mismo no vuelve a pitar.
+  const entrantesAvisados = new Map();
+  let entrantesSembrados = false;
+
+  // Una conversación que aparece por primera vez en la lista no siempre trae un
+  // mensaje nuevo: la lista está limitada y ordenada por recencia, así que un
+  // chat puede reentrar desde abajo. Para esas, solo avisa si el mensaje es de
+  // hace nada. Margen amplio porque una pestaña en segundo plano refresca cada
+  // minuto, no cada cuatro segundos.
+  const ENTRANTE_RECIENTE_MS = 5 * 60 * 1000;
+
+  /**
+   * Cualquier mensaje del cliente, esté el chat en manos del bot o de un asesor.
+   *
+   * La hora sale de `window.last_inbound_at`, que el CRM calcula sobre los
+   * mensajes `inbound` reales: `last_message_at` no sirve porque también lo
+   * mueve lo que escriben el agente y el asesor, y eso no es "llegó un mensaje".
+   */
+  function alertOnInbound(next) {
+    let aviso = null;
+    next.forEach((c) => {
+      // `parseTs` y no `Date.parse`: es el mismo lector que usa el resto del
+      // panel y tolera el DATETIME con espacio en vez de "T".
+      const fecha = parseTs(c.window?.last_inbound_at);
+      if (!fecha) return;
+      const ts = fecha.getTime();
+      const visto = entrantesAvisados.get(c.id);
+      entrantesAvisados.set(c.id, visto === undefined ? ts : Math.max(ts, visto));
+      if (!entrantesSembrados) return; // primera carga: se siembra, no se avisa
+      const esNuevo =
+        visto === undefined ? Date.now() - ts < ENTRANTE_RECIENTE_MS : ts > visto;
+      if (esNuevo && !aviso) aviso = c;
+    });
+    entrantesSembrados = true;
+    if (aviso) notifyInbound(aviso);
+  }
+
   async function loadList() {
     try {
       const json = await api("/conversations");
@@ -1590,8 +1664,10 @@
       // tenga que llegar otro mensaje.
       const sig = `${localDayKey(new Date())}|${JSON.stringify(next)}`;
       if (sig !== listSig) {
+        beepGastado = false;
         alertOnHandoff(conversations, next);
         alertOnNewLead(conversations, next);
+        alertOnInbound(next);
         listSig = sig;
         conversations = next;
         renderList();
