@@ -118,10 +118,7 @@ def is_simple_greeting(messages: list) -> bool:
     raw = latest_user_text(messages)
     if not raw or len(raw) > 80:
         return False
-    norm = _normalize(raw)
-    if not norm or len(norm) > 60:
-        return False
-    return bool(_GREETING_RE.match(norm))
+    return is_greeting_text(raw)
 
 
 def is_small_talk(messages: list) -> bool:
@@ -141,15 +138,32 @@ def is_small_talk(messages: list) -> bool:
     return is_courtesy_text(raw)
 
 
+def is_greeting_text(text: str) -> bool:
+    """¿El texto es SOLO un saludo ("hola", "buenas tardes")?
+
+    Misma regla que `is_simple_greeting`, pero sobre un string suelto: el cierre
+    la necesita porque el router, con un paso activo, manda "hola" a checkout
+    con confianza 1.0 y sin esto el FSM lo parseaba como fecha o distrito.
+    """
+    norm = _normalize(text or "")
+    return bool(norm and len(norm) <= 60 and _GREETING_RE.match(norm))
+
+
 def is_courtesy_text(text: str) -> bool:
-    """¿El texto es SOLO cortesía ("gracias", "ok listo", "👍", "jaja")?
+    """¿El texto es SOLO cortesía ("hola", "gracias", "ok listo", "👍", "jaja")?
 
     Mismo vocabulario que `is_small_talk`, pero sobre un texto suelto: el cierre
-    lo necesita para no tratar un "Gracias" como si fuera la fecha que pidió.
+    lo necesita para no tratar un "Gracias" o un "hola" como si fuera la fecha
+    (o el distrito) que pidió.
     """
     norm = _normalize(text or "")
     if not norm:
         # Se quedó vacío al normalizar: era solo emojis ("👍", "😊").
+        return True
+
+    # Saludo literal: no es respuesta al formulario. Antes solo vivía en
+    # `is_simple_greeting` / `is_small_talk`, y el cierre no lo veía.
+    if is_greeting_text(text):
         return True
 
     tokens = norm.split()

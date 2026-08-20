@@ -119,6 +119,38 @@ def test_la_cortesia_no_gasta_un_reintento():
     assert "no pude" not in reply.casefold()
 
 
+@pytest.mark.parametrize("texto", ["hola", "Hola!", "buenas tardes", "hey"])
+def test_un_saludo_no_se_lee_como_fecha(texto):
+    """Chat real (20/08/2026): el releaser devolvió el bot, el cliente dijo
+    "hola" y el FSM contestó «No logré leer una fecha en "hola"».
+
+    El saludo ya era cortesía para handoff/`small_talk`, pero el cierre solo
+    miraba `is_courtesy_text`, que no incluía saludos. Con el paso `date`
+    activo el router manda a checkout con confianza 1.0, así que "hola" caía
+    al parseo de fecha.
+    """
+    state = _en_paso("date")
+    state, reply, meta = advance_checkout(state, texto, today=HOY)
+    assert not meta.get("handoff")
+    assert state.step_retries == 0
+    assert state.checkout_step == "date"
+    assert "fecha" in reply.casefold()
+    # No citar el saludo como si fuera una fecha mal escrita.
+    assert "no logré leer" not in reply.casefold()
+    assert f"«{texto}»" not in reply
+
+
+def test_un_saludo_no_se_guarda_como_distrito():
+    """Sin esto, "hola" en el paso distrito quedaba como destino del pedido."""
+    state = ConversationState(checkout_step="district")
+    state, reply, meta = advance_checkout(state, "hola", today=HOY)
+    assert not meta.get("handoff")
+    assert state.step_retries == 0
+    assert state.district in (None, "")
+    assert state.checkout_step == "district"
+    assert "distrito" in reply.casefold()
+
+
 # ── Horarios: entender cómo escribe la gente ──────────────────────────
 
 @pytest.mark.parametrize(

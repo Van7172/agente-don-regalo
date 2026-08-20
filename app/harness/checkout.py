@@ -15,7 +15,7 @@ from app.harness.orders import (
     normalize_fecha,
     weekday_name,
 )
-from app.guardrails import is_courtesy_text
+from app.guardrails import is_courtesy_text, is_greeting_text
 from app.harness.state import ConversationState
 
 __all__ = [
@@ -254,10 +254,17 @@ def _again(
 
 
 def _courtesy(
-    state: ConversationState, meta: dict[str, Any], question: str
+    state: ConversationState,
+    meta: dict[str, Any],
+    question: str,
+    *,
+    text: str = "",
 ) -> tuple[ConversationState, str, dict[str, Any]]:
-    """"Gracias" no es la fecha que pedimos: se acusa y no gasta un reintento."""
-    return state, f"¡A ti! 😊 Solo me falta esto para cerrarlo:\n{question}", meta
+    """Saludo o "gracias" no son la respuesta del formulario: se acusa y no gasta reintento."""
+    # "¡A ti!" solo encaja con un agradecimiento. Un "hola" a mitad del cierre
+    # (chat real 20/08/2026) merecía reenganche, no tratarlo como fecha fallida.
+    opener = "¡Hola!" if is_greeting_text(text) else "¡A ti!"
+    return state, f"{opener} 😊 Solo me falta esto para cerrarlo:\n{question}", meta
 
 
 def advance_checkout(
@@ -321,7 +328,8 @@ def _advance(
 
     if step == "district":
         # No guardar como distrito lo que claramente no lo es: una intención de
-        # compra ("lo quiero") o el nombre de un producto que le mostramos.
+        # compra ("lo quiero"), un saludo ("hola") o el nombre de un producto
+        # que le mostramos.
         looks_like_product = (
             resolve_chosen_product(state, text, allow_implicit=False) is not None
         )
@@ -330,6 +338,10 @@ def _advance(
             "Solo necesito el *distrito* de Lima donde lo entregamos 🏠 "
             "(por ejemplo: Miraflores, Surco, San Isidro).",
         )
+        if is_courtesy_text(text):
+            return _courtesy(
+                state, meta, "¿A qué distrito lo enviamos? 🏠", text=text
+            )
         if wants_checkout(text) or len(text) > 80 or looks_like_product:
             return _again(state, meta, ask_district)
         if text:
@@ -346,7 +358,9 @@ def _advance(
         # con un ejemplo del día anterior.
         ejemplo = (effective_today + timedelta(days=1)).strftime("%d/%m")
         if is_courtesy_text(text) and normalize_fecha(text, today=today) is None:
-            return _courtesy(state, meta, "¿Para qué fecha lo necesitas? 📅")
+            return _courtesy(
+                state, meta, "¿Para qué fecha lo necesitas? 📅", text=text
+            )
         normalized = normalize_fecha(text, today=today)
         if normalized is not None and normalized < effective_today.isoformat():
             return _again(
@@ -385,7 +399,9 @@ def _advance(
     if step == "schedule":
         opciones = schedule_options_for(state.date)
         if is_courtesy_text(text):
-            return _courtesy(state, meta, f"¿En qué horario te llega mejor? 🕐\n{opciones}")
+            return _courtesy(
+                state, meta, f"¿En qué horario te llega mejor? 🕐\n{opciones}", text=text
+            )
         slot = parse_schedule(text, state.date)
         if slot is None:
             # ¿Está contestando a la pregunta ANTERIOR? En WhatsApp se escribe a
@@ -480,7 +496,7 @@ def _advance(
 
     if step == "recipient":
         if is_courtesy_text(text):
-            return _courtesy(state, meta, _ASK_RECIPIENT)
+            return _courtesy(state, meta, _ASK_RECIPIENT, text=text)
         nombre, apellidos, telefono = parse_recipient(text)
         # Sin al menos un nombre no podemos avanzar con algo útil: repreguntamos.
         if not nombre:
@@ -502,7 +518,7 @@ def _advance(
 
     if step == "address":
         if is_courtesy_text(text):
-            return _courtesy(state, meta, _ASK_ADDRESS)
+            return _courtesy(state, meta, _ASK_ADDRESS, text=text)
         direccion, tipo = parse_address(text)
         if not direccion:
             return _again(
@@ -522,7 +538,7 @@ def _advance(
 
     if step == "contact":
         if is_courtesy_text(text):
-            return _courtesy(state, meta, _ASK_CONTACT)
+            return _courtesy(state, meta, _ASK_CONTACT, text=text)
         nombre, apellidos, email = parse_contact(text)
         if not email:
             return _again(

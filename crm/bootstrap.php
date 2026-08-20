@@ -19,6 +19,7 @@ require_once __DIR__ . '/src/Http.php';
 require_once __DIR__ . '/src/Media.php';
 require_once __DIR__ . '/src/Repository.php';
 require_once __DIR__ . '/src/OperationsClient.php';
+require_once __DIR__ . '/src/AgentClient.php';
 
 Database::init($config['db']);
 Auth::init($config);

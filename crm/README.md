@@ -153,11 +153,57 @@
   - **Un pitido por refresco.** El primer mensaje de un lead es a la vez
     "entrante", "lead nuevo" y a veces "handoff"; tres pitidos pegados se oyen
     como una avería. Gana el más urgente.
-  - **Dos tonos distintos.** El handoff sube (880→1320); un mensaje normal es un
-    toque corto y más grave. Si todo sonara igual, el urgente dejaría de
-    distinguirse y el equipo silenciaría la pestaña.
+  - **Timbre de campanita y 2 s de duración** (`AVISO_SEGUNDOS`): ataque seco,
+    cola larga y armónicos — una sinusoidal pelada suena a microondas. La
+    primera versión eran 180 ms a volumen 0.16 y el equipo dijo *"apenas lo
+    noté"*: un sonido que termina antes de que el asesor levante la vista no
+    avisa de nada.
+  - **Los dos avisos comparten motivo** (tres notas que suben, A5→D6→G6, el que
+    eligió el equipo) **pero el handoff repica dos veces**, ~3 s. Tienen que
+    distinguirse sin mirar: si el handoff sonara igual que un mensaje
+    cualquiera, dejaría de significar "hay un cliente esperando ahora".
   - **La primera carga siembra, no avisa** — abrir el panel por la mañana no
     suelta una ráfaga de pitidos por los chats de ayer.
 
   Contrato: `crm/tests/aviso_mensaje_entrante_contract.php`. Es **solo CRM**: no
   hay cambios en el agente ni migraciones, basta con subir `public/assets/inbox.js`.
+
+  ## Crear contenido (posts de redes)
+
+  `content.php`: el asesor elige un producto del catálogo y la IA le escribe el
+  post. Cuatro pasos, en este orden — **Elige producto → Tipo de pieza →
+  Instrucciones → Resultado**. Entrega **texto + la foto del producto**; la pieza
+  final se arma en Canva o Instagram. La vista 9:16 de la pantalla es una
+  referencia de cómo cae el texto sobre la foto, no un archivo.
+
+  - **El precio NO lo escribe el modelo.** Sale del producto canónico
+    (`tools/adapters.py`, ya convertido a soles) y lo estampa el código. Si el
+    modelo escribe una cifra o un descuento, `social_copy.menciona_dinero`
+    **descarta la variante entera** — no la parchea: borrar la cifra dejaba
+    "Solo hoy a con de descuento", y esto no es un chat donde una frase rara se
+    arregla en el mensaje siguiente, es algo que alguien pega en Instagram tal
+    cual. Un `100% peruano` sí pasa: el filtro exige contexto de rebaja, porque
+    uno que se lleve por delante cualquier porcentaje mutila copys buenos y
+    entonces el equipo deja de usar la sección.
+  - **El catálogo se consulta a través del agente**, no desde PHP. El adapter es
+    lo único que sabe normalizar las tres formas de producto que devuelve la API
+    y pasar de dólares a soles; repetir esa cuenta en PHP es garantizar que el
+    precio del post y el que cotiza el bot acaben divergiendo.
+  - **La foto es la del listado.** Del detalle se toma la descripción y nada más:
+    su `imagen_url` está rota en producción (404 en las cuatro variantes) y
+    pisaría la única URL viva.
+  - **El token del agente no baja al navegador.** El panel llama al CRM con su
+    cookie (`/api/content/*`) y es el CRM quien presenta `X-Agent-Token`
+    (`src/AgentClient.php`). El contrato falla si el token aparece en el JS.
+  - **Búsqueda a partir de 3 caracteres**, con el corte repetido en el servidor:
+    con menos, la API devuelve medio catálogo y se paga una llamada por tecla.
+
+  **Orden de despliegue: agente primero, CRM después.** Es al revés de lo
+  habitual y por el mismo motivo de siempre: la página llama a
+  `/internal/catalog/search` y `/internal/content/draft`, y si el PHP sube antes,
+  la sección responde 404 en la cara del asesor. No hay migraciones — las piezas
+  no se guardan.
+
+  Contratos: `crm/tests/generador_contenido_contract.php` (vigila que los tonos
+  del panel existan en el agente: uno que no exista no da error, cae al de por
+  defecto en silencio) y `tests/test_generador_contenido.py`.

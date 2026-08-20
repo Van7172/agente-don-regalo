@@ -1502,11 +1502,48 @@
 
   let audioCtx = null;
 
-  // Dos avisos distintos a propósito. El handoff sube (880→1320) y significa
-  // "hay alguien esperando"; un mensaje cualquiera es un toque corto y más
-  // grave. Si todo sonara igual, el urgente dejaría de distinguirse.
-  const TONO_URGENTE = { notas: [880, 1320], volumen: 0.25 };
-  const TONO_MENSAJE = { notas: [660], volumen: 0.16 };
+  // El aviso dura dos segundos enteros. El primero eran 180 ms a un volumen de
+  // 0.16 y la respuesta del equipo fue "apenas lo noté": un asesor que está
+  // hablando por teléfono o mirando otra pestaña necesita que el sonido siga
+  // ahí cuando levanta la vista, no un clic que ya terminó.
+  const AVISO_SEGUNDOS = 2;
+
+  /**
+   * Timbre de campanita, no pitido de laboratorio.
+   *
+   * Dos cosas lo hacen sonar a app de mensajería: el ataque casi instantáneo
+   * (12 ms) y la cola que se apaga sola durante casi dos segundos. Una onda
+   * sinusoidal pelada suena a horno microondas; los dos armónicos por encima
+   * son lo que le da el brillo metálico.
+   */
+  const ARMONICOS = [
+    [1, 0.7],
+    [2.01, 0.25],
+    [3.02, 0.08],
+  ];
+
+  /** El motivo: tres notas que suben (A5→D6→G6). `cola` es lo que dura la última. */
+  function ascendente(inicio, cola) {
+    return [
+      { freq: 880, inicio, dur: 0.5 },
+      { freq: 1174.7, inicio: inicio + 0.18, dur: 0.5 },
+      { freq: 1568, inicio: inicio + 0.36, dur: cola },
+    ];
+  }
+
+  // Dos avisos distintos a propósito, y hay que poder distinguirlos sin mirar.
+  // Comparten el motivo —es el que el equipo eligió— pero el handoff **repica
+  // dos veces**: significa "hay un cliente esperando AHORA", y si sonara igual
+  // que un mensaje cualquiera dejaría de significar nada.
+  const TONO_MENSAJE = {
+    volumen: 0.5,
+    notas: ascendente(0, AVISO_SEGUNDOS - 0.36),
+  };
+  const TONO_URGENTE = {
+    volumen: 0.55,
+    // Primera ronda seca, segunda con la cola larga: acaba sobre los 3 s.
+    notas: [...ascendente(0, 0.5), ...ascendente(1, AVISO_SEGUNDOS - 0.36)],
+  };
 
   function beep(tono = TONO_URGENTE) {
     try {
@@ -1517,17 +1554,27 @@
       if (audioCtx.state === "suspended") audioCtx.resume();
 
       const now = audioCtx.currentTime;
-      tono.notas.forEach((freq, i) => {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.0001, now + i * 0.18);
-        gain.gain.exponentialRampToValueAtTime(tono.volumen, now + i * 0.18 + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.18 + 0.16);
-        osc.connect(gain).connect(audioCtx.destination);
-        osc.start(now + i * 0.18);
-        osc.stop(now + i * 0.18 + 0.18);
+      // Un bus común para todas las notas: colgando cada oscilador del destino,
+      // tres colas solapadas suman amplitud y la campana satura.
+      const bus = audioCtx.createGain();
+      bus.gain.value = tono.volumen;
+      bus.connect(audioCtx.destination);
+
+      tono.notas.forEach((nota) => {
+        const t0 = now + nota.inicio;
+        ARMONICOS.forEach(([mult, peso]) => {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = nota.freq * mult;
+          // `exponentialRamp` nunca puede llegar a 0, de ahí el 0.0001.
+          gain.gain.setValueAtTime(0.0001, t0);
+          gain.gain.exponentialRampToValueAtTime(peso, t0 + 0.012);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t0 + nota.dur);
+          osc.connect(gain).connect(bus);
+          osc.start(t0);
+          osc.stop(t0 + nota.dur + 0.05);
+        });
       });
     } catch (err) {
       /* sin audio no pasa nada: el chat igual se pinta */

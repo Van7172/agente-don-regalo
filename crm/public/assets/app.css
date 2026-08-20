@@ -1478,3 +1478,125 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 @media (max-width: 900px) {
   .sale-dialog-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ── Estudio de contenido (Crear contenido) ─────────────────────────────────
+   Cuatro pasos en vertical. Los pasos 2-4 nacen atenuados y se "abren" al
+   avanzar: un formulario que enseña las cuatro cajas a la vez desde el
+   principio hace que el asesor rellene el tono antes de elegir producto y
+   luego no entienda por qué el botón sigue apagado. */
+.studio { padding: var(--space-4); max-width: 1180px; margin: 0 auto; display: grid; gap: var(--space-3); }
+.studio-head h2 { margin: 0; }
+.studio-head .lead { margin: 4px 0 0; color: color-mix(in srgb, var(--color-text) 62%, transparent); }
+
+.studio-step {
+  background: var(--color-surface); border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md); padding: var(--space-3);
+  opacity: 0.55; transition: opacity 0.18s ease;
+}
+.studio-step.is-open { opacity: 1; }
+.studio-step-title { margin: 0 0 var(--space-2); font-size: 15px; display: flex; align-items: center; gap: 10px; }
+.studio-step-num {
+  width: 24px; height: 24px; border-radius: 999px; flex: none;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  background: var(--color-accent); color: var(--color-bg);
+}
+.studio-step-body { display: grid; gap: var(--space-2); }
+.field-hint { margin: 2px 0 0; font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* Paso 1: buscador */
+.product-results { display: grid; gap: 6px; max-height: 340px; overflow-y: auto; }
+.product-results[hidden] { display: none; }
+.product-hit {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px; border: 1px solid var(--color-divider); border-radius: var(--radius-sm);
+  background: transparent; cursor: pointer; font: inherit; color: inherit;
+}
+.product-hit:hover { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+.product-hit img { width: 46px; height: 46px; object-fit: cover; border-radius: var(--radius-sm); flex: none; }
+.product-hit-noimg {
+  width: 46px; height: 46px; flex: none; border-radius: var(--radius-sm);
+  display: grid; place-items: center; font-size: 10px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+.product-hit-body { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.product-hit-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-hit-meta { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.product-hit-price { font-weight: 700; white-space: nowrap; }
+
+.product-chosen[hidden] { display: none; }
+.chosen-card {
+  display: flex; align-items: center; gap: 12px; padding: 10px;
+  border: 1px solid var(--color-accent); border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+.chosen-card img { width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-sm); flex: none; }
+.chosen-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.chosen-name { font-weight: 700; }
+.chosen-meta { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+.chosen-price { font-weight: 700; }
+
+/* Paso 2: formato. El marco dibuja la proporción real — leer "9:16" no dice
+   nada, ver el rectángulo sí. */
+.format-grid { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.format-option {
+  display: grid; justify-items: center; gap: 4px; cursor: pointer;
+  padding: 10px 14px; border: 1px solid var(--color-divider); border-radius: var(--radius-sm);
+  min-width: 130px;
+}
+.format-option.is-active { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 7%, transparent); }
+.format-option input { position: absolute; opacity: 0; pointer-events: none; }
+.format-frame { display: block; width: 34px; background: color-mix(in srgb, var(--color-text) 16%, transparent); border-radius: 3px; }
+.format-frame.is-9-16 { height: 60px; }
+.format-frame.is-4-5 { height: 42px; }
+.format-frame.is-1-1 { height: 34px; }
+.format-label { font-weight: 600; font-size: 13px; }
+.format-hint { font-size: 11px; text-align: center; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* Paso 3: instrucciones */
+.brief-grid { display: grid; gap: var(--space-2); grid-template-columns: 2fr 1fr; }
+.toggle-set { border: 1px solid var(--color-divider); border-radius: var(--radius-sm); padding: 10px 12px; display: grid; gap: 6px; }
+.toggle-set legend { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; padding: 0 4px; }
+.toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.toggle em { font-style: normal; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+/* Paso 4: resultado */
+.result-grid { display: grid; grid-template-columns: 320px 1fr; gap: var(--space-3); align-items: start; }
+.result-grid[hidden] { display: none; }
+.result-empty[hidden] { display: none; }
+.preview-frame {
+  position: relative; width: 100%; overflow: hidden; border-radius: var(--radius-md);
+  background: #111; display: grid;
+}
+.preview-frame.is-9-16 { aspect-ratio: 9 / 16; }
+.preview-frame.is-4-5 { aspect-ratio: 4 / 5; }
+.preview-frame.is-1-1 { aspect-ratio: 1 / 1; }
+.preview-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.preview-overlay {
+  position: absolute; inset: auto 0 0 0; padding: 16px;
+  display: grid; gap: 6px; color: #fff;
+  background: linear-gradient(to top, rgba(0,0,0,0.82), rgba(0,0,0,0.45) 60%, transparent);
+}
+.preview-title { font-size: 19px; font-weight: 800; line-height: 1.2; }
+.preview-body { font-size: 13px; line-height: 1.35; }
+.preview-price { font-size: 17px; font-weight: 800; }
+.preview-cta { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.preview-price[hidden], .preview-cta[hidden] { display: none; }
+
+.result-copies { display: grid; gap: var(--space-2); }
+.copy-card {
+  border: 1px solid var(--color-divider); border-radius: var(--radius-sm);
+  padding: 12px; display: grid; gap: 6px; cursor: pointer;
+}
+.copy-card.is-active { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+.copy-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.copy-title { font-weight: 700; font-size: 15px; }
+.copy-body { margin: 0; font-size: 13.5px; line-height: 1.45; }
+.copy-price { font-weight: 700; }
+.copy-cta { font-size: 12.5px; font-weight: 600; color: var(--color-accent-800); }
+.copy-tags { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+
+@media (max-width: 900px) {
+  .result-grid { grid-template-columns: 1fr; }
+  .brief-grid { grid-template-columns: 1fr; }
+  .preview-frame { max-width: 320px; }
+}

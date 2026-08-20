@@ -45,6 +45,26 @@ if (strpos($javascript, 'entrantesSembrados') === false) {
     throw new RuntimeException('La primera carga debe sembrar sin avisar');
 }
 
+// El aviso tiene que durar. La primera versión eran 180 ms a volumen 0.16 y el
+// equipo dijo "apenas lo noté": un sonido que termina antes de que el asesor
+// levante la vista no avisa de nada.
+if (strpos($javascript, 'const AVISO_SEGUNDOS = 2;') === false) {
+    throw new RuntimeException('El aviso ya no dura los 2 segundos acordados');
+}
+if (strpos($javascript, 'const ARMONICOS') === false) {
+    throw new RuntimeException('Sin armónicos vuelve a sonar a pitido, no a campanita');
+}
+
+// Mensaje y handoff comparten motivo, pero el urgente repica DOS veces. Si los
+// dos sonaran igual, el aviso de "hay un cliente esperando" dejaría de
+// significar nada — que es justo lo que pasaba cuando solo existía un pitido.
+if (strpos($javascript, 'ascendente(0, AVISO_SEGUNDOS - 0.36)') === false) {
+    throw new RuntimeException('El aviso de mensaje ya no usa el motivo elegido');
+}
+if (strpos($javascript, 'ascendente(1, AVISO_SEGUNDOS - 0.36)') === false) {
+    throw new RuntimeException('El handoff dejó de repicar dos veces y suena igual que un mensaje');
+}
+
 // Un solo pitido por refresco: el primer mensaje de un lead es "entrante",
 // "lead nuevo" y a veces "handoff" — tres pitidos pegados suenan a avería.
 if (strpos($javascript, 'beepGastado = false;') === false) {

@@ -69,6 +69,11 @@ try {
     if ($method === 'GET' && $path === '/operations') {
         $needsToken = false;
     }
+    // Estudio de contenido: lo usa el asesor desde el panel, con su cookie. El
+    // token del agente NO baja al navegador — es el CRM quien lo presenta.
+    if (strpos($path, '/content/') === 0) {
+        $needsToken = false;
+    }
 
     if ($needsToken) {
         Auth::assertInternalToken();
@@ -994,6 +999,53 @@ try {
             'crm' => Repository::operationalOverview(),
             'agent' => OperationsClient::fetch($config),
         ]);
+    }
+
+    // ── estudio de contenido ────────────────────────────────────────────────
+    //
+    // El CRM hace de puente hacia el agente y no consulta el catálogo por su
+    // cuenta: `tools/adapters.py` es lo único que sabe normalizar las tres
+    // formas de producto que devuelve la API y convertir de dólares a soles.
+    // Repetir esa conversión en PHP sería garantizar que el precio del post y
+    // el que cotiza el bot acaben divergiendo.
+
+    if ($path === '/content/products' && $method === 'GET') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $q = trim((string) ($_GET['q'] ?? ''));
+        // Mismo mínimo que el selector del panel. El corte se repite aquí porque
+        // el navegador no es quien decide cuánto se le pregunta al agente.
+        if (mb_strlen($q) < 3) {
+            Http::jsonOk(['data' => [], 'total' => 0]);
+        }
+        $res = AgentClient::get('/internal/catalog/search', ['q' => $q, 'limit' => 8], 15);
+        Http::jsonOk([
+            'data' => $res['data'] ?? [],
+            'total' => (int) ($res['total'] ?? 0),
+        ]);
+    }
+
+    if ($path === '/content/draft' && $method === 'POST') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $body = Http::readJson();
+        $producto = $body['producto'] ?? null;
+        if (!is_array($producto) || ($producto['nombre'] ?? '') === '') {
+            Http::jsonError('Elige un producto del catálogo antes de generar.', 422);
+        }
+        // El LLM tarda más que cualquier otra cosa del panel: timeout propio.
+        $res = AgentClient::post('/internal/content/draft', [
+            'producto' => $producto,
+            'tono' => (string) ($body['tono'] ?? 'casual'),
+            'formato' => (string) ($body['formato'] ?? '9:16'),
+            'instrucciones' => (string) ($body['instrucciones'] ?? ''),
+            'incluir_precio' => (bool) ($body['incluir_precio'] ?? true),
+            'incluir_cta' => (bool) ($body['incluir_cta'] ?? true),
+            'variantes' => (int) ($body['variantes'] ?? 3),
+        ], 60);
+        Http::jsonOk($res);
     }
 
     Http::jsonError('Not found', 404);
