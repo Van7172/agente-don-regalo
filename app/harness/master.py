@@ -34,7 +34,12 @@ from app.guardrails import (
 from app.harness.checkout import (
     advance_checkout,
     resolve_chosen_product,
+    start_checkout,
     wants_checkout,
+)
+from app.harness.product_links import (
+    extract_product_url_slug,
+    pick_by_url_slug,
 )
 from app.harness.contracts import (
     AgentResult,
@@ -492,6 +497,15 @@ async def _handle(
     # ── Primer saludo: presentación determinista ──────────────────
     if intent == "greet" and is_first_contact(state, turn.messages):
         return AgentResult(user_facing=WELCOME, state_patch={"presented": True})
+
+    # ── Link de producto de la web: se concreta ESE, no un catálogo ──
+    # Chat real (Alec): pegó la URL del Pikeo y el catálogo LLM volcó media
+    # bandeja de "gourmet" / cestas con "¿quieres más opciones?". Quien ya
+    # eligió necesita cerrar el pedido, no alternativas.
+    if intent != "escalate" and extract_product_url_slug(turn.text):
+        concreto = await _handle_product_link(turn, state)
+        if concreto is not None:
+            return concreto
 
     # ── Derivación: determinista, sin LLM ─────────────────────────
     # El bot decía "te paso con un asesor, un momento" y no cedía el control: la
@@ -1008,6 +1022,93 @@ async def _handle_escalate(
     return AgentResult(user_facing=None, escalate=escalate)
 
 
+async def _handle_product_link(
+    turn: Turn, state: ConversationState
+) -> AgentResult | None:
+    """El cliente pegó la URL de un producto de donregalo.pe.
+
+    Resuelve la ficha en código, fija la elección y abre el cierre. `None` si el
+    slug no aparece en el catálogo: entonces manda el especialista de siempre.
+    """
+    slug = extract_product_url_slug(turn.text)
+    if not slug:
+        return None
+
+    raw = await _buscar_por_slug_url(slug)
+    if raw is None:
+        return None
+
+    product = Product.from_raw(raw)
+    if product is None:
+        return None
+
+    if await is_available(product.id_producto) is False:
+        return AgentResult(user_facing=unavailable_message(product.nombre))
+
+    start_checkout(state, product_name=product.nombre, product_id=product.id_producto)
+
+    # Si ya dijo el día ("para este sábado"), se nombra en la pregunta: no se
+    # inventa el distrito ni se salta el paso, pero se nota que leímos el turno.
+    dia = ""
+    low = (turn.text or "").casefold()
+    if "sabado" in low or "sábado" in low:
+        dia = " este sábado"
+    elif "domingo" in low:
+        dia = " este domingo"
+    elif "hoy" in low.split() or "mañana" in low or "manana" in low:
+        dia = " para esa fecha"
+
+    intro = (
+        f"Veo ese producto: '{product.nombre}' 🎁. "
+        f"¿En qué distrito sería la entrega{dia}?"
+        if not state.district
+        else (
+            f"Veo ese producto: '{product.nombre}' 🎁. "
+            f"¿Para qué fecha lo necesitas? 📅"
+        )
+    )
+    # Si ya había distrito, start_checkout dejó el paso en `date`.
+    if state.district:
+        pregunta_paso = "date"
+    else:
+        pregunta_paso = "district"
+
+    return AgentResult(
+        user_facing=compose_product_reply(intro, [product]),
+        artifacts=[product],
+        tools_used=["buscar_productos"],
+        state_patch={
+            "chosen_product_id": product.id_producto,
+            "chosen_product_name": product.nombre,
+            "checkout_step": state.checkout_step or pregunta_paso,
+        },
+    )
+
+
+async def _buscar_por_slug_url(slug: str) -> dict | None:
+    """Trae candidatos por `q` y se queda con el que tiene esa `url_producto`."""
+    consultas = [slug, slug.replace("-", " ")]
+    vistos: set[str] = set()
+    for q in consultas:
+        if q in vistos:
+            continue
+        vistos.add(q)
+        try:
+            payload = json.loads(await execute_tool("buscar_productos", {"q": q}))
+        except Exception as err:
+            log.warning("[catalog] buscar por url %r falló: %s", q, err)
+            continue
+        items = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            continue
+        elegido = pick_by_url_slug(
+            [p for p in items if isinstance(p, dict)], slug
+        )
+        if elegido is not None:
+            return elegido
+    return None
+
+
 async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
     if state.checkout_step in ("idle", ""):
         # Con la cita: responder a la foto de un producto ES nombrarlo. Lo que
@@ -1268,6 +1369,29 @@ async def _run_specialty(
     if output_policy == "catalog":
         result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
 
+    # El cliente pegó el link de UN producto y el modelo igual buscó a lo ancho:
+    # nos quedamos solo con el del slug. Sin esto, compose_product_reply volcaba
+    # la bandeja entera junto al "veo ese producto".
+    slug = extract_product_url_slug(turn.text)
+    if slug and len(result.artifacts) > 1:
+        por_url = pick_by_url_slug(
+            [_as_dict(p) | {"url": getattr(p, "url", "")} for p in result.artifacts],
+            slug,
+        )
+        # Los Product del absorb ya no llevan url: intentar por nombre del slug.
+        if por_url is None:
+            objetivo = slug.replace("-", " ")
+            nombrados = [
+                p
+                for p in result.artifacts
+                if objetivo in (p.nombre or "").casefold().replace("  ", " ")
+            ]
+            if len(nombrados) == 1:
+                result.artifacts = nombrados
+        else:
+            pid = int(por_url["id_producto"])
+            result.artifacts = [p for p in result.artifacts if p.id_producto == pid][:1]
+
     # El modelo respondió sin llamar la tool porque el dato ya lo tenía en el
     # system. Sin esto el turno saldría sin ficha (foto, nombre, precio) y sin
     # `chosen_product_*`: el producto quedaría solo en la prosa, que es
@@ -1423,6 +1547,13 @@ _BULLET_LINE = re.compile(r"^\s*[•\-\*]|—\s*S\s*/|^\s*\d+[.)]\s+\S.*S\s*/", 
 _CLOSING_LINE = re.compile(r"^\s*¿.*detalle", re.I)
 
 
+def _closing_for(artifacts: list) -> str:
+    """Con UN producto ya elegido, ofrecer "más opciones" es confundir."""
+    if len(artifacts) <= 1:
+        return ""
+    return "¿Quieres más detalles de alguno, o prefieres que busque más opciones? 😊"
+
+
 def compose_product_reply(model_text: str | None, artifacts: list) -> str:
     """El listado de productos lo arma el código, no el modelo.
 
@@ -1442,7 +1573,10 @@ def compose_product_reply(model_text: str | None, artifacts: list) -> str:
         intro_lines.append(line)
 
     intro = "\n".join(intro_lines).strip()
-    listado = render_product_list([_as_dict(p) for p in artifacts])
+    listado = render_product_list(
+        [_as_dict(p) for p in artifacts],
+        closing=_closing_for(artifacts),
+    )
 
     return f"{intro}\n\n{listado}" if intro else listado
 
