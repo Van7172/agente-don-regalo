@@ -507,10 +507,20 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   background: color-mix(in srgb, var(--color-surface) 35%, transparent);
 }
 
-/* — nubesita de día, estilo WhatsApp — */
+/* — paquete de un día + nubesita sticky (estilo WhatsApp) —
+ *
+ * El sticky vive DENTRO de `.day-group`. Si el separador fuera hijo directo
+ * del `.thread`, todos los chips se pegarían a top:0 a la vez y se
+ * superpondrían ("Ayer" encima de "19 agosto").
+ */
+.day-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .day-sep {
   display: flex; align-items: center; justify-content: center;
-  margin: 10px 0 6px;
+  margin: 4px 0 0;
   position: sticky; top: 0; z-index: 2;
   pointer-events: none;
 }
@@ -668,6 +678,22 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 }
 .media-doc:hover { background: color-mix(in srgb, currentColor 20%, transparent); }
 .media-doc svg { flex: none; }
+
+.media-location {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px;
+  margin: 2px 0; padding: 8px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent-100) 75%, #fff);
+  color: var(--color-accent-900);
+  text-decoration: none; font-size: 13px; line-height: 1.35;
+  border: 1px solid color-mix(in srgb, var(--color-accent-600) 18%, transparent);
+}
+a.media-location:hover { filter: brightness(0.98); }
+.media-location.is-static { cursor: default; }
+.media-location svg { flex: none; margin-top: 1px; color: var(--color-accent-700); }
+.media-location .loc-label { font-weight: 650; }
+.media-location .loc-detail {
+  flex: 1 1 100%; padding-left: 26px; font-weight: 450; opacity: 0.88;
+}
 
 /* ============================================================
    Composer con adjuntos y nota de voz

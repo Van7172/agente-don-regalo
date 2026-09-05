@@ -522,10 +522,55 @@
   /** "[audio]" / "[image]" son marcadores del agente, no texto real del cliente. */
   const isPlaceholder = (text) => /^\[[^\]]*\]$/.test(String(text || "").trim());
 
+  /** Pin de WhatsApp: URL de Maps o el marcador `[location]` que antes se ocultaba. */
+  const MAPS_URL_RE =
+    /https?:\/\/(?:(?:www\.)?google\.[^/\s]+\/maps|[^\s]*maps\.google\.[^\s]+)[^\s]*/i;
+
+  function locationFromContent(content) {
+    const text = String(content || "").trim();
+    if (!text) return null;
+    if (/^\[location\]$/i.test(text)) {
+      return { label: "Ubicación compartida", url: null, detail: "" };
+    }
+    const match = text.match(MAPS_URL_RE);
+    if (!match && !/📍\s*ubicaci[oó]n/i.test(text)) return null;
+    const url = match ? match[0] : null;
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && l !== url && !/^📍/.test(l));
+    return {
+      label: "Ubicación compartida",
+      url,
+      detail: lines.join(" · "),
+    };
+  }
+
   const DOC_ICON =
     '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>' +
     '<polyline points="14 2 14 8 20 8"></polyline></svg>';
+
+  const PIN_ICON =
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>' +
+    '<circle cx="12" cy="10" r="3"></circle></svg>';
+
+  function locationMarkup(m) {
+    const loc = locationFromContent(m.content);
+    if (!loc) return "";
+    const detail = loc.detail
+      ? `<span class="loc-detail">${esc(loc.detail)}</span>`
+      : "";
+    if (loc.url) {
+      return `<a class="media-location" href="${esc(loc.url)}" target="_blank" rel="noopener">
+        ${PIN_ICON}<span class="loc-label">${esc(loc.label)}</span>${detail}
+      </a>`;
+    }
+    return `<div class="media-location is-static">
+      ${PIN_ICON}<span class="loc-label">${esc(loc.label)}</span>${detail}
+    </div>`;
+  }
 
   function mediaMarkup(m) {
     const src = mediaSrc(m);
@@ -596,10 +641,15 @@
     if (m.wa_message_id) row.dataset.waId = m.wa_message_id;
     row.dataset.text = m.content || "";
 
-    const media = mediaMarkup(m);
+    const location = locationMarkup(m);
+    const media = location || mediaMarkup(m);
     // En un documento el texto ES el nombre del archivo: ya va dentro del propio enlace.
+    // En una ubicación el texto (Maps + dirección) ya va en la tarjeta.
     const showText =
-      m.content && !isPlaceholder(m.content) && !(media && m.media_kind === "document");
+      m.content &&
+      !isPlaceholder(m.content) &&
+      !(media && m.media_kind === "document") &&
+      !location;
 
     row.innerHTML = `
       <div class="bubble from-${sender}${media ? " has-media" : ""}">
@@ -612,24 +662,48 @@
     return row;
   }
 
-  /** Burbujas + nubesita de día (Hoy / Ayer / fecha) al cambiar de jornada. */
+  /** Burbujas agrupadas por día. Cada jornada es un paquete con su nubesita.
+
+   * La nubesita es `position: sticky`. Si todos los `.day-sep` son hijos
+   * directos del `.thread`, el sticky dura TODO el scroll y se apilan:
+   * "Ayer" encima de "19 agosto". Envolviendo cada día en `.day-group`, el
+   * sticky solo vive mientras ese paquete está en pantalla — como WhatsApp.
+   */
   function threadNodes(messages) {
     const nodes = [];
+    let group = null;
     let lastKey = null;
+
+    const flush = () => {
+      if (group) nodes.push(group);
+      group = null;
+    };
 
     for (const m of messages) {
       const key = dayKey(m.created_at);
       const label = dayLabel(m.created_at) || (key ? key : null);
+
       if (key && key !== lastKey) {
+        flush();
         lastKey = key;
+        group = document.createElement("div");
+        group.className = "day-group";
+        group.dataset.day = key;
         const sep = document.createElement("div");
         sep.className = "day-sep";
         sep.setAttribute("role", "separator");
         sep.innerHTML = `<span>${esc(label || "Hoy")}</span>`;
-        nodes.push(sep);
+        group.appendChild(sep);
       }
-      nodes.push(bubble(m));
+
+      // Sin fecha usable: no inventamos un paquete; la burbuja va suelta.
+      if (!group) {
+        nodes.push(bubble(m));
+        continue;
+      }
+      group.appendChild(bubble(m));
     }
+    flush();
     return nodes;
   }
 

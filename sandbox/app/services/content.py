@@ -62,6 +62,12 @@ async def inbound_to_parts(
     if msg.message_type == "text" or (msg.text and not msg.media_id):
         return [{"type": "text", "text": msg.text}] if msg.text else []
 
+    if msg.message_type == "location":
+        # Ya viene formateada en el parser (pin + Maps). Sin media que bajar.
+        return [{"type": "text", "text": msg.text}] if msg.text else [
+            {"type": "text", "text": "[Ubicación compartida]"}
+        ]
+
     async def _media() -> tuple[bytes, str]:
         if prefetched is not None:
             return prefetched

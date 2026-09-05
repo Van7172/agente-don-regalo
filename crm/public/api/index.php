@@ -360,6 +360,16 @@ try {
             (string) ($user['name'] ?? ''),
             !empty($body['force'])
         );
+        // Reinicia el reloj del releaser HUMAN→AI. Sin esto, el ancla seguía
+        // siendo el handoff_at viejo: el asesor tomaba el chat y, al escribir
+        // el cliente, el bot lo recuperaba porque "ya pasaron 20 min" desde
+        // la derivación anterior (sep 2026).
+        if (!empty($result['claimed'])) {
+            Repository::setSetting(
+                'last_human_outbound_' . (int) $m[1],
+                (string) time()
+            );
+        }
         Http::jsonOk(['ok' => true] + $result);
     }
 

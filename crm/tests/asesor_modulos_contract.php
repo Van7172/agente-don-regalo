@@ -109,6 +109,10 @@ requiresText($inbox, 'setMode("HUMAN", { human_support: false })', 'Tomar el cha
 // Escribir es tomar el chat: si además hay que pulsar un botón, la asignación se
 // queda vacía y el módulo entero no sirve para nada.
 requiresText($inbox, "if (!lastThread?.conv?.assigned && lastThread?.conv?.id === convId)", 'Responder debe reclamar el chat');
+// Tomar el chat reinicia el reloj del releaser: si no, el handoff_at viejo hace
+// que el bot recupere el chat apenas el cliente escribe (aunque el asesor
+// acabara de tomarlo).
+requiresText($api, 'last_human_outbound_', 'Al reclamar hay que sellar last_human_outbound para el releaser');
 
 // ── 3. ventana de servicio de WhatsApp ──────────────────────────────────────
 requiresText($repository, 'const SERVICE_WINDOW_HOURS = 24', 'La ventana debe estar en un solo sitio');

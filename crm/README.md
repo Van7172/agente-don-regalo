@@ -168,6 +168,16 @@
   Contrato: `crm/tests/aviso_mensaje_entrante_contract.php`. Es **solo CRM**: no
   hay cambios en el agente ni migraciones, basta con subir `public/assets/inbox.js`.
 
+  ## La nubesita de día no se apila
+
+  En el hilo, "Hoy" / "Ayer" / la fecha van **por paquete de mensajes de ese
+  día** (`.day-group`). Antes cada `.day-sep` era hijo directo del scroll y el
+  `position: sticky` los pegaba a todos a `top: 0`: se veía "Ayer" encima de
+  "19 agosto". Ahora el sticky solo dura mientras ese día está en pantalla.
+
+  Contrato: `crm/tests/day_separator_package_contract.js`. Subir `inbox.js` y
+  `app.css`.
+
   ## Crear contenido (posts de redes)
 
   `content.php`: el asesor elige un producto del catálogo y la IA le escribe el
