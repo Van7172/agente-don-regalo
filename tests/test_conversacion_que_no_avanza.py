@@ -157,6 +157,96 @@ async def test_al_tercer_turno_sin_productos_se_muestran(sin_red):
 
 
 @pytest.mark.asyncio
+async def test_con_producto_ya_elegido_no_se_vuelcan_destacados(sin_red, monkeypatch):
+    """Chat real (Xenita, sep 2026): ya había un ramo claro y el freno de
+    turnos sin producto soltó «Mejor te enseño… lo que más nos piden» —
+    desayunos, ositos, packs— encima de la confirmación. Confunde.
+    """
+    llamado = {}
+
+    async def fake_specialty(intent, turn, state, **ctx):
+        llamado["si"] = True
+        return AgentResult(
+            user_facing=(
+                "¿Confirmas que quieres ese *Ramo de 6 girasoles* de la foto?"
+            ),
+            state_patch={
+                "chosen_product_id": 880,
+                "chosen_product_name": "Ramo de 6 girasoles - Flores Amarillas",
+            },
+        )
+
+    monkeypatch.setattr(master, "_run_specialty", fake_specialty)
+    state = ConversationState(
+        turns_without_products=master.MAX_TURNS_WITHOUT_PRODUCTS,
+        presented=True,
+        chosen_product_id=880,
+        chosen_product_name="Ramo de 6 girasoles - Flores Amarillas",
+    )
+
+    result = await master._handle(
+        "catalog_search", _turn("Verifiquen si lo tienen"), state
+    )
+
+    assert llamado.get("si"), "manda el especialista, no el rescate de destacados"
+    reply = (result.user_facing or "").casefold()
+    assert "más nos piden" not in reply
+    assert "mejor te enseño" not in reply
+
+
+@pytest.mark.asyncio
+async def test_con_foto_del_producto_no_se_vuelcan_destacados(sin_red, monkeypatch):
+    """Mandó la foto del ramo: enseñar 'lo más pedido' es cambiarle el pedido."""
+    llamado = {}
+
+    async def fake_specialty(intent, turn, state, **ctx):
+        llamado["si"] = True
+        return AgentResult(user_facing="Veo el ramo de girasoles de la foto 🌻")
+
+    monkeypatch.setattr(master, "_run_specialty", fake_specialty)
+    state = ConversationState(
+        turns_without_products=master.MAX_TURNS_WITHOUT_PRODUCTS, presented=True
+    )
+    turn = Turn(
+        text="Verifiquen si lo tienen",
+        has_media=True,
+        messages=[{"role": "user", "content": "Verifiquen si lo tienen"}],
+    )
+
+    result = await master._handle("catalog_search", turn, state)
+
+    assert llamado.get("si")
+    assert "más nos piden" not in (result.user_facing or "").casefold()
+
+
+@pytest.mark.asyncio
+async def test_cierre_en_marcha_no_se_vuelcan_destacados(sin_red, monkeypatch):
+    """Con el pedido a medias, el rescate de catálogo no puede secuestrar el turno."""
+    llamado = {}
+
+    async def fake_specialty(intent, turn, state, **ctx):
+        llamado["si"] = True
+        return AgentResult(user_facing="¿A qué distrito lo enviamos?")
+
+    monkeypatch.setattr(master, "_run_specialty", fake_specialty)
+    state = ConversationState(
+        turns_without_products=master.MAX_TURNS_WITHOUT_PRODUCTS,
+        presented=True,
+        checkout_step="district",
+        chosen_product_id=880,
+        chosen_product_name="Ramo de 6 girasoles",
+    )
+
+    # small_talk / catalog con cierre activo: el router normalmente manda a
+    # checkout, pero el freno de destacados no debe dispararse si el intent
+    # llega como discovery.
+    result = await master._handle("catalog_search", _turn("ok"), state)
+
+    assert "más nos piden" not in (result.user_facing or "").casefold()
+    assert "mejor te enseño" not in (result.user_facing or "").casefold()
+
+
+@pytest.mark.asyncio
 async def test_por_debajo_del_tope_sigue_mandando_el_especialista(sin_red, monkeypatch):
     llamado = {}
 

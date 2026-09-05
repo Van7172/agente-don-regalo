@@ -131,6 +131,7 @@ async def health():
         ),
         "openai_configured": bool(settings.openai_api_key),
         "openai_model": settings.openai_model,
+        "openai_reasoning_effort": settings.openai_reasoning_effort or None,
         "donregalo_mcp_enabled": settings.donregalo_use_mcp,
         "donregalo_mcp_configured": bool(settings.donregalo_mcp_token),
         "inbound_queue": inbound_queue_stats(),

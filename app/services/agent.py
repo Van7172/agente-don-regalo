@@ -84,6 +84,30 @@ def _observe_llm(
 
 _OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
+# Con esfuerzo alto el modelo piensa más: 60s se queda corto y el cliente ve
+# timeout en vez de respuesta. Solo se estira cuando hay effort configurado.
+_LLM_TIMEOUT_DEFAULT = 60.0
+_LLM_TIMEOUT_REASONING = 120.0
+
+
+def with_reasoning_effort(payload: dict) -> dict:
+    """Añade `reasoning_effort` al payload si está configurado.
+
+    Vacío = no se toca (modelos sin reasoning o default del proveedor).
+    Es el dial de calidad del especialista: el router no pasa por aquí.
+    """
+    effort = (settings.openai_reasoning_effort or "").strip()
+    if not effort:
+        return payload
+    return {**payload, "reasoning_effort": effort}
+
+
+def _llm_http_timeout() -> float:
+    effort = (settings.openai_reasoning_effort or "").strip().casefold()
+    if effort in {"medium", "high", "xhigh", "max"}:
+        return _LLM_TIMEOUT_REASONING
+    return _LLM_TIMEOUT_DEFAULT
+
 
 async def _chat_completion_unprotected(
     client: httpx.AsyncClient,
@@ -573,12 +597,12 @@ async def run_specialist(
         if not filler_sent and conversation_id is not None and not skip_early_filler:
             early_filler_task = asyncio.create_task(_send_early_filler())
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=_llm_http_timeout()) as client:
             for _ in range(round_limit):
-                payload: dict = {
+                payload: dict = with_reasoning_effort({
                     "model": model_name,
                     "messages": messages,
-                }
+                })
                 budget_available = (
                     max_tool_calls is None
                     or tool_calls_executed < max_tool_calls
@@ -912,7 +936,7 @@ async def run_specialist(
             log.warning("Se alcanzó MAX_TOOL_ROUNDS; pidiendo respuesta final sin tools")
             data = await _chat_completion(
                 client,
-                {
+                with_reasoning_effort({
                     "model": model_name,
                     "messages": messages + [{
                         "role": "system",
@@ -921,7 +945,7 @@ async def run_specialist(
                             "No llames más herramientas. Si faltan datos, pregunta uno solo."
                         ),
                     }],
-                },
+                }),
             )
             if early_filler_task and not early_filler_task.done():
                 early_filler_task.cancel()

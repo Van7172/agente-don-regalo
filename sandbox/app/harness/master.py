@@ -159,6 +159,27 @@ MAX_TURNS_WITHOUT_PRODUCTS = 3
 _DISCOVERY_INTENTS = frozenset({"greet", "small_talk", "catalog_search", "product_detail"})
 
 
+def _already_has_product_in_sight(turn: Turn, state: ConversationState) -> bool:
+    """True si volcar destacados confundiría en vez de ayudar.
+
+    El contador `turns_without_products` mide "no le enseñamos fotos todavía",
+    no "está perdido". Si ya eligió, mandó la foto del que quiere, o está a
+    mitad del cierre, «Mejor te enseño… lo que más nos piden» le cambia el
+    pedido (Xenita, sep 2026: confirmó un ramo de girasoles y el rescate
+    soltó desayunos y ositos en el mismo turno).
+    """
+    if state.chosen_product_id:
+        return True
+    if state.checkout_step and state.checkout_step not in ("idle", ""):
+        return True
+    if turn.has_media:
+        return True
+    # Ya vio productos en este chat: el rescate es para quien aún no vio nada.
+    if state.recent_products:
+        return True
+    return False
+
+
 def _reduce(
     state: ConversationState, result: AgentResult, *, intent: str = ""
 ) -> ConversationState:
@@ -566,7 +587,12 @@ async def _handle(
         return respondido
 
     # ── Se acabaron las preguntas: productos ──────────────────────
-    if intent in _DISCOVERY_INTENTS and state.turns_without_products >= MAX_TURNS_WITHOUT_PRODUCTS:
+    # No si ya tiene producto a la vista: el "rescate" sería ruido.
+    if (
+        intent in _DISCOVERY_INTENTS
+        and state.turns_without_products >= MAX_TURNS_WITHOUT_PRODUCTS
+        and not _already_has_product_in_sight(turn, state)
+    ):
         rescate = await _show_something(state, **ctx)
         if rescate is not None:
             return rescate
@@ -617,7 +643,9 @@ async def _answer_without_model(
                 state_patch={"recent_options": [], "menu_depth": 0},
             )
 
-    if intent in ("catalog_search", "greet"):
+    if intent in ("catalog_search", "greet") and not _already_has_product_in_sight(
+        turn, state
+    ):
         productos = await _destacados()
         if productos:
             log.info("[rescate] sin modelo; respondo con los destacados")
@@ -848,7 +876,15 @@ async def _show_something(state: ConversationState, **ctx) -> AgentResult | None
     cliente ve precios y fotos reales, y desde ahí se puede seguir. Si ni eso
     sale, el problema es nuestro (o de la API) y lo coge un humano: seguir
     preguntando es exactamente lo que no funcionó.
+
+    Quien llama ya filtró con `_already_has_product_in_sight`. Cinturón: si
+    igual hay producto elegido o cierre activo, no volcamos destacados.
     """
+    if state.chosen_product_id or (
+        state.checkout_step and state.checkout_step not in ("idle", "")
+    ):
+        return None
+
     productos = await _destacados()
     if productos:
         return AgentResult(

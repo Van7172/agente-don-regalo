@@ -48,6 +48,29 @@ def _parse_llm_prices(raw: str) -> dict[str, dict[str, float]]:
         return {}
 
 
+# Valores que acepta Chat Completions para `reasoning_effort`. Fuera de esta
+# lista no se manda el campo: un typo no puede tumbar cada turno con 400.
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+
+
+def _parse_reasoning_effort(raw: str) -> str:
+    value = (raw or "").strip().casefold()
+    if not value:
+        return ""
+    if value not in _REASONING_EFFORTS:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[config] OPENAI_REASONING_EFFORT=%r no es válido "
+            "(usa none|minimal|low|medium|high|xhigh|max); se omite",
+            raw,
+        )
+        return ""
+    return value
+
+
 class Settings:
     def __init__(self) -> None:
         self.whatsapp_token: str = os.getenv("WHATSAPP_TOKEN", "")
@@ -82,6 +105,12 @@ class Settings:
         # exactamente el modelo global y el despliegue no cambia de conducta.
         self.openai_fast_model: str = (
             os.getenv("OPENAI_FAST_MODEL", "").strip() or self.openai_model
+        )
+        # Esfuerzo de razonamiento (GPT-5 / o-series). Vacío = no se manda el
+        # campo y manda el default del modelo. El router NO lo usa: clasificar
+        # barato no necesita "high"; sí los especialistas de cara al cliente.
+        self.openai_reasoning_effort: str = _parse_reasoning_effort(
+            os.getenv("OPENAI_REASONING_EFFORT", "")
         )
         # Clasificador de intención del router: solo se usa cuando las reglas no
         # saben, así que puede ser el modelo más barato disponible.
