@@ -16,6 +16,9 @@ _T_IDLE_SEC = 20 * 60
 _T_PAYMENT_SEC = 2 * 60 * 60
 
 REENGAGE_MSG = "¡Hola de nuevo! 😊 Ya estoy aquí para seguir ayudándote."
+# Conservado como texto histórico/tests. Al liberar HUMAN→AI por un mensaje
+# entrante YA NO se envía: el turno del cliente responde (ver buffer.py).
+# Mandarlo delante producía dos saludos seguidos.
 
 
 def idle_threshold_sec(state: ConversationState) -> float:

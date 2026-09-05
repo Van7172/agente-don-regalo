@@ -19,7 +19,7 @@ from app.services import preempt
 from app.services.agent import HANDOFF_DONE
 from app.harness.master import run_master
 from app.harness.quoting import build_quote_marker
-from app.harness.releaser import REENGAGE_MSG, try_release_conversation
+from app.harness.releaser import try_release_conversation
 from app.harness.state import load_state, save_state
 from app.services.content import collapse_parts, inbound_to_parts
 from app.services.history import WA_ID_KEY, drop_current_turn
@@ -234,14 +234,11 @@ async def _enqueue_external(
             )
             if released:
                 log.info("[GATE] conversation=%s released HUMAN→AI", conversation_id)
-                # Enviar reenganche breve y seguir al buffer.
-                try:
-                    wa_mid = await send_message(wa_id, REENGAGE_MSG)
-                    await crm_http.append_outbound(
-                        conversation_id, REENGAGE_MSG, wa_message_id=wa_mid
-                    )
-                except Exception as err:
-                    log.warning("[GATE] reengage msg falló: %s", err)
+                # NO mandar «¡Hola de nuevo!» aquí. El mensaje del cliente sigue
+                # al buffer y el turno responde (saludo + siguiente paso del
+                # pedido, o lo que toque). Mandar REENGAGE delante producía dos
+                # saludos seguidos (sep 2026: «Hola de nuevo» + «¡Hola! Solo me
+                # falta la fecha…»).
                 # No return: continuar a buffer
             else:
                 reason = (

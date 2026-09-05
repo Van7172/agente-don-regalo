@@ -175,13 +175,20 @@ final class Repository
     {
         $limit = max(1, min(500, $limit));
         return Database::fetchAll(
-            "SELECT id_message, id_conversation, direction_message, sender_type, role_message,
-                    wa_message_id, content_message, media_url,
-                    quoted_text, quoted_media_url, fecha_creacion
-             FROM crm_messages
-             WHERE id_conversation = :conversationId
-             ORDER BY id_message ASC
-             LIMIT {$limit}",
+            "SELECT newest.id_message, newest.id_conversation,
+                    newest.direction_message, newest.sender_type, newest.role_message,
+                    newest.wa_message_id, newest.content_message, newest.media_url,
+                    newest.quoted_text, newest.quoted_media_url, newest.fecha_creacion
+             FROM (
+                 SELECT id_message, id_conversation, direction_message, sender_type,
+                        role_message, wa_message_id, content_message, media_url,
+                        quoted_text, quoted_media_url, fecha_creacion
+                 FROM crm_messages
+                 WHERE id_conversation = :conversationId
+                 ORDER BY id_message DESC
+                 LIMIT {$limit}
+             ) newest
+             ORDER BY newest.id_message ASC",
             ['conversationId' => $conversationId]
         );
     }

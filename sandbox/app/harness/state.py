@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 # (destinatario, dirección y datos del comprador) antes del resumen.
 CHECKOUT_STEPS = (
     "idle",
+    "resume_confirm",
     "district",
     "date",
     "schedule",
@@ -33,6 +34,12 @@ CHECKOUT_STEPS = (
 class ConversationState:
     intent_last: str = ""
     checkout_step: str = "idle"
+    # Epoch (UTC) del último avance del cierre. Sirve para detectar pedido
+    # "frío": si el cliente saluda otro día (calendario Lima), se pregunta si
+    # sigue con ese producto antes de empujar el formulario (sep 2026).
+    checkout_updated_at: Optional[float] = None
+    # Paso real a retomar tras `resume_confirm` (p. ej. "date").
+    checkout_resume_step: str = ""
     chosen_product_id: Optional[int] = None
     chosen_product_name: str = ""
     district: str = ""

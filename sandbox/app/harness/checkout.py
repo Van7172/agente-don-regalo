@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
@@ -18,9 +19,13 @@ from app.harness.orders import (
 from app.guardrails import is_courtesy_text, is_greeting_text
 from app.harness.state import ConversationState
 
+_LIMA = ZoneInfo("America/Lima")
+
 __all__ = [
     "SCHEDULE_OPTIONS",
     "advance_checkout",
+    "checkout_crossed_lima_day",
+    "clear_checkout",
     "parse_address",
     "parse_contact",
     "parse_recipient",
@@ -238,6 +243,119 @@ def _echo(text: str, limit: int = 40) -> str:
     return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
 
 
+_RESUME_YES_RE = re.compile(
+    r"^(?:si|sí|ok|dale|va|vale|perfecto|correcto|claro|seguimos|seguir|"
+    r"continuar|continúa|continua|ese|esa|este|esta|el\s+mismo|la\s+misma|"
+    r"con\s+ese|con\s+esa|con\s+el|ese\s+mismo|yes)\b",
+    re.I,
+)
+_RESUME_NEW_RE = re.compile(
+    r"nuevo|nueva|otra\s+cosa|otro\s+regalo|algo\s+nuevo|cambiar|"
+    r"mejor\s+otro|no\s+ese|no\s+gracias|buscar\s+otro|ver\s+otro|"
+    r"^(?:no|nop|nel)\b",
+    re.I,
+)
+
+
+def _touch_checkout(state: ConversationState) -> None:
+    state.checkout_updated_at = datetime.now(timezone.utc).timestamp()
+
+
+def checkout_crossed_lima_day(
+    state: ConversationState, *, today: date | None = None
+) -> bool:
+    """True si el cierre se tocó en un día calendario Lima anterior a `today`."""
+    if not state.checkout_updated_at:
+        return False
+    today = today or lima_today()
+    try:
+        touched = datetime.fromtimestamp(
+            float(state.checkout_updated_at), _LIMA
+        ).date()
+    except (TypeError, ValueError, OSError):
+        return False
+    return touched < today
+
+
+def clear_checkout(state: ConversationState) -> ConversationState:
+    """Suelta el pedido a medias: el cliente eligió empezar de nuevo."""
+    state.checkout_step = "idle"
+    state.checkout_resume_step = ""
+    state.checkout_updated_at = None
+    state.chosen_product_id = None
+    state.chosen_product_name = ""
+    state.district = ""
+    state.id_distrito = None
+    state.shipping_fee_sol = None
+    state.shipping_fee_usd = None
+    state.date = ""
+    state.time_slot = ""
+    state.dedicatoria = ""
+    state.nombre_destinatario = ""
+    state.apellidos_destinatario = ""
+    state.telefono_destinatario = ""
+    state.direccion = ""
+    state.tipo = None
+    state.nombre_cliente = ""
+    state.apellidos_cliente = ""
+    state.email_cliente = ""
+    state.pedido_temporal_id = None
+    state.step_retries = 0
+    return state
+
+
+def _resume_prompt(state: ConversationState) -> str:
+    producto = (state.chosen_product_name or "ese regalo").strip()
+    return (
+        f"¡Hola! 😊 ¿Seguimos con tu *{producto}* "
+        f"o prefieres algo nuevo hoy?"
+    )
+
+
+def _pending_question(state: ConversationState, step: str) -> str:
+    if step == "district":
+        return "¿A qué distrito lo enviamos? 🏠"
+    if step == "date":
+        return "¿Para qué fecha lo necesitas? 📅"
+    if step == "schedule":
+        return (
+            f"¿En qué horario prefieres que llegue? 🕐\n"
+            f"{schedule_options_for(state.date)}\n"
+            "Responde con el número que prefieras."
+        )
+    if step == "card":
+        return "¿Quieres agregar una tarjetita con dedicatoria? 💌"
+    if step == "card_text":
+        return "¿Qué texto va en la tarjetita? ✍️"
+    if step == "recipient":
+        return "¿Nombre y teléfono de quien recibe? 📦"
+    if step == "address":
+        return "¿Dirección exacta de entrega? 📍"
+    if step == "contact":
+        return "¿Tu nombre y correo para la confirmación? ✉️"
+    if step == "summary":
+        return "¿Confirmamos el pedido? 😊"
+    return "¿Seguimos con tu pedido?"
+
+
+def _wants_resume(text: str, state: ConversationState) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if _RESUME_NEW_RE.search(raw):
+        return False
+    if _RESUME_YES_RE.search(raw):
+        return True
+    nombre = (state.chosen_product_name or "").strip().casefold()
+    if nombre and len(nombre) >= 4 and nombre in raw.casefold():
+        return True
+    return False
+
+
+def _wants_fresh_start(text: str) -> bool:
+    return bool(_RESUME_NEW_RE.search((text or "").strip()))
+
+
 def _again(
     state: ConversationState, meta: dict[str, Any], variants: tuple[str, ...]
 ) -> tuple[ConversationState, str, dict[str, Any]]:
@@ -263,8 +381,11 @@ def _courtesy(
     """Saludo o "gracias" no son la respuesta del formulario: se acusa y no gasta reintento."""
     # "¡A ti!" solo encaja con un agradecimiento. Un "hola" a mitad del cierre
     # (chat real 20/08/2026) merecía reenganche, no tratarlo como fecha fallida.
-    opener = "¡Hola!" if is_greeting_text(text) else "¡A ti!"
-    return state, f"{opener} 😊 Solo me falta esto para cerrarlo:\n{question}", meta
+    # Tras el releaser (sep 2026) no hay un "Hola de nuevo" previo: esta frase
+    # ES el reenganche, con el siguiente dato del pedido en la misma burbuja.
+    if is_greeting_text(text):
+        return state, f"¡Hola! 😊 Seguimos con tu pedido:\n{question}", meta
+    return state, f"¡A ti! 😊 Solo me falta esto para cerrarlo:\n{question}", meta
 
 
 def advance_checkout(
@@ -288,8 +409,11 @@ def advance_checkout(
     # Un paso que avanza es un paso que entendimos: la escalera vuelve a cero.
     # Centralizado aquí y no en cada rama para que un `return` nuevo no se olvide
     # de resetearlo y arrastre los reintentos de un paso al siguiente.
-    if (state.checkout_step or "idle") != before:
+    after = state.checkout_step or "idle"
+    if after != before:
         state.step_retries = 0
+        if after not in ("idle", "", "done"):
+            _touch_checkout(state)
     return state, reply, meta
 
 
@@ -302,6 +426,7 @@ def _advance(
     step = state.checkout_step or "idle"
     text = (user_text or "").strip()
     meta: dict[str, Any] = {"specialty": "checkout"}
+    effective_today = today or lima_today()
 
     # Antes de tratar el texto como una respuesta al formulario: ¿lo es? Un
     # cliente que se despide o que nos dice que no lo entendemos no está
@@ -318,6 +443,42 @@ def _advance(
             )
             meta["handoff"] = True
             return state, _STUCK_REPLY, meta
+
+    # Pedido de otro día (calendario Lima): un saludo no empuja el formulario.
+    # Pregunta si sigue vivo ese producto (sep 2026, Gustito Consentidor).
+    if (
+        step not in ("idle", "", "payment", "done", "resume_confirm")
+        and is_greeting_text(text)
+        and checkout_crossed_lima_day(state, today=effective_today)
+        and (state.chosen_product_name or state.chosen_product_id)
+    ):
+        state.checkout_resume_step = step
+        state.checkout_step = "resume_confirm"
+        return state, _resume_prompt(state), meta
+
+    if step == "resume_confirm":
+        if _wants_resume(text, state):
+            prev = state.checkout_resume_step or "date"
+            state.checkout_resume_step = ""
+            state.checkout_step = prev
+            return state, _pending_question(state, prev), meta
+        if _wants_fresh_start(text):
+            clear_checkout(state)
+            return (
+                state,
+                "¡Listo! 🎁 ¿Qué te gustaría ver hoy?",
+                meta,
+            )
+        if is_greeting_text(text) or is_courtesy_text(text):
+            return state, _resume_prompt(state), meta
+        return _again(
+            state,
+            meta,
+            (
+                _resume_prompt(state),
+                "Dime si *seguimos* con ese regalo o si prefieres *algo nuevo* 😊",
+            ),
+        )
 
     if step == "idle" or (wants_checkout(text) and step == "idle"):
         if not state.district:
@@ -352,7 +513,6 @@ def _advance(
         return state, "¿Para qué fecha lo necesitas? 📅", meta
 
     if step == "date":
-        effective_today = today or lima_today()
         # El ejemplo se calcula, no se escribe: la plantilla fija proponía "20/07"
         # y el 21 de julio le estábamos pidiendo a una clienta una fecha futura
         # con un ejemplo del día anterior.
@@ -674,6 +834,8 @@ def start_checkout(state: ConversationState, product_name: str = "", product_id:
     if product_id is not None:
         state.chosen_product_id = product_id
     state.checkout_step = "district" if not state.district else "date"
+    state.checkout_resume_step = ""
+    _touch_checkout(state)
     return state
 
 
