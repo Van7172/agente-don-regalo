@@ -185,6 +185,10 @@ try {
                     'mode' => $conv['mode_conversation'],
                     'bot_active' => (bool) $conv['bot_active'],
                     'human_support' => (bool) $conv['human_support'],
+                    // Valor real del pin que lee el releaser. Sin devolverlo,
+                    // el checkbox conservaba solo memoria visual del navegador:
+                    // tras abrir otro chat o recargar podía mentir.
+                    'keep_human' => (string) ($conv['keep_human'] ?? '0') === '1',
                     'last_message_at' => Repository::iso($conv['last_message_at']),
                     // El agente cerró la venta: el panel pinta el chat en verde y
                     // muestra el pedido para que el vendedor no lo reconstruya.

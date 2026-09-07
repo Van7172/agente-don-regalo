@@ -22,6 +22,7 @@ from app.harness.quoting import build_quote_marker
 from app.harness.releaser import try_release_conversation
 from app.harness.state import load_state, save_state
 from app.services.content import collapse_parts, inbound_to_parts
+from app.services.conversation_control import bot_controls_external
 from app.services.history import WA_ID_KEY, drop_current_turn
 from app.services.messenger import (
     human_delay,
@@ -469,14 +470,31 @@ async def _build_messages(profile: dict, history: list, user_content) -> list:
     return messages
 
 
-async def _send_reply_segments(wa_id: str, conversation_id: int, reply: str, persist) -> None:
+async def _send_reply_segments(
+    wa_id: str,
+    conversation_id: int,
+    reply: str,
+    persist,
+    *,
+    may_send=None,
+) -> None:
     """Envía segmentos. Cards de producto casi sin pausa; texto con delay corto."""
-    # La respuesta es lo más irreversible que hace un turno. Si el cliente
-    # escribió otra vez mientras se componía, se suelta aquí: todavía no ha
-    # visto nada y el turno siguiente le contestará a las dos cosas.
-    preempt.commit()
     segments = split_reply(reply)
     for i, segment in enumerate(segments):
+        # Un asesor puede tomar el chat mientras el LLM piensa o entre dos
+        # fichas de producto. El CRM es la autoridad: se relee inmediatamente
+        # antes de CADA salida. `assigned` también bloquea, cerrando la pequeña
+        # ventana entre el claim y el PATCH a HUMAN.
+        if may_send is not None and not await may_send():
+            log.info(
+                "[CONTROL] conversation=%s se canceló el resto de la respuesta",
+                conversation_id,
+            )
+            return
+        # La respuesta es lo más irreversible que hace un turno. Si el cliente
+        # escribió otra vez mientras se componía, se suelta aquí: todavía no ha
+        # visto nada y el turno siguiente le contestará a las dos cosas.
+        preempt.commit()
         if segment["type"] == "image":
             if i > 0:
                 await asyncio.sleep(0.08)
@@ -568,21 +586,32 @@ async def _flush_external(
                 conversation_id,
                 len(reply),
             )
-            await _send_reply_segments(wa_id, conversation_id, reply, persist)
+            await _send_reply_segments(
+                wa_id,
+                conversation_id,
+                reply,
+                persist,
+                may_send=lambda: bot_controls_external(conversation_id),
+            )
         else:
             # Antes escalábamos a HUMAN ante cualquier None (timeout, max rounds,
             # glitch). Eso mataba leads sanos tipo "suculentas para el colegio".
             # Recovery suave: el bot sigue a cargo; solo el handoff explícito
             # o la cuota agotada deben pasar a humano.
             log.warning("[OUT] conversation=%s sin respuesta; recovery suave", conversation_id)
-            preempt.commit()
-            wa_mid = await send_message(wa_id, _FALLBACK_SOFT_MSG)
-            await persist(content=_FALLBACK_SOFT_MSG, wa_message_id=wa_mid, media_url=None)
-            record_fallback_event()
-            await notify_team(
-                f"Agente sin respuesta (conversacion {conversation_id}); "
-                f"recovery suave, bot sigue activo."
-            )
+            if await bot_controls_external(conversation_id):
+                preempt.commit()
+                wa_mid = await send_message(wa_id, _FALLBACK_SOFT_MSG)
+                await persist(
+                    content=_FALLBACK_SOFT_MSG,
+                    wa_message_id=wa_mid,
+                    media_url=None,
+                )
+                record_fallback_event()
+                await notify_team(
+                    f"Agente sin respuesta (conversacion {conversation_id}); "
+                    f"recovery suave, bot sigue activo."
+                )
     finally:
         await set_typing(conversation_id, False)
 

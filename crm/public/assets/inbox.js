@@ -950,6 +950,10 @@
     renderWindow(conv);
 
     const isHuman = conv.mode === "HUMAN";
+    // No conservar el check de la conversación anterior ni confiar en que el
+    // último PATCH llegó: este es el pin persistido que realmente lee el
+    // releaser antes de devolver HUMAN → AI.
+    if (el.keepHuman) el.keepHuman.checked = !!conv.keep_human;
     // El botón de tomar se oculta SOLO cuando el chat ya es tuyo.
     //
     // Antes se ocultaba en cuanto el modo era HUMAN, y ese es justo el caso que

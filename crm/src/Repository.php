@@ -160,12 +160,16 @@ final class Repository
                      WHERE entrante.id_conversation = c.id_conversation
                        AND entrante.direction_message = \'inbound\') AS last_inbound_at,
                     ct.wa_id, ct.nombre_contact,
-                    s.valor_setting AS sale
+                    s.valor_setting AS sale,
+                    keep_pin.valor_setting AS keep_human
              FROM crm_conversations c
              JOIN crm_contacts ct ON ct.id_contact = c.id_contact
              LEFT JOIN crm_settings s
                     ON s.id_tenant = c.id_tenant
                    AND s.llave_setting = CONCAT(\'sale_\', c.id_conversation)
+             LEFT JOIN crm_settings keep_pin
+                    ON keep_pin.id_tenant = c.id_tenant
+                   AND keep_pin.llave_setting = CONCAT(\'keep_human_\', c.id_conversation)
              WHERE c.id_conversation = :id LIMIT 1',
             ['id' => $id]
         );
@@ -449,10 +453,13 @@ final class Repository
             'UPDATE crm_conversations
                 SET id_usuario_asignado = :userId,
                     nombre_usuario_asignado = :userName,
-                    fecha_asignacion = COALESCE(fecha_asignacion, NOW())
+                    fecha_asignacion = COALESCE(fecha_asignacion, NOW()),
+                    mode_conversation = \'HUMAN\',
+                    human_support = 0,
+                    bot_active = 0
               WHERE id_conversation = :id' . $condition,
             $params
-        );
+        );  
 
         // El veredicto NO sale de rowCount(). MySQL cuenta filas CAMBIADAS, no
         // coincidentes: cuando el dueño vuelve a reclamar la suya —y lo hace en

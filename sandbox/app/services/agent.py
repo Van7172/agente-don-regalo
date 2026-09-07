@@ -39,6 +39,7 @@ from app.observability import (
 )
 from app.resilience import circuit_breaker
 from app.services import preempt
+from app.services.conversation_control import bot_controls_external
 from app.services.messenger import notify_team, send_message, set_typing
 from app.tools import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS, execute_tool
 
@@ -570,12 +571,21 @@ async def run_specialist(
     # Ni saludos ni cortesía merecen un "Un momento, ya te ayudo": no hay nada que buscar.
     skip_early_filler = _is_small_talk(messages)
 
+    async def _may_send_filler() -> bool:
+        # Mientras el modelo piensa, un asesor puede reclamar el chat. Los
+        # fillers también son mensajes del bot y deben respetar ese control.
+        if not use_external_crm or conversation_id is None:
+            return True
+        return await bot_controls_external(conversation_id)
+
     async def _send_early_filler() -> None:
         """Aviso rápido si el 1.er round de LLM tarda (tools / OpenAI)."""
         nonlocal filler_sent
         try:
             await asyncio.sleep(0.7)
             if filler_sent or conversation_id is None:
+                return
+            if not await _may_send_filler():
                 return
             await _say(wa_id, "Un momento, ya te ayudo 😊", persist, commits=False)
             await set_typing(conversation_id, True)
@@ -752,12 +762,13 @@ async def run_specialist(
                     if filler:
                         if early_filler_task and not early_filler_task.done():
                             early_filler_task.cancel()
-                        await _say(wa_id, filler, persist, commits=False)
-                        await set_typing(conversation_id, True)
-                        filler_sent = True
-                        _filler_conversations.add(conversation_id)
-                        if len(_filler_conversations) > 5000:
-                            _filler_conversations.clear()
+                        if await _may_send_filler():
+                            await _say(wa_id, filler, persist, commits=False)
+                            await set_typing(conversation_id, True)
+                            filler_sent = True
+                            _filler_conversations.add(conversation_id)
+                            if len(_filler_conversations) > 5000:
+                                _filler_conversations.clear()
 
                 # Separar tools especiales vs paralelizables
                 special = []
