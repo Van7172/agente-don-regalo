@@ -55,6 +55,7 @@ _ESCALATE_RE = re.compile(
 )
 _POLICY_RE = re.compile(
     r"politica|pol[ií]tica|horario\s+de\s+atenci|garant|devoluci|factura|"
+    r"\bruc\b|raz[oó]n\s+(social|fiscal)|punto\s+de\s+recojo|lugar\s+de\s+recojo|"
     r"hasta\s+que\s+hora\s+puedo\s+pagar|m[eé]todos?\s+de\s+pago|c[oó]mo\s+pago|"
     # Preguntas de pago tal como las escribe el cliente. Sin esto, "¿puedo pagar
     # contra entrega?" en mitad del cierre lo absorbía el FSM.

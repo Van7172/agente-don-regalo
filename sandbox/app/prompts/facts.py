@@ -6,6 +6,7 @@ que cada playbook crezca hasta volver a ser el monolito.
 """
 from __future__ import annotations
 
+from app.business import COMPANY_RUC, PICKUP_ADDRESS
 from app.delivery_windows import SCHEDULE_OPTIONS
 
 # La taxonomía NO se hardcodea aquí. Una lista estática en el prompt tiene dos
@@ -84,6 +85,13 @@ CONTACT = """## CONTACTO
 - Si el cliente quiere hablar por teléfono → indícale el 977174485.
   Si prefiere seguir por escrito con una persona en este chat → `escalar_a_humano`."""
 
+BUSINESS = f"""## DATOS OFICIALES DE LA EMPRESA
+- RUC: {COMPANY_RUC}.
+- Don Regalo sí emite factura.
+- Punto de recojo: {PICKUP_ADDRESS}.
+- Copia estos datos exactamente. Nunca inventes ni completes una razón social,
+  otro RUC o una dirección distinta."""
+
 FACTS: dict[str, str] = {
     "catalog_taxonomy": CATALOG_TAXONOMY,
     "pricing": PRICING,
@@ -91,6 +99,7 @@ FACTS: dict[str, str] = {
     "payment": PAYMENT,
     "returns": RETURNS,
     "contact": CONTACT,
+    "business": BUSINESS,
 }
 
 

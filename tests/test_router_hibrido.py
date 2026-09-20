@@ -32,6 +32,9 @@ def espia_llm(monkeypatch):
         ("¿Llegan a Miraflores?", "coverage"),
         ("¿Dónde está mi pedido?", "track_order"),
         ("Quiero hablar con un asesor", "escalate"),
+        ("¿Cuál es su RUC?", "policy_faq"),
+        ("¿Emiten factura?", "policy_faq"),
+        ("¿Cuál es el punto de recojo?", "policy_faq"),
         ("Todo en orden hoy", "small_talk"),
     ],
 )

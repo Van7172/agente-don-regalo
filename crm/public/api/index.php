@@ -235,9 +235,30 @@ try {
                     $isExternal = $media !== '' && preg_match('#^https?://#i', $media);
                     $kind = null;
                     if ($media !== '') {
-                        $kind = $isExternal
-                            ? Media::kindForExternal($media)
-                            : Media::kindFor($media);
+                        if (!$isExternal) {
+                            $kind = Media::kindFor($media);
+                        } elseif (method_exists(Media::class, 'kindForExternal')) {
+                            // Despliegue completo: la clase conoce todos los tipos.
+                            $kind = Media::kindForExternal($media);
+                        } else {
+                            // Compatibilidad durante un despliegue parcial: el
+                            // API puede llegar al hosting unos segundos antes que
+                            // src/Media.php. Nunca tumbamos todo el hilo por eso.
+                            $path = parse_url($media, PHP_URL_PATH);
+                            $ext = strtolower((string) pathinfo(
+                                is_string($path) ? $path : $media,
+                                PATHINFO_EXTENSION
+                            ));
+                            if (in_array($ext, ['ogg', 'oga', 'opus', 'mp3', 'm4a', 'aac', 'amr', 'wav', 'webm'], true)) {
+                                $kind = 'audio';
+                            } elseif (in_array($ext, ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip'], true)) {
+                                $kind = 'document';
+                            } else {
+                                // Mantiene el comportamiento de fotos de catálogo
+                                // cuyas URLs de CDN no muestran una extensión.
+                                $kind = 'image';
+                            }
+                        }
                     }
 
                     return [

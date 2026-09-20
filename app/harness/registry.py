@@ -129,7 +129,7 @@ AGENTS: dict[str, AgentSpec] = {
     "policy": AgentSpec(
         name="policy",
         playbook=playbooks.POLICY,
-        facts=("payment", "returns", "delivery", "contact"),
+        facts=("payment", "returns", "delivery", "contact", "business"),
         tool_names=(
             "buscar_conocimiento_equipo",
             "metodos_pago",

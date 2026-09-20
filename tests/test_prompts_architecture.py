@@ -131,6 +131,14 @@ def test_los_facts_van_solo_a_quien_los_necesita():
     assert "DEVOLUCIONES" in build_system(AGENTS["policy"], ConversationState())
 
 
+def test_politicas_conoce_los_datos_oficiales_de_la_empresa():
+    system = build_system(AGENTS["policy"], ConversationState())
+
+    assert "20548364222" in system
+    assert "sí emite factura" in system
+    assert "Calle La Habana 595, San Isidro, Lima" in system
+
+
 def test_el_catalogo_no_lleva_taxonomia_hardcodeada():
     """La taxonomía sale SOLO de `explorar_catalogo`, nunca de una lista en el prompt.
 

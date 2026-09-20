@@ -167,7 +167,11 @@ def no_system_prompt_leak(reply: str) -> Violation | None:
     falso positivo — un mensaje real de venta no lleva "## RESTRICCIONES" ni el
     nombre interno de una herramienta.
     """
-    m = _PROMPT_LEAK.search(reply or "")
+    # Los nombres reservados dentro de una URL pública no son una recitación del
+    # prompt. Ejemplo legítimo: `/crm/public/assets/metodos-pago-qr.png`. La URL
+    # ya pasa por sus propias reglas de formato y aquí solo inspeccionamos prosa.
+    prose = re.sub(r"https?://\S+", "", reply or "", flags=re.I)
+    m = _PROMPT_LEAK.search(prose)
     if m:
         return Violation("no_system_prompt_leak", f"fragmento interno: {m.group(0)!r}")
     return None

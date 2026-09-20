@@ -30,6 +30,7 @@ from app.harness import master
 from app.harness.contracts import AgentResult, Product, Turn
 from app.harness.state import ConversationState
 from app.guardrails import check_reply
+from app.payments import PAYMENT_METHODS_IMAGE_URL
 from app.tools import adapters
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "api"
@@ -311,13 +312,12 @@ async def test_se_inyecta_solo_la_politica_preguntada(
 async def test_una_pregunta_solo_de_politicas_no_se_secuestra(
     catalogo_real, especialista_generico
 ):
-    """"¿Aceptan yape?" a secas la contesta el agente de políticas, que ya
-    lleva esos FACTS. Meterle un catálogo sería cambiarle el tema."""
+    """"¿Aceptan yape?" recibe los QR oficiales sin abrir un catálogo ni LLM."""
     state = ConversationState(presented=True)
-    await _handle("policy_faq", "¿aceptan yape?", state)
+    result = await _handle("policy_faq", "¿aceptan yape?", state)
 
-    assert especialista_generico["intent"] == "policy_faq"
-    assert especialista_generico["extra_system"] == "", "policy ya tiene sus FACTS"
+    assert PAYMENT_METHODS_IMAGE_URL in result.user_facing
+    assert especialista_generico == {}, "los datos de pago no dependen del LLM"
 
 
 def test_declarar_la_tarifa_no_abre_la_mano_con_las_demas():

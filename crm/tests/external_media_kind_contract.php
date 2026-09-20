@@ -31,4 +31,15 @@ expectKind('image', 'https://cdn.example.com/producto.webp?size=large');
 expectKind('audio', 'https://cdn.example.com/nota.ogg');
 expectKind('image', 'https://cdn.example.com/media/abc123');
 
+// El CRM se sube por archivos a un hosting compartido. Si index.php llega antes
+// que Media.php, el hilo no puede caer con "undefined method": debe existir el
+// camino compatible hasta que termine el despliegue.
+$api = (string) file_get_contents(dirname(__DIR__) . '/public/api/index.php');
+if (strpos($api, "method_exists(Media::class, 'kindForExternal')") === false) {
+    throw new RuntimeException('El API no tolera un despliegue parcial de Media.php');
+}
+if (strpos($api, "'document'") === false || strpos($api, "'pdf'") === false) {
+    throw new RuntimeException('El fallback del API no reconoce PDF como documento');
+}
+
 echo "external media kind contract: OK\n";

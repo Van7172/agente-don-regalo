@@ -18,6 +18,7 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.business import asks_for_business_data, business_data_reply
 from app.config import settings
 from app.guardrails import (
     HANDOFF_RULES,
@@ -79,6 +80,11 @@ from app.observability import (
     collect_turn_usage,
     current_turn_usage,
     record_operation,
+)
+from app.payments import (
+    append_payment_methods_image,
+    asks_for_payment_methods,
+    payment_methods_reply,
 )
 from app.prompts.compose import build_system, prompt_version
 from app.prompts.facts import render_facts
@@ -423,6 +429,12 @@ async def _run_master_body(
         if rescate is not None:
             result = rescate
 
+    # Si el turno mezcló producto + pago, el especialista conserva la voz
+    # comercial y esta capa añade la imagen oficial. Es idempotente: la consulta
+    # pura ya la trae desde `payment_methods_reply` y no se duplica.
+    if result.user_facing and asks_for_payment_methods(turn.text):
+        result.user_facing = append_payment_methods_image(result.user_facing)
+
     # La barrera de salida corre ANTES de reducir y antes de enviar al cliente.
     # `user_text` son las palabras del cliente en ESTE turno (no la cita, que es
     # contexto del sistema). La barrera lo necesita para saber que el teléfono
@@ -563,6 +575,14 @@ async def _handle(
             },
         )
 
+    # ── RUC, factura y recojo: datos oficiales, sin LLM ──────────
+    # Son datos exactos y estables: no vale la pena arriesgar que un modelo
+    # cambie un dígito, invente una razón social o confunda la sede con el lugar
+    # de entrega. También precede al saludo para responder "Hola, ¿cuál es su
+    # RUC?" desde el primer turno.
+    if intent != "escalate" and asks_for_business_data(turn.text):
+        return AgentResult(user_facing=business_data_reply(turn.text))
+
     # ── Primer saludo: presentación determinista ──────────────────
     if intent == "greet" and is_first_contact(state, turn.messages):
         return AgentResult(user_facing=WELCOME, state_patch={"presented": True})
@@ -607,6 +627,10 @@ async def _handle(
             log.info("[turno-mixto] política + %s; la voz se la queda %s", comercial, comercial)
             record_operation("turn.multi_intent", "policy_commercial")
             intent = comercial
+        elif asks_for_payment_methods(turn.text):
+            # Los datos bancarios y QR no deben depender de que un modelo copie
+            # bien números largos. La imagen oficial se envía como media real.
+            return AgentResult(user_facing=payment_methods_reply(turn.text))
 
     # Los FACTS se componen POR AGENTE: `detail` solo lleva `pricing` y `catalog`
     # ni eso, así que ninguno de los dos podría contestar por el pago aunque
