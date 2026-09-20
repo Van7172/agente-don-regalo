@@ -166,6 +166,31 @@ final class Media
         return 'document';
     }
 
+    /**
+     * Tipo visual de una URL pública enviada por el bot.
+     *
+     * Antes el API declaraba TODA URL externa como imagen. Cuando el bot mandó
+     * el catálogo PDF de Flores Amarillas, el inbox generó un <img src="...pdf">
+     * roto. Conservamos `image` como respaldo para CDNs sin extensión, pero una
+     * extensión conocida manda: PDF/Office/ZIP son documentos y audio es audio.
+     */
+    public static function kindForExternal(string $url): string
+    {
+        $path = parse_url($url, PHP_URL_PATH);
+        $ext = self::extOf(is_string($path) ? $path : $url);
+        if (in_array($ext, self::IMAGE_EXT, true)) {
+            return 'image';
+        }
+        if (in_array($ext, self::AUDIO_EXT, true)) {
+            return 'audio';
+        }
+        if (isset(self::TYPES[$ext])) {
+            return 'document';
+        }
+        // Las fotos de catálogo pueden venir de un CDN sin extensión visible.
+        return 'image';
+    }
+
     /** Extensión permitida a partir del mime, con el nombre original como respaldo. */
     private static function resolveExt(string $mime, string $originalName): ?string
     {

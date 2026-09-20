@@ -235,7 +235,9 @@ try {
                     $isExternal = $media !== '' && preg_match('#^https?://#i', $media);
                     $kind = null;
                     if ($media !== '') {
-                        $kind = $isExternal ? 'image' : Media::kindFor($media);
+                        $kind = $isExternal
+                            ? Media::kindForExternal($media)
+                            : Media::kindFor($media);
                     }
 
                     return [

@@ -515,7 +515,10 @@ async def _send_reply_segments(
                 caption=segment.get("caption", ""),
             )
             await persist(
-                content=segment.get("caption") or segment.get("filename") or segment["url"],
+                # Para el CRM, el texto de un documento es su nombre: el inbox
+                # lo usa como etiqueta de la tarjeta descargable. El caption ya
+                # viajó a WhatsApp dentro del propio documento.
+                content=segment.get("filename") or segment.get("caption") or segment["url"],
                 wa_message_id=wa_mid,
                 media_url=segment["url"],
             )

@@ -101,4 +101,5 @@ async def test_el_buffer_envia_y_persiste_el_pdf(monkeypatch):
     assert sent[0] == ("text", "Aquí está:")
     assert sent[1][0] == "document"
     assert sent[1][1] == YELLOW_FLOWERS_CATALOG_URL
+    assert persisted[1][0] == "catalogodepreventaFLORESAMARILLAS_.pdf"
     assert persisted[1][2] == YELLOW_FLOWERS_CATALOG_URL
