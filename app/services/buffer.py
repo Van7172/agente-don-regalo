@@ -27,6 +27,7 @@ from app.services.history import WA_ID_KEY, drop_current_turn
 from app.services.messenger import (
     human_delay,
     notify_team,
+    send_document,
     send_image,
     send_message,
     set_typing,
@@ -501,6 +502,20 @@ async def _send_reply_segments(
             wa_mid = await send_image(wa_id, segment["url"], segment.get("caption", ""))
             await persist(
                 content=segment.get("caption") or segment["url"],
+                wa_message_id=wa_mid,
+                media_url=segment["url"],
+            )
+        elif segment["type"] == "document":
+            if i > 0:
+                await asyncio.sleep(0.08)
+            wa_mid = await send_document(
+                wa_id,
+                segment["url"],
+                filename=segment.get("filename", ""),
+                caption=segment.get("caption", ""),
+            )
+            await persist(
+                content=segment.get("caption") or segment.get("filename") or segment["url"],
                 wa_message_id=wa_mid,
                 media_url=segment["url"],
             )

@@ -5,6 +5,7 @@ import asyncio
 import io
 import logging
 import re
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -22,6 +23,10 @@ _IMG_URL = re.compile(
 # Línea que es SOLO la URL (flujo ideal).
 _IMG_LINE = re.compile(
     rf"^\s*(https?://\S+\.{_IMG_EXT}(?:\?\S*)?)\s*$",
+    re.IGNORECASE,
+)
+_PDF_LINE = re.compile(
+    r"^\s*(https?://[^\s<>\"']+\.pdf(?:\?[^\s<>\"']*)?)\s*$",
     re.IGNORECASE,
 )
 # Viñeta de producto: "• 🎁 *Nombre* — S/…" o sin asteriscos/emoji.
@@ -135,7 +140,7 @@ def split_reply(reply: str) -> list[dict]:
     reply = dedupe_products_in_reply(reply or "")
     lines = reply.split("\n")
     segments: list[dict] = []
-    pending_image: str | None = None
+    pending_media: dict | None = None
     text_buffer: list[str] = []
 
     def flush_text():
@@ -144,28 +149,65 @@ def split_reply(reply: str) -> list[dict]:
         return text
 
     for line in lines:
+        pdf = _PDF_LINE.match(line)
         url, rest = extract_image_url(line)
-        if url:
-            if pending_image is not None:
-                segments.append({"type": "image", "url": pending_image, "caption": flush_text()})
+        if pdf:
+            if pending_media is not None:
+                segments.append({**pending_media, "caption": flush_text()})
             else:
                 leftover = flush_text()
                 if leftover:
                     segments.append({"type": "text", "text": leftover})
-            pending_image = url
+            document_url = pdf.group(1).rstrip(".,);]>\"'")
+            filename = unquote(urlparse(document_url).path.rsplit("/", 1)[-1])
+            pending_media = {
+                "type": "document",
+                "url": document_url,
+                "filename": filename or "catalogo.pdf",
+            }
+        elif url:
+            if pending_media is not None:
+                segments.append({**pending_media, "caption": flush_text()})
+            else:
+                leftover = flush_text()
+                if leftover:
+                    segments.append({"type": "text", "text": leftover})
+            pending_media = {"type": "image", "url": url}
             if rest:
                 text_buffer.append(rest)
         else:
             text_buffer.append(line)
 
-    if pending_image is not None:
-        segments.append({"type": "image", "url": pending_image, "caption": flush_text()})
+    if pending_media is not None:
+        segments.append({**pending_media, "caption": flush_text()})
     else:
         leftover = flush_text()
         if leftover:
             segments.append({"type": "text", "text": leftover})
 
     return segments or [{"type": "text", "text": reply}]
+
+
+async def send_document(
+    wa_id: str,
+    document_url: str,
+    *,
+    filename: str = "",
+    caption: str = "",
+) -> str | None:
+    """Envía un PDF público; si Meta lo rechaza conserva un enlace utilizable."""
+    try:
+        data = await whatsapp_client.send_document_url(
+            wa_id,
+            document_url,
+            filename=filename,
+            caption=caption,
+        )
+        return (data.get("messages") or [{}])[0].get("id")
+    except Exception as err:
+        log.error("Error enviando documento por URL: %s", err)
+        fallback = "\n\n".join(part for part in (caption, document_url) if part)
+        return await send_message(wa_id, fallback or document_url)
 
 
 async def send_message(

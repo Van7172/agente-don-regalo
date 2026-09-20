@@ -151,6 +151,38 @@ class WhatsAppClient:
             log.info("[WA] document enviado")
             return r.json()
 
+    async def send_document_url(
+        self,
+        to_wa_id: str,
+        document_url: str,
+        filename: str = "",
+        caption: str = "",
+    ) -> dict[str, Any]:
+        """Envía un documento público por URL sin descargarlo en el agente."""
+        if settings.whatsapp_dry_run:
+            fake_id = f"wamid.dry.doc.{int(__import__('time').time() * 1000)}"
+            log.info("[WA-DRY] document(url)")
+            return {"messages": [{"id": fake_id}]}
+        document: dict[str, Any] = {"link": document_url}
+        if filename:
+            document["filename"] = filename
+        if caption:
+            document["caption"] = caption
+        body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "document",
+            "document": document,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(self._messages_url(), headers=self._headers, json=body)
+            if r.status_code >= 400:
+                log.error("[WA] send_document(url) FAIL status=%s", r.status_code)
+            r.raise_for_status()
+            log.info("[WA] document(url) enviado")
+            return r.json()
+
     async def send_image_url(self, to_wa_id: str, image_url: str, caption: str = "") -> dict[str, Any]:
         if settings.whatsapp_dry_run:
             fake_id = f"wamid.dry.img.{int(__import__('time').time() * 1000)}"

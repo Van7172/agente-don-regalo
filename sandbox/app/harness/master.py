@@ -37,6 +37,11 @@ from app.harness.checkout import (
     start_checkout,
     wants_checkout,
 )
+from app.harness.campaigns import (
+    YELLOW_FLOWERS_SLUG,
+    is_yellow_flowers_query,
+    yellow_flowers_catalog_reply,
+)
 from app.harness.product_links import (
     extract_product_url_slug,
     pick_by_url_slug,
@@ -541,6 +546,22 @@ async def _handle(
     intent: str, turn: Turn, state: ConversationState, *, prev_intent: str = "", **ctx
 ) -> AgentResult:
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
+
+    # ── Preventa Flores Amarillas: catálogo exclusivo en PDF ─────
+    # Esta campaña todavía vive fuera de la API. Una búsqueda normal mezclaría
+    # ramos del catálogo permanente y dejaría fuera opciones exclusivas del PDF.
+    # Va antes del saludo y del cierre: "Hola, ¿tienen flores amarillas?" debe
+    # recibir el catálogo en el primer turno, y una búsqueda nueva puede cortar
+    # limpiamente un cierre que el cliente ya no quiere continuar.
+    if intent != "escalate" and is_yellow_flowers_query(turn.text):
+        return AgentResult(
+            user_facing=yellow_flowers_catalog_reply(),
+            state_patch={
+                "campaign_slug": YELLOW_FLOWERS_SLUG,
+                "recent_options": [],
+                "menu_depth": 0,
+            },
+        )
 
     # ── Primer saludo: presentación determinista ──────────────────
     if intent == "greet" and is_first_contact(state, turn.messages):
