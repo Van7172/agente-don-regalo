@@ -254,6 +254,19 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
         candidatos.append(p)
     candidatos.sort(key=lambda p: p["_rank"], reverse=True)
 
+    # Color pedido = límite duro (antes solo era un bonus léxico suave).
+    from app.tools.attributes import extract_color_attributes, product_matches_attributes
+
+    color_attrs = extract_color_attributes(q)
+    if color_attrs:
+        matched = [
+            p for p in candidatos if product_matches_attributes(p, color_attrs)
+        ]
+        if matched:
+            candidatos = matched
+        else:
+            candidatos = []
+
     # Validar estado activo contra la API ANTES de truncar, para rellenar el
     # cupo con productos vigentes y no devolver menos de la cuenta.
     # Solo validar activos en el top (menos latencia vs API donregalo)

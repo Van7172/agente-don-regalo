@@ -86,6 +86,7 @@ from app.services.agent import (
     run_specialist,
 )
 from app.tools.executor import execute_tool
+from app.tools import attributes as product_attrs
 
 log = logging.getLogger(__name__)
 
@@ -261,7 +262,33 @@ async def _run_master(
     demand.set_conversation(conversation_id)
 
     turn = perceive(messages)
+    attr_token = product_attrs.set_turn_text(turn.text)
+    try:
+        return await _run_master_body(
+            turn,
+            messages,
+            wa_id=wa_id,
+            contact_id=contact_id,
+            conversation_id=conversation_id,
+            session=session,
+            use_external_crm=use_external_crm,
+            persist=persist,
+        )
+    finally:
+        product_attrs.reset_turn_text(attr_token)
 
+
+async def _run_master_body(
+    turn,
+    messages: list,
+    *,
+    wa_id: str,
+    contact_id: int | None = None,
+    conversation_id: int | None = None,
+    session: AsyncSession | None = None,
+    use_external_crm: bool = False,
+    persist=None,
+) -> str | None:
     # La entrada se evalúa antes del router, el LLM y cualquier herramienta.
     # Solo se inspecciona el turno actual: los ataques antiguos se sanean abajo,
     # pero no pueden dejar una conversación bloqueada para siempre.
@@ -628,7 +655,7 @@ async def _answer_without_model(
     categoria = match_category(turn.text, options) if options else None
 
     if categoria is not None:
-        productos = await _productos_de(categoria["slug"])
+        productos = await _productos_de(categoria["slug"], turn.text)
         if productos:
             log.info(
                 "[rescate] sin modelo; respondo con la categoría %s",
@@ -1000,8 +1027,31 @@ async def _answer_menu(turn: Turn, state: ConversationState) -> AgentResult | No
     )
 
 
-async def _productos_de(slug: str) -> list[Product]:
-    """Los productos REALES de una categoría, por su slug de la taxonomía."""
+async def _productos_de(slug: str, query: str = "") -> list[Product]:
+    """Los productos REALES de una categoría, por su slug de la taxonomía.
+
+    Si el cliente además pidió un color ("flores amarillas"), la búsqueda literal
+    manda: el listado genérico de la categoría mezcla todos los colores.
+    """
+    q = (query or product_attrs.turn_text() or "").strip()
+    if product_attrs.extract_color_attributes(q):
+        try:
+            payload = json.loads(
+                await execute_tool("buscar_productos", {"q": q, "categoria": slug})
+            )
+        except Exception as err:
+            log.warning("[catalog] no pude buscar %r en %s: %s", q, slug, err)
+            payload = {}
+        productos = extract_products(payload)
+        if productos:
+            return productos
+        try:
+            payload = json.loads(await execute_tool("buscar_productos", {"q": q}))
+        except Exception as err:
+            log.warning("[catalog] no pude buscar %r: %s", q, err)
+            return []
+        return extract_products(payload)
+
     try:
         payload = json.loads(await execute_tool("catalogo_categoria", {"slug": slug}))
     except Exception as err:
@@ -1479,7 +1529,7 @@ async def _own_the_menu(
     padre = match_category(turn.text, options)
     if padre is not None and not padre["hijos"]:
         # Cestas, Peluches, Regalos para Bebé: sin hijas, un menú sobra.
-        productos = await _productos_de(padre["slug"])
+        productos = await _productos_de(padre["slug"], turn.text)
         if productos:
             result.artifacts = productos
             result.user_facing = compose_product_reply(

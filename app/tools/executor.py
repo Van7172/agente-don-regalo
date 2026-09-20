@@ -14,8 +14,52 @@ from app.harness.taxonomy import RECIPIENT_WORDS, match_recipient, parse_filtros
 from app.observability import audit_event, record_operation
 from app.services import demand
 from app.tools import catalog, mcp_client, search
+from app.tools.attributes import colors_from, enforce_attributes, turn_text
 
 log = logging.getLogger(__name__)
+
+
+def _color_attrs(args: dict | None = None) -> list:
+    """Colores del `q` de la tool y del turno (por si el modelo se comió el color)."""
+    args = args or {}
+    return colors_from(str(args.get("q") or ""), turn_text())
+
+
+async def _resolve_with_color(
+    client: httpx.AsyncClient,
+    result: object,
+    args: dict,
+    *,
+    prefer_q: str = "",
+) -> object:
+    """Impone el color pedido; si queda corto, reintenta con la API literal.
+
+    No rellena con otro color marcado como aproximado: mentir el color es peor
+    que decir que no hay.
+    """
+    attrs = _color_attrs(args)
+    if not attrs:
+        return result
+
+    result = enforce_attributes(result, attrs)
+    if result_product_count(result) >= _MIN_RESULTS_OK:
+        return result
+
+    q = (prefer_q or args.get("q") or turn_text() or "").strip()
+    if not q:
+        return result
+
+    api = await _pick("buscar_productos", catalog.buscar_productos)(
+        client, {"q": q}
+    )
+    api = enforce_attributes(api, attrs)
+    if result_product_count(api) > result_product_count(result):
+        log.info(
+            "[tool] color=%s resuelto por búsqueda literal",
+            ",".join(a.id for a in attrs),
+        )
+        return api
+    return result
 
 
 def _tool_backend(name: str) -> str:
@@ -518,6 +562,7 @@ async def execute_tool(name: str, args: dict) -> str:
                 # un escalón que falla no es una carencia mientras el siguiente
                 # acierte: contarlos por separado convertiría una búsqueda en
                 # hasta cuatro señales de un producto que sí teníamos.
+                result = await _resolve_with_color(client, result, args)
                 _record_demand(args, result)
 
             elif name == "catalogo_categoria":
@@ -545,6 +590,12 @@ async def execute_tool(name: str, args: dict) -> str:
                         sem["aproximado"] = True
                         sem["categoria_pedida"] = slug
                         result = sem
+
+                # Color del turno: "flores amarillas" no puede resolverse con el
+                # listado genérico de arreglos florales (ahí entra cualquier ramo).
+                result = await _resolve_with_color(
+                    client, result, {"q": turn_text()}, prefer_q=turn_text()
+                )
 
                 # Una categoría entera sin productos es la carencia más clara
                 # que hay: el cliente ni siquiera pidió algo raro, pidió una
@@ -629,6 +680,11 @@ async def execute_tool(name: str, args: dict) -> str:
                                 similares["aproximado"] = True
                                 similares["categoria_pedida"] = slug
                                 result = similares
+
+                    # El color es tan duro como la categoría: "flores amarillas"
+                    # no puede devolver un ramo rojo aunque el vector diga que
+                    # se parece a "flores".
+                    result = await _resolve_with_color(client, result, args)
 
             elif name == "productos_similares":
                 result = await search.productos_similares(client, args or {})
