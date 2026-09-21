@@ -212,7 +212,12 @@ _NOT_A_PLACE_RE = re.compile(
     # "No hay delivery?" no tiene ninguno de los verbos de arriba: se leía
     # como un posible distrito y el bot respondía "No ubico 'No hay
     # delivery'... ¿lo buscas en Google Maps?" a una pregunta, no a un lugar.
-    r"no\s+hay|\bhacen\b|\btienen\b)\b",
+    r"no\s+hay|\bhacen\b|\btienen\b|"
+    # Respuesta de FECHA al "¿para qué día lo necesitas?" del cierre, no de
+    # lugar: "Para mañana por favor" se citaba de vuelta como si "mañana"
+    # fuera un distrito que no existe, en mitad de una compra en curso.
+    r"ma[ñn]ana|\bhoy\b|por\s+favor|"
+    r"lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b",
     re.I,
 )
 
@@ -278,12 +283,24 @@ async def resolve_coverage(
         user_text or "",
         re.I,
     ) and not resolve_alias(user_text):
-        samples = []
-        for d in districts[:8]:
+        # La API real trae distritos repetidos en los primeros puestos (p.ej.
+        # "Ate" dos veces): sin dedupe, el ejemplo salía "Ate, Ate,
+        # Barranco…" — se ve a medio armar y desperdicia un cupo de muestra.
+        samples: list[str] = []
+        seen_samples: set[str] = set()
+        for d in districts[:20]:
             n = d.get("nombre") or d.get("distrito") or d.get("name")
-            if n:
-                samples.append(str(n))
-        sample_txt = ", ".join(samples[:6]) if samples else "Miraflores, San Isidro, Surco"
+            if not n:
+                continue
+            n = str(n)
+            key = n.casefold()
+            if key in seen_samples:
+                continue
+            seen_samples.add(key)
+            samples.append(n)
+            if len(samples) == 6:
+                break
+        sample_txt = ", ".join(samples) if samples else "Miraflores, San Isidro, Surco"
         text = (
             f"Hacemos delivery en Lima Metropolitana y parte de Callao 🚚 "
             f"Algunos distritos: {sample_txt}… "

@@ -296,6 +296,71 @@ async def test_pregunta_general_de_delivery_no_se_confunde_con_un_distrito(
     assert "no ubico" not in result["user_facing"].lower()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "texto",
+    [
+        # Auditoria de roleplay (20-09-2026): un turno de cierre mal enrutado
+        # cayó en `resolve_coverage`, que citó la FECHA de vuelta como si
+        # fuera un distrito desconocido: "No ubico 'Para mañana por favor'
+        # en nuestra lista... ¿lo buscas en Google Maps?" en mitad de una
+        # compra en curso.
+        "Para mañana por favor",
+        "mañana",
+        "para el sábado porfa",
+    ],
+)
+async def test_una_fecha_no_se_cita_como_lugar_desconocido(monkeypatch, texto):
+    import json
+    import pathlib
+
+    from app.harness import coverage as cov
+    from app.tools import adapters
+
+    crudo = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "api" / "distritos.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    async def fake_distritos(client, args):
+        return adapters.districts_payload(crudo, 3.4)
+
+    monkeypatch.setattr(cov.catalog, "distritos_cobertura", fake_distritos)
+    result = await cov.resolve_coverage(texto, ConversationState())
+
+    assert "no ubico" not in result["user_facing"].lower()
+    assert "google maps" not in result["user_facing"].lower()
+    assert texto.lower() not in result["user_facing"].lower()
+
+
+@pytest.mark.asyncio
+async def test_las_muestras_de_distrito_no_se_repiten(monkeypatch):
+    """La API real trae "Ate" dos veces entre los primeros distritos; sin
+    dedupe, "¿hacen delivery?" salía "Algunos distritos: Ate, Ate,
+    Barranco…" delante del cliente."""
+    from app.harness import coverage as cov
+
+    async def fake_distritos(client, args):
+        return {
+            "data": [
+                {"nombre": "Ate"},
+                {"nombre": "Ate"},
+                {"nombre": "Barranco"},
+                {"nombre": "Bellavista"},
+                {"nombre": "Breña"},
+                {"nombre": "Callao"},
+                {"nombre": "Chorrillos"},
+            ]
+        }
+
+    monkeypatch.setattr(cov.catalog, "distritos_cobertura", fake_distritos)
+    result = await cov.resolve_coverage("¿Hacen delivery?", ConversationState())
+
+    texto = result["user_facing"]
+    assert texto.count("Ate") == 1, f"distrito repetido en la muestra: {texto!r}"
+
+
 # ── Degradación por invariante rota ───────────────────────────────────
 
 def _producto(pid=1235, nombre="Osito", sol=149.60, usd=44.0):

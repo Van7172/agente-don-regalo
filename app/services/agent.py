@@ -609,10 +609,10 @@ async def run_specialist(
 
         async with httpx.AsyncClient(timeout=_llm_http_timeout()) as client:
             for _ in range(round_limit):
-                payload: dict = with_reasoning_effort({
+                payload: dict = {
                     "model": model_name,
                     "messages": messages,
-                })
+                }
                 budget_available = (
                     max_tool_calls is None
                     or tool_calls_executed < max_tool_calls
@@ -622,6 +622,21 @@ async def run_specialist(
                     payload["tools"] = round_tools
                     payload["tool_choice"] = "auto"
                     payload["parallel_tool_calls"] = parallel_tool_calls
+                    # OpenAI rechaza con 400 los `tools` de esta ronda si el
+                    # modelo razona ("Function tools with reasoning_effort are
+                    # not supported... set reasoning_effort to 'none'"), y el
+                    # rechazo llega IGUAL con el campo omitido: el modelo trae
+                    # un nivel de razonamiento por defecto que no es "none", no
+                    # hace falta `OPENAI_REASONING_EFFORT` configurado para
+                    # chocar. Auditoría de roleplay (20-09-2026): con `tools`
+                    # presente en CASI toda ronda mientras hay presupuesto,
+                    # cualquier especialista con tools —catalog, detail,
+                    # checkout— fallaba en TODOS sus turnos y degradaba en
+                    # silencio a destacados genéricos o a un handoff fallido.
+                    # "none" explícito es obligatorio aquí, no opcional.
+                    payload["reasoning_effort"] = "none"
+                else:
+                    payload = with_reasoning_effort(payload)
                 # Sin tools NO se manda `tool_choice`: OpenAI rechaza con 400
                 # ("tool_choice is only allowed when tools are specified") y el
                 # agente devolvía None → el bot se quedaba mudo. Un agente sin
