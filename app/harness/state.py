@@ -96,6 +96,16 @@ class ConversationState:
     # asesor?")? Entonces un "sí" del cliente es aceptar la derivación, no charla.
     # El router solo ve el texto del cliente, no lo que ofreció el bot.
     handoff_offered: bool = False
+    # ¿El turno anterior avisó que hoy ya no se toman pedidos ("ya no estamos
+    # tomando pedidos... entrega para hoy")? Un cliente escribió "amarillas
+    # esta en lima bellavista" y "puede enviarlo por Lima centro?" como dos
+    # mensajes seguidos que llegaron en turnos separados: el primero disparó
+    # el aviso de corte, y el segundo —cobertura, sin ver el aviso— contestó
+    # "¡Sí llegamos! ¿Qué regalo quieres enviar?" justo después, como si el
+    # corte no hubiera pasado. Se recalcula cada turno igual que
+    # `handoff_offered`, así que se apaga solo en cuanto el bot deja de
+    # avisarlo.
+    same_day_blocked: bool = False
     handoff_reason: str = ""
     # Cuándo se cedió el chat (epoch). Es el ancla del releaser mientras el asesor
     # todavía no ha escrito: sin ella no hay forma de medir "lleva X sin contestar"

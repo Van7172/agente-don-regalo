@@ -251,6 +251,43 @@ async def test_coverage_resolve_con_payload_real(monkeypatch):
     assert result["user_facing"].count("¿Confirmo") == 0
 
 
+@pytest.mark.asyncio
+async def test_cobertura_no_contradice_un_corte_same_day_reciente(monkeypatch):
+    """Auditoría de roleplay (20-09-2026): un cliente mandó "amarillas está en
+    lima bellavista, verdad? puede enviarlo por Lima centro?" en mensajes
+    seguidos que el buffer partió en turnos separados. El primero disparó el
+    aviso de corte same-day; el segundo, ya en cobertura (que no sabe nada del
+    aviso), contestó "¡Sí llegamos a Lima - Cercado! ¿Qué regalo quieres
+    enviar?" a los pocos segundos — como si el corte nunca hubiera pasado.
+    Con `same_day_blocked` en el estado, la cobertura pregunta la fecha en vez
+    de invitar a seguir como si nada."""
+    import json
+    import pathlib
+
+    from app.harness import coverage as cov
+    from app.tools import adapters
+
+    crudo = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "api" / "distritos.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    async def fake_distritos(client, args):
+        return adapters.districts_payload(crudo, 3.4)
+
+    monkeypatch.setattr(cov.catalog, "distritos_cobertura", fake_distritos)
+    st = ConversationState(same_day_blocked=True)
+    result = await cov.resolve_coverage("puede enviarlo por Lima centro?", st)
+
+    assert result["structured"]["resolved_district"]
+    reply = result["user_facing"]
+    assert "qué regalo quieres enviar" not in reply.lower(), (
+        f"invita a seguir como si el corte same-day no hubiera pasado: {reply!r}"
+    )
+    assert "hoy no podemos" in reply.lower()
+
+
 def test_extract_places():
     c = extract_place_candidates("Independencia\n2da de palao")
     assert len(c) >= 1

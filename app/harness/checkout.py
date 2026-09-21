@@ -551,6 +551,9 @@ def _advance(
             return _again(state, meta, (same_day_cutoff_reply(),))
         state.date = normalized
         state.checkout_step = "schedule"
+        # Fecha real, y no es hoy: lo que sea que haya avisado el corte
+        # same-day antes en esta conversación ya quedó resuelto.
+        state.same_day_blocked = False
         return (
             state,
             f"¿En qué horario prefieres que llegue? 🕐\n"

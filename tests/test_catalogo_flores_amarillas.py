@@ -64,7 +64,11 @@ async def test_primer_turno_avisa_el_corte_sin_pdf(monkeypatch):
     assert YELLOW_FLOWERS_CATALOG_URL not in reply
     assert "Flores Amarillas" in reply
     assert "ya no estamos tomando pedidos" in reply
-    assert (await load_state(991)).campaign_slug == "flores-amarillas"
+    state = await load_state(991)
+    assert state.campaign_slug == "flores-amarillas"
+    # El próximo turno (aunque sea de cobertura, y llegue en un mensaje
+    # separado) tiene que saber que el corte same-day sigue vigente.
+    assert state.same_day_blocked is True
 
 
 def test_el_pdf_historico_sigue_enviandose_como_documento():

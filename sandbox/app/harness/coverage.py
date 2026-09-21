@@ -358,6 +358,13 @@ async def resolve_coverage(
     ask = "¿Qué regalo quieres enviar? 🎁"
     if state.chosen_product_name or state.checkout_step not in ("idle", ""):
         ask = "¿Para qué fecha lo necesitas? 📅"
+    elif state.same_day_blocked:
+        # El turno anterior avisó "ya no tomamos pedidos con entrega para
+        # hoy" — casi siempre en un mensaje separado del mismo cliente que
+        # este mismo resuelve. Invitar aquí a "¿qué regalo quieres enviar?"
+        # suena a que el corte nunca pasó; se pregunta la fecha primero, sin
+        # repetir el aviso completo que el cliente ya leyó hace segundos.
+        ask = "¿Para qué fecha lo necesitas (recuerda que hoy no podemos)? 📅"
 
     text = render_coverage(
         district=name,

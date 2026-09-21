@@ -125,6 +125,23 @@ def _offers_handoff(reply: str | None) -> bool:
     """
     return bool(reply and _ADVISOR_RE.search(reply) and "?" in reply)
 
+
+# `same_day_cutoff_reply()` y `yellow_flowers_catalog_reply()` no comparten
+# texto exacto (emoji y cierre distintos), pero SÍ este tramo: es la frase que
+# de verdad importa detectar, la que declara que hoy no se puede.
+_SAME_DAY_NOTICE_RE = re.compile(r"ya no estamos tomando pedidos", re.I)
+
+
+def _shows_same_day_cutoff(reply: str | None) -> bool:
+    """¿Esta respuesta fue el aviso de corte same-day?
+
+    Dos mensajes seguidos del cliente pueden llegar en turnos separados
+    (buffer). Si el primero disparó este aviso, el segundo —cobertura, por
+    ejemplo— no puede invitar a "¿qué regalo quieres enviar?" como si el corte
+    no hubiera pasado: sería contradecirse a los pocos segundos.
+    """
+    return bool(reply and _SAME_DAY_NOTICE_RE.search(reply))
+
 def _caption_of(messages: list) -> str | None:
     """Texto que acompaña a una imagen (`latest_user_text` lo descarta a propósito).
 
@@ -513,6 +530,16 @@ async def _run_master_body(
     # sabrá que está aceptando la derivación y no una charla. Se recalcula cada
     # turno, así que se apaga solo en cuanto el bot deja de ofrecerlo.
     state.handoff_offered = _offers_handoff(result.user_facing)
+    # A diferencia de `handoff_offered`, esto NO se recalcula cada turno: un
+    # cliente manda varios mensajes seguidos que llegan en turnos separados
+    # ("amarillas es en lima bellavista", "verdad?", "puede enviarlo por Lima
+    # centro?"), y el aviso de corte pudo salir dos turnos atrás, no en el
+    # inmediatamente anterior. Recalcularlo solo contra la ÚLTIMA respuesta
+    # apagaba la bandera en cuanto un turno intermedio no repetía el aviso,
+    # aunque el corte siguiera vigente. Se queda encendida hasta que el
+    # cierre confirma una fecha real que no es hoy (`advance_checkout`).
+    if _shows_same_day_cutoff(result.user_facing):
+        state.same_day_blocked = True
 
     trace.tools = result.tools_used
     trace.product_ids = result.product_ids
