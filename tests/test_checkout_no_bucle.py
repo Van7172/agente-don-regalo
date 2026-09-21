@@ -15,11 +15,15 @@ from app.harness.checkout import advance_checkout, parse_schedule, recognized_wi
 from app.harness.state import ConversationState
 
 HOY = date(2026, 7, 21)  # martes
+MANANA = "2026-07-22"
 
 
 def _en_paso(step: str, **kw) -> ConversationState:
     return ConversationState(
-        checkout_step=step, district="Santiago De Surco", date="2026-07-21", **kw
+        checkout_step=step,
+        district="Santiago De Surco",
+        date=kw.pop("date", MANANA),
+        **kw,
     )
 
 
@@ -192,8 +196,8 @@ def test_franja_no_disponible_no_se_confunde_con_no_entender():
 
 def test_el_chat_que_originó_esto_ahora_avanza():
     state = _en_paso("date")
-    state, _, _ = advance_checkout(state, "Hoy dia 21 de julio", today=HOY)
-    assert state.date == "2026-07-21"
+    state, _, _ = advance_checkout(state, "mañana 22 de julio", today=HOY)
+    assert state.date == MANANA
     state, _, meta = advance_checkout(state, "De 7 a 9", today=HOY)
     assert state.time_slot == "07:00 AM a 09:00 AM"
     assert not meta.get("handoff")

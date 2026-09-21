@@ -1,4 +1,4 @@
-"""La preventa de Flores Amarillas usa su PDF exclusivo, no el catálogo común."""
+"""Flores Amarillas: aviso de corte same-day (sin PDF de preventa)."""
 from __future__ import annotations
 
 import pytest
@@ -7,6 +7,7 @@ from app.harness import master as master_mod
 from app.harness.campaigns import (
     YELLOW_FLOWERS_CATALOG_URL,
     is_yellow_flowers_query,
+    yellow_flowers_catalog_reply,
 )
 from app.harness.state import clear_local_cache, load_state
 from app.services import buffer as buffer_mod
@@ -34,8 +35,15 @@ def test_no_secuestra_consultas_genericas(text):
     assert not is_yellow_flowers_query(text)
 
 
+def test_el_aviso_de_corte_no_incluye_el_pdf():
+    reply = yellow_flowers_catalog_reply()
+    assert YELLOW_FLOWERS_CATALOG_URL not in reply
+    assert "Flores Amarillas" in reply
+    assert "ya no estamos tomando pedidos" in reply
+
+
 @pytest.mark.asyncio
-async def test_primer_turno_entrega_solo_el_catalogo_exclusivo(monkeypatch):
+async def test_primer_turno_avisa_el_corte_sin_pdf(monkeypatch):
     async def no_llm(*_args, **_kwargs):
         raise AssertionError("Flores Amarillas no debe depender del LLM")
 
@@ -53,12 +61,14 @@ async def test_primer_turno_entrega_solo_el_catalogo_exclusivo(monkeypatch):
     )
 
     assert reply is not None
-    assert YELLOW_FLOWERS_CATALOG_URL in reply
-    assert "catálogo exclusivo" in reply
+    assert YELLOW_FLOWERS_CATALOG_URL not in reply
+    assert "Flores Amarillas" in reply
+    assert "ya no estamos tomando pedidos" in reply
     assert (await load_state(991)).campaign_slug == "flores-amarillas"
 
 
-def test_el_pdf_se_convierte_en_documento_de_whatsapp():
+def test_el_pdf_historico_sigue_enviandose_como_documento():
+    """Si algún mensaje viejo aún lleva el enlace, WhatsApp lo manda como PDF."""
     segments = split_reply(
         "Aquí está el catálogo:\n\n"
         f"{YELLOW_FLOWERS_CATALOG_URL}\n\n"

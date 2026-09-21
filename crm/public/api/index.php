@@ -8,6 +8,16 @@ declare(strict_types=1);
  */
 
 $config = require dirname(__DIR__, 2) . '/bootstrap.php';
+// Un despliegue puede actualizar este front controller antes que bootstrap.php.
+// El asistente de venta usa AgentClient, pero el inbox completo no debe caer con
+// "Class AgentClient not found" durante esa ventana. Al cargarlo aquí también
+// mantenemos el token exclusivamente en la llamada servidor-a-servidor.
+if (!class_exists('AgentClient', false)) {
+    $agentClientFile = dirname(__DIR__, 2) . '/src/AgentClient.php';
+    if (is_file($agentClientFile)) {
+        require_once $agentClientFile;
+    }
+}
 Http::cors();
 
 $method = Http::method();

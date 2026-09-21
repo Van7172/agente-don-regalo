@@ -26,6 +26,8 @@ $service = saleAiSource('app/services/sale_assistant.py');
 $internal = saleAiSource('app/api_internal.py');
 
 saleAiRequires($api, '/sale-suggestion', 'Falta el endpoint de sugerencia');
+saleAiRequires($api, "class_exists('AgentClient', false)", 'El endpoint debe tolerar bootstrap antiguo');
+saleAiRequires($api, "require_once \$agentClientFile", 'Falta carga de respaldo de AgentClient');
 saleAiRequires($api, "new DateTimeImmutable('today'", 'La extracción debe limitarse a hoy');
 saleAiRequires($api, "'/internal/sales/extract'", 'El CRM no consulta al agente');
 saleAiRequires($repository, 'function getMessagesBetween', 'Falta consulta acotada por fecha');

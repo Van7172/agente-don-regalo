@@ -43,6 +43,10 @@ from app.harness.campaigns import (
     is_yellow_flowers_query,
     yellow_flowers_catalog_reply,
 )
+from app.harness.same_day import (
+    asks_for_same_day_delivery,
+    same_day_cutoff_reply,
+)
 from app.harness.product_links import (
     extract_product_url_slug,
     pick_by_url_slug,
@@ -559,12 +563,10 @@ async def _handle(
 ) -> AgentResult:
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
 
-    # ── Preventa Flores Amarillas: catálogo exclusivo en PDF ─────
-    # Esta campaña todavía vive fuera de la API. Una búsqueda normal mezclaría
-    # ramos del catálogo permanente y dejaría fuera opciones exclusivas del PDF.
-    # Va antes del saludo y del cierre: "Hola, ¿tienen flores amarillas?" debe
-    # recibir el catálogo en el primer turno, y una búsqueda nueva puede cortar
-    # limpiamente un cierre que el cliente ya no quiere continuar.
+    # ── Flores Amarillas: corte de capacidad same-day ────────────
+    # La campaña ya no admite entrega para hoy. Va antes del saludo y del
+    # cierre: "Hola, ¿tienen flores amarillas?" recibe el aviso en el primer
+    # turno, sin mezclar el PDF de preventa ni el catálogo permanente.
     if intent != "escalate" and is_yellow_flowers_query(turn.text):
         return AgentResult(
             user_facing=yellow_flowers_catalog_reply(),
@@ -574,6 +576,17 @@ async def _handle(
                 "menu_depth": 0,
             },
         )
+
+    # ── Corte de entrega para hoy ─────────────────────────────────
+    # Producción/delivery ya no aceptan same-day. Fuera del paso de fecha del
+    # cierre (que tiene su propio rechazo) avisamos aquí para no dejar que el
+    # catálogo siga como si "para hoy" fuera viable.
+    if (
+        intent != "escalate"
+        and asks_for_same_day_delivery(turn.text)
+        and state.checkout_step not in ("date", "schedule")
+    ):
+        return AgentResult(user_facing=same_day_cutoff_reply())
 
     # ── RUC, factura y recojo: datos oficiales, sin LLM ──────────
     # Son datos exactos y estables: no vale la pena arriesgar que un modelo

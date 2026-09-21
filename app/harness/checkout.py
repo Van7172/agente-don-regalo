@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
 from app.harness.holidays import closed_delivery_reply, is_closed_delivery
+from app.harness.same_day import is_same_day_delivery, same_day_cutoff_reply
 from app.harness.orders import (
     display_fecha,
     lima_today,
@@ -528,7 +529,7 @@ def _advance(
                 meta,
                 (
                     f"Esa fecha ({display_fecha(normalized)}) ya pasó 😅 "
-                    f"¿Para qué día lo necesitas? Puede ser hoy mismo o *{ejemplo}*.",
+                    f"¿Para qué día lo necesitas? Puede ser *mañana* o *{ejemplo}*.",
                     f"¿Me la escribes como día/mes? Por ejemplo *{ejemplo}* 📅",
                 ),
             )
@@ -538,14 +539,16 @@ def _advance(
                 meta,
                 (
                     f"No logré leer una fecha en «{_echo(text)}» 😅 ¿Me la pones "
-                    f"en números, día/mes? Por ejemplo *{ejemplo}*, o dime *hoy* "
-                    f"o *mañana*.",
+                    f"en números, día/mes? Por ejemplo *{ejemplo}*, o dime "
+                    f"*mañana*.",
                     f"Vamos con lo más simple: escríbeme solo el día y el mes, "
                     f"así → *{ejemplo}* 📅",
                 ),
             )
         if is_closed_delivery(normalized):
             return _again(state, meta, (closed_delivery_reply(),))
+        if is_same_day_delivery(normalized, today=effective_today):
+            return _again(state, meta, (same_day_cutoff_reply(),))
         state.date = normalized
         state.checkout_step = "schedule"
         return (
@@ -557,6 +560,11 @@ def _advance(
         )
 
     if step == "schedule":
+        # Un cierre abierto de antes del corte no puede seguir con "hoy".
+        if is_same_day_delivery(state.date, today=effective_today):
+            state.date = ""
+            state.checkout_step = "date"
+            return state, same_day_cutoff_reply(), meta
         opciones = schedule_options_for(state.date)
         if is_courtesy_text(text):
             return _courtesy(
@@ -591,6 +599,8 @@ def _advance(
                     )
                 if is_closed_delivery(tardia):
                     return _again(state, meta, (closed_delivery_reply(),))
+                if is_same_day_delivery(tardia, today=efectivo):
+                    return _again(state, meta, (same_day_cutoff_reply(),))
                 etiqueta = f"{weekday_name(tardia)} {display_fecha(tardia)}".strip()
                 if tardia == state.date:
                     # Confirma lo que ya teníamos: se acusa y NO gasta reintento.

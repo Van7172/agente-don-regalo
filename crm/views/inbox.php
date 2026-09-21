@@ -141,6 +141,10 @@
                  había terminado, hasta que el releaser lo pasaba a AI a los 20 min
                  por su cuenta. Quien de verdad quiere quedarse el chat tiene
                  «Mantener humano», que sí frena al releaser. -->
+            <label class="keep-human-label" id="keep-human-label" title="Evita el auto-retorno del bot" hidden>
+              <input type="checkbox" id="keep-human" />
+              Mantener humano
+            </label>
             <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Don Regalo</button>
             <button type="button" class="icon-btn icon-btn-outline" id="btn-lead" title="Resumen del lead" aria-label="Resumen del lead" aria-expanded="false">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -189,15 +193,6 @@
               <line x1="12" y1="17" x2="12.01" y2="17"></line>
             </svg>
             <span id="window-banner-text"></span>
-          </div>
-
-          <div class="human-return-banner" id="human-return-banner">
-            <span>Cuando termines → <strong>Devolver a Don Regalo</strong> para que el bot siga el chat.</span>
-            <label class="keep-human-label" title="Evita el auto-retorno del bot">
-              <input type="checkbox" id="keep-human" />
-              Mantener humano
-            </label>
-            <button type="button" class="btn btn-secondary" id="btn-ai-banner">Devolver a Don Regalo</button>
           </div>
 
           <!-- Mensaje al que se está respondiendo (clic derecho → Responder) -->

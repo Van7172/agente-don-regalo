@@ -51,9 +51,8 @@
     btnChatActions: document.getElementById("btn-chat-actions"),
     btnHuman: document.getElementById("btn-human"),
     btnAi: document.getElementById("btn-ai"),
-    btnAiBanner: document.getElementById("btn-ai-banner"),
     keepHuman: document.getElementById("keep-human"),
-    humanReturnBanner: document.getElementById("human-return-banner"),
+    keepHumanLabel: document.getElementById("keep-human-label"),
     btnTake: document.getElementById("btn-take"),
     btnLead: document.getElementById("btn-lead"),
     btnLeadClose: document.getElementById("btn-lead-close"),
@@ -1006,6 +1005,7 @@
       ? "Tomar de todas formas"
       : "Tomar conversación";
     el.btnAi.hidden = !isHuman;
+    if (el.keepHumanLabel) el.keepHumanLabel.hidden = !isHuman;
     el.composerWrap.hidden = !isHuman;
     el.aiBanner.hidden = isHuman;
 
@@ -2342,11 +2342,6 @@
   el.btnHuman.addEventListener("click", takeConversation);
   el.btnTake.addEventListener("click", takeConversation);
   el.btnAi.addEventListener("click", () => setMode("AI", { human_support: false, keep_human: false }));
-  if (el.btnAiBanner) {
-    el.btnAiBanner.addEventListener("click", () =>
-      setMode("AI", { human_support: false, keep_human: false })
-    );
-  }
   if (el.keepHuman) {
     el.keepHuman.addEventListener("change", () => setKeepHuman(el.keepHuman.checked));
   }

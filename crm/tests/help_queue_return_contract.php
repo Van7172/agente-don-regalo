@@ -68,6 +68,13 @@ requiresText($view, 'Devolver a Don Regalo', 'Falta la salida hacia el bot');
 requiresText($view, 'Mantener humano', 'Sin esto no hay forma de quedarse el chat');
 requiresText($js, 'keep_human: !!on', '«Mantener humano» debe fijar keep_human');
 
+// 4. El aviso encima del compositor era redundante: "Devolver a Don Regalo"
+// ya vive en la cabecera del chat. «Mantener humano» se quedó ahí arriba.
+forbidsText($view, 'human-return-banner', 'El aviso del compositor no debe reaparecer');
+forbidsText($view, 'btn-ai-banner', 'El botón duplicado del compositor no debe reaparecer');
+forbidsText($view, 'Cuando termines', 'El texto del aviso redundante no debe reaparecer');
+requiresText($view, 'id="keep-human-label"', '«Mantener humano» debe vivir en la cabecera');
+
 $css = source('public/assets/app.css');
 requiresText($css, '.rail-chip .chip-dismiss', 'Falta el estilo de la × del chip');
 

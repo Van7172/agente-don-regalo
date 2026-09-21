@@ -37,10 +37,10 @@ def is_yellow_flowers_query(text: str) -> bool:
 
 
 def yellow_flowers_catalog_reply() -> str:
-    """El enlace va solo en su línea para que el canal lo envíe como PDF."""
+    """Aviso de corte: ya no hay capacidad de entrega same-day para la campaña."""
     return (
-        "¡Claro! 🌻 Tenemos un catálogo exclusivo de preventa para "
-        "*Flores Amarillas*. Aquí puedes ver todas las opciones disponibles:\n\n"
-        f"{YELLOW_FLOWERS_CATALOG_URL}\n\n"
-        "Cuando elijas una, envíame el nombre o una captura y te ayudo con tu pedido 😊"
+        "Por capacidad de producción y delivery, *ya no estamos tomando pedidos "
+        "de Flores Amarillas con entrega para hoy* 🌻\n"
+        "Si quieres, te ayudo a coordinar una entrega para *mañana* u otra fecha.\n"
+        "¿Te parece bien avanzar con otra fecha?"
     )
