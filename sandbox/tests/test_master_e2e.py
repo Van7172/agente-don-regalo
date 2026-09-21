@@ -148,6 +148,56 @@ async def test_un_producto_ya_mostrado_no_se_repite(harness, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_promesa_sin_productos_se_rescata_con_el_catalogo_real(harness, monkeypatch):
+    """Auditoría de roleplay (20-09-2026): el especialista de catálogo, con
+    `max_tool_calls=1`, gastó su única llamada en `explorar_catalogo` (para
+    orientarse) en vez de buscar productos, y aun así remató con "¡Genial! Te
+    muestro nuestros terrarios disponibles 🌿" — sin ni un producto detrás. No
+    era una respuesta vacía (el rescate de "el especialista no respondió" no
+    corre) ni un menú (`_own_the_menu` no tiene nada que reescribir): la
+    promesa vacía salía tal cual al cliente."""
+    import pathlib
+
+    navegacion = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "api" / "catalogo_navegacion.json")
+        .read_text(encoding="utf-8")
+    )
+
+    async def fake_execute_tool_master(name, args):
+        if name == "explorar_catalogo":
+            return json.dumps(navegacion, ensure_ascii=False)
+        if name == "catalogo_categoria":
+            return json.dumps(CATALOGO, ensure_ascii=False)
+        raise AssertionError(f"tool inesperada en el rescate: {name}")
+
+    monkeypatch.setattr(master_mod, "execute_tool", fake_execute_tool_master)
+
+    async def fake_execute_tool_specialist(name, args):
+        # La taxonomía no trae productos: si el especialista gasta su única
+        # tool call aquí (justo el bug), no debe absorber ningún artifact.
+        harness["tool_args"].append((name, args))
+        return json.dumps(navegacion, ensure_ascii=False)
+
+    monkeypatch.setattr(agent_mod, "execute_tool", fake_execute_tool_specialist)
+
+    _mock_llm(monkeypatch, harness, [
+        _tool_call("explorar_catalogo", {}),
+        _final("¡Genial! Te muestro nuestros desayunos disponibles 🎁"),
+    ])
+
+    reply = await master_mod.run_master(
+        [{"role": "user", "content": "Quiero ver desayunos"}],
+        wa_id="51999",
+        conversation_id=1,
+    )
+
+    assert reply is not None
+    assert "Terrario Familia Panditas" in reply or "Ramo de Girasoles" in reply
+    state = await load_state(1)
+    assert state.shown_product_ids, "la promesa vacía se quedó sin rescatar"
+
+
+@pytest.mark.asyncio
 async def test_el_primer_saludo_es_la_presentacion_sin_llm(harness, monkeypatch):
     """El primer contacto se presenta. Es plantilla: no gasta una llamada al LLM."""
     from app.prompts.playbooks import WELCOME

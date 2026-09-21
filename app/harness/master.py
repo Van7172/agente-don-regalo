@@ -686,17 +686,15 @@ async def _handle(
     return await _run_specialty(intent, turn, state, extra_system=politica, **ctx)
 
 
-async def _answer_without_model(
-    intent: str, turn: Turn, state: ConversationState, **ctx
+async def _deterministic_products(
+    intent: str, turn: Turn, state: ConversationState
 ) -> AgentResult | None:
-    """Contesta sin LLM cuando el especialista no pudo. `None` si no hay forma.
+    """Productos REALES sin modelo, si el mensaje da para encontrarlos.
 
     El catálogo no necesita un modelo: la taxonomía, la categoría y los
     productos son llamadas a la API, y el listado lo arma `compose_product_reply`
     con precios y fotos reales. Es el camino MÁS seguro contra alucinaciones que
-    hay en este harness, no el menos — justo el que se estaba desperdiciando.
-
-    Tres ramas, cada una por un motivo distinto:
+    hay en este harness, no el menos.
 
     - **Nombró una categoría** → esa, venga el intent que venga. Es la señal más
       fuerte que puede dar un cliente y la regla de que la categoría es un
@@ -704,10 +702,9 @@ async def _answer_without_model(
     - **Pidió el catálogo o solo saludó** → lo más pedido. "Enséñame lo que
       tienes" se responde enseñando; en una tienda de regalos un saludo suelto
       también.
-    - **Cualquier otra cosa** → se cede a un humano. No sabemos si preguntó por
-      los tiempos de entrega, por el Yape o por si se puede cambiar el globo, y
-      sin el modelo no hay manera de saberlo. Inventar es peor que ceder, y es
-      la misma regla de siempre: un fallo nuestro se deriva, no se narra.
+
+    `None` si ninguna de las dos aplica: quien llama decide qué hacer entonces
+    (ceder a un humano, o dejar la respuesta del modelo tal cual).
     """
     options = await _taxonomia()
     categoria = match_category(turn.text, options) if options else None
@@ -742,6 +739,25 @@ async def _answer_without_model(
                 artifacts=productos,
                 state_patch={"recent_options": [], "menu_depth": 0},
             )
+
+    return None
+
+
+async def _answer_without_model(
+    intent: str, turn: Turn, state: ConversationState, **ctx
+) -> AgentResult | None:
+    """Contesta sin LLM cuando el especialista no pudo. `None` si no hay forma.
+
+    Dos rescates deterministas (`_deterministic_products`) y, si ninguno
+    encontró nada, un tercero: **cualquier otra cosa** se cede a un humano. No
+    sabemos si preguntó por los tiempos de entrega, por el Yape o por si se
+    puede cambiar el globo, y sin el modelo no hay manera de saberlo. Inventar
+    es peor que ceder, y es la misma regla de siempre: un fallo nuestro se
+    deriva, no se narra.
+    """
+    rescate = await _deterministic_products(intent, turn, state)
+    if rescate is not None:
+        return rescate
 
     conversation_id = ctx.get("conversation_id")
     if conversation_id is None:
@@ -1551,6 +1567,28 @@ async def _run_specialty(
     # nombres son los reales y la numeración es la que luego sabemos resolver.
     if output_policy == "catalog" and not result.artifacts:
         await _own_the_menu(result, turn, state)
+
+    # Ni menú ni productos: el modelo prometió algo ("¡Genial! Te muestro
+    # nuestros terrarios disponibles 🌿") y no lo entregó — se quedó sin tool
+    # call (gastó su único cupo en `explorar_catalogo` en vez de buscar) o
+    # simplemente no llamó ninguna. No es el turno "el especialista no
+    # respondió" (`user_facing` no está vacío, así que el rescate de
+    # `_answer_without_model` en `_run_master_body` nunca corre) ni un menú
+    # (`_own_the_menu` ya lo habría resuelto arriba). Sin esto la promesa
+    # vacía salía tal cual al cliente. Mismo rescate determinista, sin la
+    # rama de escalar: el modelo SÍ dijo algo, así que si ni categoría ni
+    # destacados encuentran nada, se deja su respuesta en vez de ceder a un
+    # humano por una frase que a lo mejor era una pregunta razonable.
+    if (
+        output_policy == "catalog"
+        and not result.artifacts
+        and not _looks_like_menu(result.user_facing)
+    ):
+        rescate = await _deterministic_products(intent, turn, state)
+        if rescate is not None:
+            result.user_facing = rescate.user_facing
+            result.artifacts = rescate.artifacts
+            result.state_patch = {**result.state_patch, **(rescate.state_patch or {})}
 
     _capture_choice(output_policy, turn, state, result)
 
