@@ -10,7 +10,7 @@ class InboundMessage:
     wa_id: str
     contact_name: str
     wa_message_id: str
-    message_type: str  # text|image|audio|document|location|unknown
+    message_type: str  # text|image|audio|document|location|order|reaction|button|interactive|unknown
     text: str = ""
     media_id: str | None = None
     mime_type: str | None = None
@@ -20,6 +20,57 @@ class InboundMessage:
     # primer mensaje de la conversación: si no se captura aquí, se pierde.
     referral: dict[str, Any] | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+def format_order_text(order: dict[str, Any]) -> str:
+    """Texto legible a partir del carrito que el cliente comparte desde el
+    catálogo de WhatsApp (mensaje tipo `order`).
+
+    Sin esto el mensaje caía al genérico `[Mensaje tipo order]` — un marcador
+    interno, no el pedido — y el bot contestaba solo a lo que el cliente
+    escribió aparte ("¿hacen envíos al Callao?") ignorando el carrito entero
+    que acababa de adjuntar. Meta NO manda el nombre del producto en este
+    webhook, solo `product_retailer_id` (el SKU que el negocio cargó al
+    catálogo): se muestra tal cual, sin inventar un nombre que no vino.
+    """
+    items = order.get("product_items") or []
+    if not isinstance(items, list) or not items:
+        return ""
+
+    lines = ["🛒 El cliente compartió un carrito del catálogo:"]
+    total = 0.0
+    currency = ""
+    total_conocido = True
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        qty_raw = item.get("quantity")
+        try:
+            qty = int(qty_raw) if qty_raw is not None else 1
+        except (TypeError, ValueError):
+            qty = 1
+        retailer_id = str(item.get("product_retailer_id") or "").strip() or "sin id"
+        price_raw = item.get("item_price")
+        currency = str(item.get("currency") or currency or "").strip()
+        try:
+            price = float(price_raw) if price_raw is not None else None
+        except (TypeError, ValueError):
+            price = None
+        if price is not None:
+            total += price * qty
+            lines.append(f"- {qty}x id_catalogo={retailer_id} ({currency} {price:.2f} c/u)")
+        else:
+            total_conocido = False
+            lines.append(f"- {qty}x id_catalogo={retailer_id}")
+
+    if total_conocido and total:
+        lines.append(f"Total del carrito: {currency} {total:.2f}")
+
+    nota = str(order.get("text") or "").strip()
+    if nota:
+        lines.append(f'Nota del cliente en el carrito: "{nota}"')
+
+    return "\n".join(lines)
 
 
 def format_location_text(location: dict[str, Any]) -> str:
@@ -97,6 +148,8 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[InboundMessage]:
                         text = (interactive.get("button_reply") or {}).get("title", "")
                     elif interactive.get("type") == "list_reply":
                         text = (interactive.get("list_reply") or {}).get("title", "")
+                elif mtype == "order":
+                    text = format_order_text(msg.get("order") or {})
 
                 context = msg.get("context") or {}
                 quoted_wa_id = context.get("id")
