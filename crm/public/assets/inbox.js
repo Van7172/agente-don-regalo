@@ -47,6 +47,8 @@
     chatDot: document.getElementById("chat-dot"),
     chatState: document.getElementById("chat-state-label"),
     btnBack: document.getElementById("btn-back"),
+    chatActions: document.getElementById("chat-actions"),
+    btnChatActions: document.getElementById("btn-chat-actions"),
     btnHuman: document.getElementById("btn-human"),
     btnAi: document.getElementById("btn-ai"),
     btnAiBanner: document.getElementById("btn-ai-banner"),
@@ -101,6 +103,9 @@
     saleDialogClose: document.getElementById("sale-dialog-close"),
     saleCancel: document.getElementById("sale-cancel"),
     saleSubmit: document.getElementById("sale-submit"),
+    saleAiRefresh: document.getElementById("sale-ai-refresh"),
+    saleAiStatus: document.getElementById("sale-ai-status"),
+    saleAiReview: document.getElementById("sale-ai-review"),
 
     // Notas internas y seguimientos.
     noteForm: document.getElementById("note-form"),
@@ -141,6 +146,40 @@
   let replyTo = null; // { waId, text } del mensaje que el asesor está citando
   let menuTarget = null; // fila del hilo sobre la que se abrió el menú
 
+  const mobileLayout = window.matchMedia("(max-width: 900px)");
+
+  // 100vh incluye el espacio que tapa el teclado en varios navegadores móviles.
+  // VisualViewport sí representa lo que el asesor tiene realmente delante.
+  function syncMobileViewport() {
+    const height = window.visualViewport?.height || window.innerHeight;
+    document.documentElement.style.setProperty("--crm-viewport-height", `${Math.round(height)}px`);
+  }
+
+  function closeChatActions() {
+    if (!el.chatActions || !el.btnChatActions) return;
+    el.chatActions.classList.remove("is-open");
+    el.btnChatActions.setAttribute("aria-expanded", "false");
+  }
+
+  function setMobileChat(open, { pushHistory = false } = {}) {
+    const wasOpen = root.dataset.mobileChat === "true";
+    root.dataset.mobileChat = open ? "true" : "false";
+    document.body.classList.toggle("mobile-chat-open", open && mobileLayout.matches);
+
+    if (!open) {
+      closeChatActions();
+      el.leadPanel?.classList.remove("mobile-open");
+      el.btnLead?.setAttribute("aria-expanded", "false");
+    }
+
+    if (open && pushHistory && mobileLayout.matches && !wasOpen) {
+      window.history.pushState(
+        { ...(window.history.state || {}), crmMobileChat: true },
+        ""
+      );
+    }
+  }
+
   // Envío optimista, como WhatsApp: al pulsar Enter el mensaje aparece YA en el
   // hilo con el relojito y el input queda libre. El envío real ocurre detrás.
   // ¿La ficha de la venta va plegada? Preferencia del asesor, no del chat: si la
@@ -151,6 +190,7 @@
   let pendingSeq = 0;
   const sendQueues = new Map(); // convId → promesa encadenada (conserva el orden)
   let lastThread = null; // último {conv, messages, lead} pintado, para repintar
+  let saleSuggestionRequest = 0; // descarta respuestas de un chat ya cerrado/cambiado
 
   /** Encadena por conversación: dos Enter seguidos llegan en orden, no a la vez. */
   function enqueueSend(convId, task) {
@@ -1268,16 +1308,127 @@
 
   // ── venta registrada por el asesor ──────────────────────────
 
+  const SALE_FIELDS = {
+    producto: "Producto",
+    monto_sol: "Monto",
+    envio_sol: "Envío",
+    distrito: "Distrito",
+    pedido_temporal_id: "Pedido temporal",
+    fecha: "Fecha de entrega",
+    horario: "Horario",
+    motivo: "Nota e indicaciones",
+  };
+
+  function saleField(name) {
+    return el.saleForm?.elements?.namedItem(name) || null;
+  }
+
+  function resetSaleAssistant() {
+    saleSuggestionRequest += 1;
+    el.saleForm?.querySelectorAll(".is-ai-filled").forEach((input) =>
+      input.classList.remove("is-ai-filled")
+    );
+    if (el.saleAiStatus) {
+      el.saleAiStatus.classList.remove("is-loading");
+      el.saleAiStatus.textContent = "";
+    }
+    if (el.saleAiReview) {
+      el.saleAiReview.hidden = true;
+      el.saleAiReview.innerHTML = "";
+    }
+  }
+
+  function saleValueLabel(name, value) {
+    if (name === "monto_sol" || name === "envio_sol") {
+      return `S/ ${Number(value).toFixed(2)}`;
+    }
+    return String(value);
+  }
+
+  function renderSaleSuggestion(data) {
+    const fields = data?.fields || {};
+    const evidence = data?.evidence || {};
+    const found = [];
+
+    Object.entries(SALE_FIELDS).forEach(([name, label]) => {
+      const value = fields[name];
+      if (value === null || value === undefined || value === "") return;
+      const input = saleField(name);
+      // Volver a analizar nunca pisa lo que el asesor ya corrigió a mano.
+      if (input && !String(input.value || "").trim()) {
+        input.value = String(value);
+        input.classList.add("is-ai-filled");
+      }
+      const quote = Array.isArray(evidence[name]) ? evidence[name][0]?.quote : "";
+      found.push({ name, label, value, quote: quote || "" });
+    });
+
+    const missing = Object.keys(SALE_FIELDS).filter(
+      (name) => fields[name] === null || fields[name] === undefined || fields[name] === ""
+    );
+    const messageCount = Number(data?.meta?.message_count || 0);
+    el.saleAiStatus.classList.remove("is-loading");
+    el.saleAiStatus.textContent = found.length
+      ? `Encontré ${found.length} dato${found.length === 1 ? "" : "s"} en ${messageCount} mensaje${messageCount === 1 ? "" : "s"} de hoy.`
+      : `Revisé ${messageCount} mensaje${messageCount === 1 ? "" : "s"} de hoy, pero no encontré datos seguros para completar.`;
+
+    const rows = found
+      .map(
+        (item) => `<li><strong>${esc(item.label)}:</strong> ${esc(saleValueLabel(item.name, item.value))}` +
+          (item.quote ? `<span class="sale-ai-evidence">“${esc(item.quote)}”</span>` : "") +
+          `</li>`
+      )
+      .join("");
+    const missingText = missing.length
+      ? `<p class="sale-ai-missing"><strong>Completa manualmente:</strong> ${missing.map((name) => esc(SALE_FIELDS[name])).join(", ")}.</p>`
+      : `<p class="sale-ai-missing"><strong>Todos los campos tienen una sugerencia.</strong> Verifícalos antes de confirmar.</p>`;
+
+    el.saleAiReview.innerHTML =
+      `<div class="sale-ai-review-title">Detalle sugerido para confirmar</div>` +
+      (rows ? `<ul class="sale-ai-found">${rows}</ul>` : "") +
+      missingText;
+    el.saleAiReview.hidden = false;
+  }
+
+  async function suggestSale(convId) {
+    if (!el.saleAiStatus || !el.saleAiRefresh) return;
+    const requestId = ++saleSuggestionRequest;
+    el.saleAiRefresh.disabled = true;
+    el.saleAiStatus.classList.add("is-loading");
+    el.saleAiStatus.textContent = "Analizando la conversación de hoy…";
+    el.saleAiReview.hidden = true;
+    el.saleAiReview.innerHTML = "";
+    try {
+      const data = await api(`/conversations/${convId}/sale-suggestion`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (requestId !== saleSuggestionRequest || !el.saleDialog.open || selectedId !== convId) return;
+      renderSaleSuggestion(data);
+    } catch (err) {
+      if (requestId !== saleSuggestionRequest || !el.saleDialog.open) return;
+      el.saleAiStatus.classList.remove("is-loading");
+      el.saleAiStatus.textContent =
+        `No pude analizar el chat: ${err.message || String(err)} Puedes completar el formulario manualmente.`;
+    } finally {
+      if (requestId === saleSuggestionRequest) el.saleAiRefresh.disabled = false;
+    }
+  }
+
   function openSaleDialog() {
     if (selectedId == null || !el.saleDialog) return;
+    const convId = selectedId;
     el.saleForm.reset();
+    resetSaleAssistant();
     el.saleDialogError.hidden = true;
     el.saleDialogError.textContent = "";
     el.saleDialogLead.textContent = lastThread
       ? `Cliente: ${displayName(lastThread.conv)} · ${lastThread.conv.contact?.wa_id || ""}`
       : "";
     el.saleDialog.showModal();
-    document.getElementById("sale-producto")?.focus();
+    // Corre en paralelo mientras el asesor abre/revisa el formulario. No se
+    // enfoca un input para evitar levantar el teclado y tapar el resumen móvil.
+    suggestSale(convId);
   }
 
   async function submitSale(event) {
@@ -1297,6 +1448,7 @@
         method: "POST",
         body: JSON.stringify(data),
       });
+      saleSuggestionRequest += 1;
       el.saleDialog.close();
       listSig = "";
       await Promise.all([loadThread(), loadList()]);
@@ -1550,7 +1702,9 @@
   function select(id) {
     selectedId = id;
     threadSig = "";
-    root.dataset.mobileChat = "true";
+    setMobileChat(true, { pushHistory: true });
+    closeChatActions();
+    el.leadPanel?.classList.remove("mobile-open");
     clearPendingFiles();
     clearReplyTo(); // la cita es de un mensaje de ESE chat, no del nuevo
     hideMsgMenu();
@@ -2038,8 +2192,18 @@
   }
 
   function toggleLeadPanel(force) {
+    if (mobileLayout.matches) {
+      const isOpen = el.leadPanel.classList.contains("mobile-open");
+      const close = force === true ? true : force === false ? false : isOpen;
+      el.leadPanel.classList.toggle("mobile-open", !close);
+      el.btnLead?.setAttribute("aria-expanded", close ? "false" : "true");
+      closeChatActions();
+      return;
+    }
+
     const collapsed = force ?? !el.leadPanel.classList.contains("collapsed");
     el.leadPanel.classList.toggle("collapsed", collapsed);
+    el.btnLead?.setAttribute("aria-expanded", collapsed ? "false" : "true");
     try {
       localStorage.setItem("dr.leadPanelCollapsed", collapsed ? "1" : "0");
     } catch {
@@ -2188,8 +2352,25 @@
   }
   el.btnLead.addEventListener("click", () => toggleLeadPanel());
   el.btnLeadClose.addEventListener("click", () => toggleLeadPanel(true));
+  if (el.btnChatActions) {
+    el.btnChatActions.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = !el.chatActions.classList.contains("is-open");
+      el.chatActions.classList.toggle("is-open", open);
+      el.btnChatActions.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+  if (el.chatActions) {
+    el.chatActions.addEventListener("click", (e) => {
+      if (e.target.closest("button")) closeChatActions();
+    });
+  }
   el.btnBack.addEventListener("click", () => {
-    root.dataset.mobileChat = "false";
+    if (mobileLayout.matches && window.history.state?.crmMobileChat) {
+      window.history.back();
+    } else {
+      setMobileChat(false);
+    }
   });
 
   // Los navegadores bloquean audio y notificaciones hasta que el usuario
@@ -2264,10 +2445,15 @@
   // Cerrar el menú con un clic fuera, Escape o al hacer scroll del hilo.
   document.addEventListener("click", (e) => {
     if (!el.msgMenu.hidden && !e.target.closest("#msg-menu")) hideMsgMenu();
+    if (el.chatActions?.classList.contains("is-open") && !e.target.closest(".chat-actions")) {
+      closeChatActions();
+    }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (!el.msgMenu.hidden) hideMsgMenu();
+    if (el.leadPanel?.classList.contains("mobile-open")) toggleLeadPanel(true);
+    else if (el.chatActions?.classList.contains("is-open")) closeChatActions();
+    else if (!el.msgMenu.hidden) hideMsgMenu();
     else if (replyTo) clearReplyTo();
   });
   el.thread.addEventListener("scroll", hideMsgMenu, { passive: true });
@@ -2341,9 +2527,27 @@
 
   if (el.btnSale) el.btnSale.addEventListener("click", openSaleDialog);
   if (el.saleForm) el.saleForm.addEventListener("submit", submitSale);
-  if (el.saleCancel) el.saleCancel.addEventListener("click", () => el.saleDialog.close());
+  if (el.saleForm) {
+    el.saleForm.addEventListener("input", (e) => {
+      e.target.closest?.(".is-ai-filled")?.classList.remove("is-ai-filled");
+    });
+  }
+  if (el.saleAiRefresh) {
+    el.saleAiRefresh.addEventListener("click", () => {
+      if (selectedId != null) suggestSale(selectedId);
+    });
+  }
+  if (el.saleCancel) {
+    el.saleCancel.addEventListener("click", () => {
+      saleSuggestionRequest += 1;
+      el.saleDialog.close();
+    });
+  }
   if (el.saleDialogClose) {
-    el.saleDialogClose.addEventListener("click", () => el.saleDialog.close());
+    el.saleDialogClose.addEventListener("click", () => {
+      saleSuggestionRequest += 1;
+      el.saleDialog.close();
+    });
   }
 
   if (el.noteForm) el.noteForm.addEventListener("submit", submitNote);
@@ -2380,11 +2584,32 @@
     });
   }
 
+  window.addEventListener("popstate", () => setMobileChat(false));
+  window.addEventListener("resize", syncMobileViewport, { passive: true });
+  window.visualViewport?.addEventListener("resize", syncMobileViewport, { passive: true });
+  mobileLayout.addEventListener("change", () => {
+    document.body.classList.toggle(
+      "mobile-chat-open",
+      mobileLayout.matches && root.dataset.mobileChat === "true"
+    );
+    closeChatActions();
+    el.leadPanel?.classList.remove("mobile-open");
+    el.btnLead?.setAttribute("aria-expanded", "false");
+    syncMobileViewport();
+  });
+  syncMobileViewport();
+
   try {
     if (localStorage.getItem("dr.leadPanelCollapsed") === "1") toggleLeadPanel(true);
     saleCollapsed = localStorage.getItem("dr.saleCollapsed") === "1";
   } catch {
     /* sin localStorage: panel abierto por defecto */
+  }
+  if (!mobileLayout.matches) {
+    el.btnLead?.setAttribute(
+      "aria-expanded",
+      el.leadPanel.classList.contains("collapsed") ? "false" : "true"
+    );
   }
 
   loadList();

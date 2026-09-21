@@ -36,6 +36,15 @@ class ContentDraftBody(BaseModel):
     variantes: int = 3
 
 
+class SaleSuggestionBody(BaseModel):
+    """Mensajes del día que el CRM autoriza analizar para una venta."""
+
+    conversation_id: int
+    today: str
+    timezone: str = "America/Lima"
+    messages: list[dict]
+
+
 class OutboxSendBody(BaseModel):
     outbox_id: int | None = None
     wa_id: str
@@ -177,6 +186,25 @@ async def content_draft(
         "tono": body.tono,
         "variantes": variantes,
     }
+
+
+@router.post("/sales/extract")
+async def extract_sale(
+    body: SaleSuggestionBody,
+    x_agent_token: str | None = Header(default=None),
+):
+    """Sugiere campos de venta desde el chat de hoy; no registra nada."""
+    _check_token(x_agent_token)
+    from app.services.sale_assistant import suggest_sale
+
+    try:
+        return await suggest_sale(
+            messages=body.messages,
+            today=body.today,
+            timezone=body.timezone,
+        )
+    except Exception as err:
+        raise HTTPException(502, f"sale extraction failed: {err}") from err
 
 
 @router.post("/outbox/send")

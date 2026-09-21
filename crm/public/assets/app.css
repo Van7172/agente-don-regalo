@@ -282,7 +282,7 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
    Shell de la app (topbar + páginas)
    ============================================================ */
 
-.app-shell { display: flex; flex-direction: column; height: 100vh; }
+.app-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 .topbar {
   display: flex; align-items: center; gap: 18px;
@@ -500,6 +500,8 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 .chat-head .chat-state .dot-sm.is-human { background: var(--color-neutral-700); }
 .chat-head .chat-state .dot-sm.is-ai { background: var(--color-accent-2-600); }
 .chat-head .btn { flex: none; font-size: 12.5px; white-space: nowrap; }
+.chat-actions { display: flex; align-items: center; gap: 8px; }
+.mobile-actions-toggle, .mobile-only-label { display: none; }
 
 .thread {
   flex: 1; overflow-y: auto; padding: 20px 24px;
@@ -1062,33 +1064,123 @@ a.media-location:hover { filter: brightness(0.98); }
 .mobile-back { display: none; }
 
 @media (max-width: 900px) {
-  .lead-panel { display: none; }
+  /* El alto visible cambia cuando aparece el teclado del teléfono. El JS
+     actualiza esta variable con VisualViewport para que el compositor siga
+     pegado al teclado y no quede escondido debajo. */
+  .app-shell {
+    height: var(--crm-viewport-height, 100dvh);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* La navegación global ocupa dos filas en la bandeja y se desplaza en
+     horizontal. Dentro de un chat desaparece: la cabecera del contacto pasa a
+     ser la barra principal, igual que en WhatsApp. */
+  .topbar { flex-wrap: wrap; padding: 8px 12px; gap: 6px 10px; }
+  .topbar-brand { flex: 1; min-width: 0; }
+  .topbar-nav {
+    order: 3; width: 100%; margin: 0; gap: 4px;
+    overflow-x: auto; overscroll-behavior-x: contain;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .topbar-nav::-webkit-scrollbar { display: none; }
+  .topbar-nav a { flex: none; padding: 7px 12px; }
+  body.mobile-chat-open .topbar { display: none; }
+
   .mobile-back { display: inline-flex; }
 
   .inbox-shell[data-mobile-chat="false"] .list-pane { display: flex; width: 100%; border-right: none; }
   .inbox-shell[data-mobile-chat="false"] .chat-pane { display: none; }
   .inbox-shell[data-mobile-chat="true"] .list-pane { display: none; }
   .inbox-shell[data-mobile-chat="true"] .chat-pane { display: flex; }
+  .inbox-shell[data-mobile-chat="true"] > .help-rail,
+  .inbox-shell[data-mobile-chat="true"] > .followup-rail { display: none !important; }
 
-  /* El panel de lead no existe en móvil, así que su botón tampoco. */
-  #btn-lead { display: none; }
-  .chat-head { padding: 12px 14px; gap: 8px; }
+  .inbox-panes, .chat-pane, .chat-body { min-height: 0; }
+  .list-pane-head { padding: 10px 12px 8px; }
+  .list-scroll { padding: 0 6px 8px; }
+  .list-item { min-height: 68px; padding: 10px 8px; border-radius: 12px; }
+
+  .chat-head {
+    position: relative; z-index: 20;
+    min-height: 62px; padding: 8px 10px; gap: 8px;
+    background: var(--color-bg);
+  }
+  .chat-head .avatar { width: 38px; height: 38px; }
+  .chat-head .who { line-height: 1.25; }
+  .chat-head .chat-name { font-size: 14px; }
+  .chat-head .chat-state { font-size: 10.5px; }
+  .mobile-back, .mobile-actions-toggle {
+    width: 42px; height: 42px; padding: 0;
+    align-items: center; justify-content: center; flex: none;
+  }
+  .mobile-actions-toggle { display: inline-flex; }
+
+  /* Las acciones completas siguen disponibles, pero en un menú táctil. */
+  .chat-actions {
+    display: none; position: absolute; z-index: 40;
+    top: calc(100% - 5px); right: 8px; width: min(290px, calc(100vw - 24px));
+    padding: 8px; flex-direction: column; align-items: stretch; gap: 4px;
+    border: 1px solid var(--color-divider); border-radius: 14px;
+    background: var(--color-neutral-100); box-shadow: var(--shadow-lg);
+  }
+  .chat-actions.is-open { display: flex; }
+  .chat-actions .btn,
+  .chat-actions .icon-btn {
+    width: 100%; min-height: 44px; justify-content: flex-start;
+    padding: 10px 12px; border-radius: 10px; font-size: 13px;
+  }
+  .chat-actions .icon-btn:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .mobile-only-label { display: inline; margin-left: 8px; color: var(--color-text); }
+
+  .thread {
+    min-height: 0; padding: 12px 10px; gap: 8px;
+    overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
+  }
+  .bubble { max-width: 88%; }
+
+  .composer-wrap {
+    position: relative; z-index: 15; max-height: 58%; overflow-y: auto;
+    background: var(--color-bg); overscroll-behavior: contain;
+  }
+  .composer { gap: 6px; padding: 8px 10px max(8px, env(safe-area-inset-bottom)); }
+  .composer textarea { min-width: 0; min-height: 42px; max-height: 104px; padding: 9px 11px; }
+  .composer .icon-btn-outline { width: 42px; height: 42px; padding: 0; justify-content: center; }
+  .attach-preview { margin: 8px 10px 0; }
+  .recording-bar { padding: 10px; }
+  .slash-menu { margin: 0 10px; }
+  .ai-banner { padding: 10px 12px max(10px, env(safe-area-inset-bottom)); }
+  .human-return-banner { padding: 7px 10px; }
+  .human-return-banner > span { display: none; }
+
+  /* El resumen ya no se pierde en móvil: se abre como una ficha completa sobre
+     el chat y conserva notas y seguimientos. */
+  .lead-panel {
+    display: none; position: fixed; inset: 0; z-index: 70;
+    width: 100%; height: var(--crm-viewport-height, 100dvh);
+    opacity: 1; border: 0; background: var(--color-bg);
+  }
+  .lead-panel.mobile-open,
+  .lead-panel.collapsed.mobile-open { display: flex; width: 100%; opacity: 1; }
+  .lead-panel-inner {
+    width: 100%; height: 100%; padding: 16px 16px max(20px, env(safe-area-inset-bottom));
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .lead-head {
+    position: sticky; top: -16px; z-index: 2; margin: -16px -16px 14px;
+    padding: 14px 16px; border-bottom: 1px solid var(--color-divider);
+    background: var(--color-bg);
+  }
+  .lead-head .icon-btn { width: 42px; height: 42px; align-items: center; justify-content: center; }
 
   .help-rail { padding-left: 16px; padding-right: 16px; }
   .followup-rail { padding-left: 16px; padding-right: 16px; }
-  /* La cabecera del chat ya va justa en móvil: "Registrar venta" se queda solo
-     con el icono. El rail de seguimientos y los chips sí sobreviven, que es lo
-     que hace falta para saber a quién hay que escribirle. */
-  #btn-sale { font-size: 0; padding: 8px 10px; gap: 0; }
-  #btn-sale svg { font-size: 12.5px; }
-  .topbar { padding: 12px 16px; gap: 12px; }
   .topbar-user .who { display: none; }
   .topbar-brand .brand-name, .topbar-brand .brand-kicker { white-space: nowrap; }
   .reports { padding: 24px 16px 48px; }
   .operations { padding: 24px 16px 48px; }
   .ops-kpis { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
   .ops-grid { grid-template-columns: 1fr; }
-  .bubble { max-width: 82%; }
 }
 
 @media (max-width: 560px) {
@@ -1470,12 +1562,16 @@ a.media-location:hover { filter: brightness(0.98); }
 /* — registrar venta — */
 .sale-dialog {
   width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 24px); overflow: hidden;
   padding: 0; border: 0; border-radius: var(--radius-md);
   background: var(--color-bg); color: var(--color-text);
   box-shadow: var(--shadow-lg);
 }
 .sale-dialog::backdrop { background: color-mix(in srgb, #2e2b25 45%, transparent); }
-.sale-dialog-form { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+.sale-dialog-form {
+  display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4);
+  max-height: calc(100dvh - 24px); overflow-y: auto;
+}
 .sale-dialog-head { display: flex; align-items: center; justify-content: space-between; }
 .sale-dialog-head h4 { margin: 0; }
 .sale-dialog-lead {
@@ -1491,6 +1587,45 @@ a.media-location:hover { filter: brightness(0.98); }
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
+.sale-dialog-form textarea.input { border-radius: var(--radius-sm); }
+.sale-dialog-form .input.is-ai-filled {
+  border-color: var(--color-accent-2-600);
+  background: color-mix(in srgb, var(--color-accent-2-100) 70%, var(--color-bg));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent-2-500) 13%, transparent);
+}
+
+.sale-ai {
+  padding: 12px; border: 1px solid color-mix(in srgb, var(--color-accent-2-600) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent-2-100) 62%, var(--color-bg));
+}
+.sale-ai-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.sale-ai-head > div { min-width: 0; }
+.sale-ai-head strong { display: block; font-size: 13.5px; }
+.sale-ai-head span {
+  display: block; margin-top: 2px; font-size: 11.5px; line-height: 1.35;
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+.sale-ai-status { margin-top: 9px; font-size: 12.5px; }
+.sale-ai-status.is-loading::before {
+  content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 7px;
+  border: 2px solid color-mix(in srgb, var(--color-accent-2-700) 30%, transparent);
+  border-top-color: var(--color-accent-2-700); border-radius: 50%;
+  animation: saleAiSpin .7s linear infinite; vertical-align: -1px;
+}
+@keyframes saleAiSpin { to { transform: rotate(360deg); } }
+.sale-ai-review { margin-top: 10px; }
+.sale-ai-review[hidden] { display: none; }
+.sale-ai-review-title { font-size: 12px; font-weight: 700; }
+.sale-ai-found { margin: 7px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.sale-ai-found li {
+  padding: 6px 8px; border-radius: 7px; background: color-mix(in srgb, #fff 55%, transparent);
+  font-size: 12px; line-height: 1.35; overflow-wrap: anywhere;
+}
+.sale-ai-found strong { color: var(--color-accent-2-800); }
+.sale-ai-evidence { display: block; margin-top: 2px; font-size: 10.5px; font-style: italic; opacity: .7; }
+.sale-ai-missing { margin: 8px 0 0; font-size: 11.5px; color: var(--color-accent-800); }
+.sale-ai-warning { margin: 9px 0 0; font-size: 10.5px; opacity: .65; }
 .sale-dialog-error {
   padding: 8px 10px; border-radius: var(--radius-sm);
   background: color-mix(in srgb, #b3261e 12%, var(--color-bg));
@@ -1499,10 +1634,22 @@ a.media-location:hover { filter: brightness(0.98); }
 .sale-dialog-error[hidden] { display: none; }
 .sale-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 
-/* En móvil el panel lateral no existe (ver .lead-panel arriba), así que notas y
-   seguimientos viajan con él. El diálogo de venta sí tiene que caber. */
+/* En móvil el diálogo debe caber incluso con el teclado y el resumen de IA. */
 @media (max-width: 900px) {
   .sale-dialog-grid { grid-template-columns: 1fr 1fr; }
+  .sale-dialog { width: min(620px, calc(100vw - 16px)); max-height: calc(var(--crm-viewport-height, 100dvh) - 12px); }
+  .sale-dialog-form { max-height: calc(var(--crm-viewport-height, 100dvh) - 12px); padding: 16px; }
+  .sale-dialog-actions {
+    position: sticky; bottom: -16px; margin: 0 -16px -16px; padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--color-divider); background: var(--color-bg);
+  }
+}
+
+@media (max-width: 430px) {
+  .sale-dialog-grid { grid-template-columns: 1fr; }
+  .sale-ai-head { flex-direction: column; }
+  .sale-ai-head .btn { align-self: stretch; }
+  .sale-dialog-actions .btn { flex: 1; }
 }
 
 /* ── Estudio de contenido (Crear contenido) ─────────────────────────────────

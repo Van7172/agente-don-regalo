@@ -113,35 +113,49 @@
               <span class="chip-window" id="chip-window" hidden></span>
             </div>
           </div>
-          <!-- La mayoría de las ventas del CRM las cierra un asesor, no el bot,
-               y hasta ahora no quedaban registradas en ninguna parte. -->
-          <button type="button" class="btn btn-secondary" id="btn-sale" title="Registrar una venta cerrada por ti">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="12" y1="1" x2="12" y2="23"></line>
-              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-            </svg>
-            Registrar venta
-          </button>
-          <button type="button" class="btn btn-primary" id="btn-human" hidden>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-              <polyline points="22 4 12 14.01 9 11.01"></polyline>
-            </svg>
-            <!-- El texto lo pone el JS: "Tomar conversación" si está libre,
-                 "Tomar de todas formas" si la tiene otro asesor. -->
-            <span class="btn-label">Tomar conversación</span>
-          </button>
-          <!-- Aquí hubo un "Quitar de la cola" que sacaba el chat de la franja
-               SIN devolvérselo al bot. No era un estado: dejaba el chat en modo
-               HUMAN y mudo, fuera de la vista y asignado a un asesor que ya
-               había terminado, hasta que el releaser lo pasaba a AI a los 20 min
-               por su cuenta. Quien de verdad quiere quedarse el chat tiene
-               «Mantener humano», que sí frena al releaser. -->
-          <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Don Regalo</button>
-          <button type="button" class="icon-btn icon-btn-outline" id="btn-lead" title="Resumen del lead" aria-label="Resumen del lead">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
+          <!-- En escritorio estas acciones viven en línea. En móvil son el menú
+               de tres puntos del chat, como en WhatsApp: así el nombre y el
+               estado del cliente no quedan aplastados por cuatro botones. -->
+          <div class="chat-actions" id="chat-actions" role="group" aria-label="Acciones de la conversación">
+            <!-- La mayoría de las ventas del CRM las cierra un asesor, no el bot,
+                 y hasta ahora no quedaban registradas en ninguna parte. -->
+            <button type="button" class="btn btn-secondary" id="btn-sale" title="Registrar una venta cerrada por ti">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="1" x2="12" y2="23"></line>
+                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+              </svg>
+              Registrar venta
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-human" hidden>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+              <!-- El texto lo pone el JS: "Tomar conversación" si está libre,
+                   "Tomar de todas formas" si la tiene otro asesor. -->
+              <span class="btn-label">Tomar conversación</span>
+            </button>
+            <!-- Aquí hubo un "Quitar de la cola" que sacaba el chat de la franja
+                 SIN devolvérselo al bot. No era un estado: dejaba el chat en modo
+                 HUMAN y mudo, fuera de la vista y asignado a un asesor que ya
+                 había terminado, hasta que el releaser lo pasaba a AI a los 20 min
+                 por su cuenta. Quien de verdad quiere quedarse el chat tiene
+                 «Mantener humano», que sí frena al releaser. -->
+            <button type="button" class="btn btn-secondary" id="btn-ai" hidden>Devolver a Don Regalo</button>
+            <button type="button" class="icon-btn icon-btn-outline" id="btn-lead" title="Resumen del lead" aria-label="Resumen del lead" aria-expanded="false">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+              <span class="mobile-only-label">Datos y notas del cliente</span>
+            </button>
+          </div>
+          <button type="button" class="icon-btn mobile-actions-toggle" id="btn-chat-actions"
+                  aria-label="Acciones de la conversación" aria-controls="chat-actions" aria-expanded="false">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="5" cy="12" r="2"></circle>
+              <circle cx="12" cy="12" r="2"></circle>
+              <circle cx="19" cy="12" r="2"></circle>
             </svg>
           </button>
         </div>
@@ -345,6 +359,19 @@
     </div>
     <p class="sale-dialog-lead" id="sale-dialog-lead"></p>
 
+    <section class="sale-ai" id="sale-ai" aria-labelledby="sale-ai-title">
+      <div class="sale-ai-head">
+        <div>
+          <strong id="sale-ai-title">Asistente de venta</strong>
+          <span>Revisa la conversación de hoy y completa sólo datos respaldados por mensajes.</span>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="sale-ai-refresh">Volver a analizar</button>
+      </div>
+      <div class="sale-ai-status" id="sale-ai-status" aria-live="polite"></div>
+      <div class="sale-ai-review" id="sale-ai-review" hidden></div>
+      <p class="sale-ai-warning">La IA no registra la venta. Revisa los campos y confirma al final.</p>
+    </section>
+
     <div class="field">
       <label for="sale-producto">Producto <span aria-hidden="true">*</span></label>
       <input class="input" id="sale-producto" name="producto" type="text" required maxlength="255"
@@ -381,15 +408,15 @@
 
     <div class="field">
       <label for="sale-motivo">Nota</label>
-      <input class="input" id="sale-motivo" name="motivo" type="text" maxlength="255"
-             placeholder="Pagó por Yape, comprobante en el chat" />
+      <textarea class="input" id="sale-motivo" name="motivo" rows="3" maxlength="255"
+                placeholder="Pago, dirección, referencia, destinatario, dedicatoria y otras indicaciones"></textarea>
     </div>
 
     <div class="sale-dialog-error" id="sale-dialog-error" role="alert" hidden></div>
 
     <div class="sale-dialog-actions">
       <button type="button" class="btn btn-secondary" id="sale-cancel">Cancelar</button>
-      <button type="submit" class="btn btn-primary" id="sale-submit">Registrar venta</button>
+      <button type="submit" class="btn btn-primary" id="sale-submit">Confirmar y registrar</button>
     </div>
   </form>
 </dialog>

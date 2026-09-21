@@ -198,6 +198,39 @@ final class Repository
     }
 
     /**
+     * Mensajes de una ventana local exacta, para herramientas internas que no
+     * deben releer meses de historial. MySQL comparte la zona horaria del CRM
+     * (Database::init), así que los límites de "hoy" coinciden con el asesor.
+     */
+    public static function getMessagesBetween(
+        int $conversationId,
+        string $from,
+        string $until,
+        int $limit = 500
+    ): array {
+        $limit = max(1, min(500, $limit));
+        $tenantId = self::ensureTenantId();
+        return Database::fetchAll(
+            "SELECT m.id_message, m.direction_message, m.sender_type,
+                    m.content_message, m.quoted_text, m.fecha_creacion
+             FROM crm_messages m
+             JOIN crm_conversations c ON c.id_conversation = m.id_conversation
+             WHERE m.id_conversation = :conversationId
+               AND c.id_tenant = :tenantId
+               AND m.fecha_creacion >= :fromDate
+               AND m.fecha_creacion < :untilDate
+             ORDER BY m.id_message ASC
+             LIMIT {$limit}",
+            [
+                'conversationId' => $conversationId,
+                'tenantId' => $tenantId,
+                'fromDate' => $from,
+                'untilDate' => $until,
+            ]
+        );
+    }
+
+    /**
      * Texto del mensaje citado, buscado por su id de WhatsApp.
      *
      * Cuando el cliente responde a un mensaje, WhatsApp solo manda el id del

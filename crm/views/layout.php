@@ -11,7 +11,7 @@ $userName = (string) ($user['name'] ?? '');
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title><?= e($appName) ?></title>
   <link rel="stylesheet" href="<?= e(url_to('assets/app.css')) ?>?v=<?= (int) @filemtime(dirname(__DIR__) . '/public/assets/app.css') ?>" />
 </head>

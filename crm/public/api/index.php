@@ -57,7 +57,7 @@ try {
     // actúa) y cada handler vuelve a exigir `Auth::user()`. Aquí solo se abre la
     // puerta para que el fetch del panel, que va con cookie y sin token, no
     // choque contra el 401 genérico.
-    if (preg_match('#^/conversations/\d+/(claim|release|sale|notes|followups)$#', $path)) {
+    if (preg_match('#^/conversations/\d+/(claim|release|sale|sale-suggestion|notes|followups)$#', $path)) {
         $needsToken = false;
     }
     if (preg_match('#^/followups(/\d+)?$#', $path)) {
@@ -406,6 +406,54 @@ try {
         }
         Repository::releaseConversation((int) $m[1]);
         Http::jsonOk(['ok' => true, 'assigned' => null]);
+    }
+
+    // ── asistente de registro de venta ──────────────────────────────────────
+    //
+    // La cookie se valida aquí y el token del agente queda servidor-a-servidor.
+    // Sólo se envía texto de HOY: nada de archivos, URLs ni historial antiguo.
+    // La respuesta es una sugerencia; este endpoint nunca registra la venta.
+    if (preg_match('#^/conversations/(\d+)/sale-suggestion$#', $path, $m) && $method === 'POST') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $conversationId = (int) $m[1];
+        if (!Repository::getConversation($conversationId)) {
+            Http::jsonError('Conversation not found', 404);
+        }
+
+        $timezone = (string) ($config['timezone'] ?? 'America/Lima');
+        $start = new DateTimeImmutable('today', new DateTimeZone($timezone));
+        $until = $start->modify('+1 day');
+        $messages = Repository::getMessagesBetween(
+            $conversationId,
+            $start->format('Y-m-d H:i:s'),
+            $until->format('Y-m-d H:i:s'),
+            500
+        );
+        if (!$messages) {
+            Http::jsonError('No hay mensajes de hoy para analizar.', 422);
+        }
+
+        $payload = array_map(static function (array $message): array {
+            $inbound = (string) ($message['direction_message'] ?? '') === 'inbound';
+            $sender = (string) ($message['sender_type'] ?? '');
+            return [
+                'id' => (int) $message['id_message'],
+                'speaker' => $inbound ? 'cliente' : ($sender === 'agent' ? 'asesor' : 'bot'),
+                'content' => mb_substr((string) ($message['content_message'] ?? ''), 0, 4000),
+                'quoted_text' => mb_substr((string) ($message['quoted_text'] ?? ''), 0, 1000),
+                'created_at' => Repository::iso($message['fecha_creacion'] ?? null),
+            ];
+        }, $messages);
+
+        $suggestion = AgentClient::post('/internal/sales/extract', [
+            'conversation_id' => $conversationId,
+            'today' => $start->format('Y-m-d'),
+            'timezone' => $timezone,
+            'messages' => $payload,
+        ], 60);
+        Http::jsonOk($suggestion);
     }
 
     // ── venta registrada por el asesor ──────────────────────────────────────
