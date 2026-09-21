@@ -22,7 +22,7 @@ import httpx
 
 from app.harness.checkout import resolve_chosen_product, wants_checkout
 from app.harness.coverage import explicit_delivery_destination, looks_like_coverage
-from app.guardrails import is_small_talk
+from app.guardrails import is_greeting_text, is_small_talk
 from app.harness.state import ConversationState
 from app.harness.taxonomy import looks_like_option_pick
 from app.observability import audit_event, record_llm_usage, record_operation
@@ -32,10 +32,6 @@ log = logging.getLogger(__name__)
 
 Intent = str  # greet|small_talk|catalog_search|coverage|product_detail|checkout|policy_faq|track_order|escalate
 
-_GREET_RE = re.compile(
-    r"^(hola|holi|buenas|buenos\s+dias|buenas\s+tardes|buenas\s+noches|hey|hi)\b",
-    re.I,
-)
 _TRACK_RE = re.compile(r"rastre|donde\s+esta\s+mi\s+pedido|estado\s+de\s+mi\s+pedido|seguimiento", re.I)
 _DETAIL_RE = re.compile(
     r"mas\s+detalle|m[aá]s\s+info|qu[eé]\s+contiene|como\s+es|cuanto\s+mide|foto\s+de|"
@@ -67,6 +63,16 @@ _CATALOG_RE = re.compile(
     r"busco|quiero|tienen|peluche|desayuno|ramo|rosa|girasol|flor|regalo|"
     r"cesta|planta|terrario|panda|osito|catalogo|cat[aá]logo|opcion|modelo|muestra|manda|"
     r"dia\s+del\s+padre|fiestas\s+patrias|corp",
+    re.I,
+)
+# "¿Tienen delivery?" / "¿Hacen entregas a domicilio?": pregunta por la
+# EXISTENCIA del servicio, no por un producto. Sin esto, "tienen" (palabra de
+# `_CATALOG_RE`, de "¿tienen flores?") apagaba la regla de cobertura de abajo
+# y la pregunta acababa buscando un producto llamado "delivery".
+_DELIVERY_EXISTS_RE = re.compile(
+    r"(?:hay|hacen|tienen|dan)\s+(?:delivery|entregas?|env[ií]os?)|"
+    r"(?:delivery|entregas?|env[ií]os?)\s+a\s+domicilio|"
+    r"entregan\s+a\s+domicilio",
     re.I,
 )
 _GIFT_CONTEXT_RE = re.compile(
@@ -233,6 +239,9 @@ def classify_rules(
     if explicit_delivery_destination(norm):
         return Classification("coverage", 0.97, "rules")
 
+    if _DELIVERY_EXISTS_RE.search(norm):
+        return Classification("coverage", 0.9, "rules")
+
     if looks_like_coverage(norm) and not _CATALOG_RE.search(norm[:40]):
         return Classification("coverage", 0.85, "rules")
 
@@ -246,7 +255,11 @@ def classify_rules(
     if _POLICY_RE.search(norm):
         return Classification("policy_faq", 0.85, "rules")
 
-    if _GREET_RE.match(norm) and len(raw) < 40:
+    # `is_greeting_text` exige que el mensaje SEA el saludo, no solo empiece
+    # por uno: antes `_GREET_RE` (sin ancla de fin) mandaba a `greet` un
+    # mensaje como "Buenas hace entregas a domicilio?" y la pregunta real se
+    # perdía detrás del "¡Hola! ¿En qué puedo ayudarte?" genérico.
+    if is_greeting_text(raw):
         return Classification("greet", 0.95, "rules")
 
     # Imagen con un caption que no pedía nada claro (asesor, cobertura, pago…, ya

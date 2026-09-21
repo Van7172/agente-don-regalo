@@ -12,18 +12,27 @@ from app.harness.contracts import Decision, Product
 
 # ── Percepción del turno ──────────────────────────────────────────────
 
-_GREETING_RE = re.compile(
-    r"^(?:"
+_GREETING_PHRASE = (
     r"h+o+l+a+s?|holis|"
-    r"buenas?|"
     r"buen[oa]s?\s+d[ií]as?|"
     r"buenas?\s+tardes?|"
     r"buenas?\s+noches?|"
+    r"buenas?|"
     r"qu[eé]\s+tal|"
     r"c[oó]mo\s+est[aá]s?|"
     r"hey|hi|hello|saludos?"
-    r")"
-    r"(?:\s+(?:a\s+todos?|amigo|amiga|equipo|don\s*regalo))?$"
+)
+
+# Saludos encadenados ("hola, buenas tardes", "buenas, cómo estás") siguen
+# siendo SOLO saludo: cada tramo tiene que ser, de nuevo, una frase de saludo
+# (o la coletilla "a todos"/"equipo"/"don regalo"). Sin el `(?:...)* $` un
+# saludo repetido no anclaba al final y "Hola buenas tardes" no calzaba con
+# esto — pero abrir el final sin exigir que TODO sean saludos es el bug
+# contrario: "buenas hace entregas a domicilio" también empieza por
+# "buenas" y esa pregunta real no es saludo.
+_GREETING_RE = re.compile(
+    rf"^(?:{_GREETING_PHRASE})"
+    rf"(?:[\s,]+(?:{_GREETING_PHRASE}|a\s+todos?|amigo|amiga|equipo|don\s*regalo))*$"
 )
 
 # Vocabulario de cortesía: "ok gracias", "todo en orden hoy", "jaja", "👍"…
@@ -77,6 +86,23 @@ _SALES_CONTINUE_RE = re.compile(
     r"\d+\s*(?:am|pm|a\.?\s*m\.?|p\.?\s*m\.?)|"
     r"\b\d+\s*(?:y|,|/|&)\s*\d+\b|\by\s*\d+\b",
     re.IGNORECASE,
+)
+
+# Despedida cortés tras un rechazo ("Muchas gracias, por el momento no.").
+# `is_courtesy_text` tokenizaba esto y "el"/"momento" no estaban en
+# `_SMALL_TALK_WORDS`, así que la frase NO se reconocía como cortesía: caía
+# al `allow=True` por defecto de `handoff_policy` y el modelo prometía un
+# asesor a un cliente que se estaba despidiendo. Anclada al mensaje COMPLETO
+# (ya normalizado, sin puntuación): "no, mejor quiero cancelar" no debe
+# colarse por aquí.
+_POLITE_DECLINE_RE = re.compile(
+    r"^(?:muchas\s+)?gracias(?:\s+pero)?\s+por\s+(?:el\s+)?(?:momento|ahora)\s+no$|"
+    r"^por\s+(?:el\s+)?(?:momento|ahora)\s+no(?:\s+gracias)?$|"
+    r"^no,?\s+por\s+(?:el\s+)?(?:momento|ahora)(?:\s+no)?(?:\s+gracias)?$|"
+    r"^no\s+gracias$|"
+    r"^ya\s+no(?:\s+gracias)?$|"
+    r"^as[ií]\s+est[aá]\s+bien(?:\s+gracias)?$|"
+    r"^eso\s+ser[ií]a\s+todo(?:\s+gracias)?$"
 )
 
 _MEDIA_ONLY_RE = re.compile(r"\[(?:image|video|audio|document|sticker)\]", re.I)
@@ -164,6 +190,9 @@ def is_courtesy_text(text: str) -> bool:
     # Saludo literal: no es respuesta al formulario. Antes solo vivía en
     # `is_simple_greeting` / `is_small_talk`, y el cierre no lo veía.
     if is_greeting_text(text):
+        return True
+
+    if _POLITE_DECLINE_RE.match(norm):
         return True
 
     tokens = norm.split()

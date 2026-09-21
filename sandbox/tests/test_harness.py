@@ -256,6 +256,46 @@ def test_extract_places():
     assert len(c) >= 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "No hay delivery?",  # el mensaje literal del incidente (ManuelC, 20-09-2026)
+        "Buenas hace entregas a domicilio?",
+        "Hacen entregas a domicilio?",
+    ],
+)
+async def test_pregunta_general_de_delivery_no_se_confunde_con_un_distrito(
+    monkeypatch, texto
+):
+    """"No hay delivery?" se enrutaba a cobertura y, al no encontrar ningún
+    distrito llamado así, el bot le hacía eco al cliente: "No ubico 'No hay
+    delivery' en nuestra lista... ¿lo buscas en Google Maps?" — a una
+    pregunta general, no a un lugar."""
+    import json
+    import pathlib
+
+    from app.harness import coverage as cov
+    from app.tools import adapters
+
+    crudo = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "api" / "distritos.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    async def fake_distritos(client, args):
+        return adapters.districts_payload(crudo, 3.4)
+
+    monkeypatch.setattr(cov.catalog, "distritos_cobertura", fake_distritos)
+    result = await cov.resolve_coverage(texto, ConversationState())
+
+    assert result["structured"]["ambiguity"] == "need_district"
+    assert result["structured"]["suggest_maps"] is False
+    assert "google maps" not in result["user_facing"].lower()
+    assert "no ubico" not in result["user_facing"].lower()
+
+
 # ── Degradación por invariante rota ───────────────────────────────────
 
 def _producto(pid=1235, nombre="Osito", sol=149.60, usd=44.0):

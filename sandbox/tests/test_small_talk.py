@@ -49,6 +49,9 @@ def _user(text: str) -> list:
         "de acuerdo",
         "ya",
         "no",
+        "Muchas gracias, por el momento no.",  # L. Montes, 20-09-2026
+        "No gracias",
+        "Por ahora no, gracias",
     ],
 )
 def test_reconoce_charla_sin_pedido(text):

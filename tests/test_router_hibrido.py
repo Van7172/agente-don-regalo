@@ -36,6 +36,15 @@ def espia_llm(monkeypatch):
         ("¿Emiten factura?", "policy_faq"),
         ("¿Cuál es el punto de recojo?", "policy_faq"),
         ("Todo en orden hoy", "small_talk"),
+        # "Buenas hace entregas a domicilio?" empieza como un saludo, pero
+        # `_GREET_RE` (sin ancla de fin) se comía la pregunta real y el bot
+        # solo respondía con el saludo genérico. Ver `is_greeting_text`.
+        ("Buenas hace entregas a domicilio?", "coverage"),
+        ("Buenas, ¿tienen delivery?", "coverage"),
+        # "No hay delivery?" se enrutaba a `coverage` y de ahí se trataba
+        # como si el cliente hubiera nombrado un distrito ("No ubico 'No hay
+        # delivery'... ¿lo buscas en Google Maps?").
+        ("No hay delivery?", "coverage"),
     ],
 )
 @pytest.mark.asyncio

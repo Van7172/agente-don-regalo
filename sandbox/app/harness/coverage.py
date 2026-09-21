@@ -21,7 +21,12 @@ log = logging.getLogger(__name__)
 _COVERAGE_RE = re.compile(
     r"distrito|zona|delivery|llegan?|cobertura|envio|env[ií]o|"
     r"maps|google\s*maps|donde\s+queda|palao|callao|independencia|"
-    r"tarifa\s+de\s+envio|cuanto\s+cuesta\s+el\s+envio",
+    r"tarifa\s+de\s+envio|cuanto\s+cuesta\s+el\s+envio|"
+    # "hace entregas a domicilio?" / "no hay delivery?" no traen ninguna de
+    # las palabras de arriba salvo "delivery" a veces; sin "entrega(s)" y
+    # "domicilio" esa pregunta caía a small_talk o, peor, dependía del LLM
+    # de respaldo para llegar aquí.
+    r"entregas?|domicilio",
     re.I,
 )
 
@@ -203,7 +208,11 @@ def extract_place_candidates(text: str) -> list[str]:
 _NOT_A_PLACE_RE = re.compile(
     r"\b(quisiera|quiero|puedo|podr[ií]a|ser[ií]a|est[aá]|estoy|tengo|vengan|"
     r"venga|pagar|pago|comprar|enviar|mandar|porque|por\s+que|cu[aá]nto|"
-    r"c[oó]mo|qu[eé]|gracias)\b",
+    r"c[oó]mo|qu[eé]|gracias|"
+    # "No hay delivery?" no tiene ninguno de los verbos de arriba: se leía
+    # como un posible distrito y el bot respondía "No ubico 'No hay
+    # delivery'... ¿lo buscas en Google Maps?" a una pregunta, no a un lugar.
+    r"no\s+hay|\bhacen\b|\btienen\b)\b",
     re.I,
 )
 
@@ -254,10 +263,18 @@ async def resolve_coverage(
         districts = raw
 
     candidates = extract_place_candidates(user_text)
-    # Pregunta general de zonas (sin lugar concreto).
+    # Pregunta general de zonas o de "¿existe el servicio?" (sin lugar
+    # concreto). "No hay delivery?" / "¿Hacen entregas a domicilio?" son la
+    # misma pregunta que "qué zonas cubren" con otras palabras — antes solo
+    # la segunda forma se reconocía, así que la primera caía al matching de
+    # distrito, no encontraba nada y se le hacía eco al cliente como si "no
+    # hay delivery" fuera el nombre de un sitio.
     if re.search(
         r"qu[eé]\s+zonas|distritos?\s+(cubren|tienen)|lista\s+de\s+distritos|"
-        r"cobertura\s+en\s+lima|llegan\s+a\s+lima",
+        r"cobertura\s+en\s+lima|llegan\s+a\s+lima|"
+        r"(?:hay|hacen|tienen|dan)\s+(?:delivery|entregas?|env[ií]os?)|"
+        r"(?:delivery|entregas?|env[ií]os?)\s+a\s+domicilio|"
+        r"entregan\s+a\s+domicilio",
         user_text or "",
         re.I,
     ) and not resolve_alias(user_text):
