@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 from app.delivery_windows import SCHEDULE_OPTIONS
 from app.delivery_windows import schedule_map_for, schedule_options_for, windows_for
 from app.harness.holidays import closed_delivery_reply, is_closed_delivery
-from app.harness.same_day import is_same_day_delivery, same_day_cutoff_reply
 from app.harness.orders import (
     display_fecha,
     lima_today,
@@ -547,13 +546,8 @@ def _advance(
             )
         if is_closed_delivery(normalized):
             return _again(state, meta, (closed_delivery_reply(),))
-        if is_same_day_delivery(normalized, today=effective_today):
-            return _again(state, meta, (same_day_cutoff_reply(),))
         state.date = normalized
         state.checkout_step = "schedule"
-        # Fecha real, y no es hoy: lo que sea que haya avisado el corte
-        # same-day antes en esta conversación ya quedó resuelto.
-        state.same_day_blocked = False
         return (
             state,
             f"¿En qué horario prefieres que llegue? 🕐\n"
@@ -563,11 +557,6 @@ def _advance(
         )
 
     if step == "schedule":
-        # Un cierre abierto de antes del corte no puede seguir con "hoy".
-        if is_same_day_delivery(state.date, today=effective_today):
-            state.date = ""
-            state.checkout_step = "date"
-            return state, same_day_cutoff_reply(), meta
         opciones = schedule_options_for(state.date)
         if is_courtesy_text(text):
             return _courtesy(
@@ -602,8 +591,6 @@ def _advance(
                     )
                 if is_closed_delivery(tardia):
                     return _again(state, meta, (closed_delivery_reply(),))
-                if is_same_day_delivery(tardia, today=efectivo):
-                    return _again(state, meta, (same_day_cutoff_reply(),))
                 etiqueta = f"{weekday_name(tardia)} {display_fecha(tardia)}".strip()
                 if tardia == state.date:
                     # Confirma lo que ya teníamos: se acusa y NO gasta reintento.

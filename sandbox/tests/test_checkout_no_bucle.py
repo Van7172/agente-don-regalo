@@ -77,18 +77,6 @@ def test_avanzar_de_paso_reinicia_la_escalera():
     assert state.step_retries == 0
 
 
-def test_confirmar_una_fecha_real_apaga_el_aviso_same_day():
-    """Auditoría de roleplay (20-09-2026): `same_day_blocked` avisa que hoy
-    no hay entrega mientras siga vigente — pero una vez el cliente confirma
-    una fecha real que NO es hoy, el corte queda resuelto y el aviso no debe
-    seguir condicionando el resto de la conversación (p.ej. la pregunta de
-    cobertura de `resolve_coverage`)."""
-    state = _en_paso("date", same_day_blocked=True)
-    state, _, _ = advance_checkout(state, "mañana", today=HOY)
-    assert state.checkout_step == "schedule"
-    assert state.same_day_blocked is False
-
-
 # ── Escuchar lo que no es una respuesta al formulario ─────────────────
 
 @pytest.mark.parametrize(
