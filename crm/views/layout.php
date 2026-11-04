@@ -38,13 +38,15 @@ foreach ($navItems as $item) {
            el lateral se abriría y se cerraría de golpe en cada cambio de página.
            Por defecto es simple, para dejarle el ancho al trabajo; solo arranca
            ampliado si el asesor lo eligió, y nunca en pantallas medianas, donde
-           ampliarlo lo pone encima del contenido. */ ?>
+           ampliarlo lo pone encima del contenido. La clave se llama sidebarMode y
+           no sidebar para no heredar el "ampliado" guardado cuando ese era el modo
+           normal. */ ?>
   <script>
     (function () {
       var mode = "simple";
       if (window.innerWidth >= 1200) {
         try {
-          if (localStorage.getItem("dr.sidebar") === "full") mode = "full";
+          if (localStorage.getItem("dr.sidebarMode") === "full") mode = "full";
         } catch (e) { /* sin localStorage: el modo por defecto */ }
       }
       document.documentElement.setAttribute("data-sidebar", mode);

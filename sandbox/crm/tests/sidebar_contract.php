@@ -43,8 +43,8 @@ requiresText($layout, 'aria-current="page"', 'El menú debe marcar la página ac
 
 // 3. El modo se pone antes de pintar, o el lateral parpadea en cada cambio de página.
 $head = substr($layout, 0, (int) strpos($layout, '</head>'));
-requiresText($head, 'localStorage.getItem("dr.sidebar")', 'El modo se decide en <head>');
-requiresText($js, 'localStorage.setItem("dr.sidebar"', 'La preferencia debe recordarse');
+requiresText($head, 'localStorage.getItem("dr.sidebarMode")', 'El modo se decide en <head>');
+requiresText($js, 'localStorage.setItem("dr.sidebarMode"', 'La preferencia debe recordarse');
 requiresText($head, 'try {', 'localStorage puede lanzar en modo privado');
 requiresText($head, 'var mode = "simple"', 'Por defecto el menú va en modo simple');
 requiresText($head, '=== "full"', 'Solo arranca ampliado si el asesor lo eligió');

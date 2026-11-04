@@ -23,7 +23,7 @@
 
   function savedMode() {
     try {
-      return localStorage.getItem("dr.sidebar") === "full" ? "full" : "simple";
+      return localStorage.getItem("dr.sidebarMode") === "full" ? "full" : "simple";
     } catch {
       return "simple";
     }
@@ -70,7 +70,7 @@
     // En pantalla mediana es temporal: se abre para ir a otra sección, no es una preferencia.
     if (!compact.matches) {
       try {
-        localStorage.setItem("dr.sidebar", next);
+        localStorage.setItem("dr.sidebarMode", next);
       } catch {
         /* sin localStorage: el modo dura hasta cambiar de página */
       }
