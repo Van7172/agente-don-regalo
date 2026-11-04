@@ -238,3 +238,17 @@
 
   Contrato: `crm/tests/etapas_etiquetas_contract.php`.
 
+  ## Menú lateral
+
+  Sustituye a la barra superior: ampliado (icono y texto) o simple (solo iconos).
+
+  - **El modo lo pone un script en `<head>`**, antes de pintar: desde `sidebar.js` el
+    lateral se abriría y cerraría de golpe en cada cambio de página.
+  - **Entre 901 y 1199 px arranca siempre simple**, y ampliarlo lo pone encima del
+    contenido sin guardar preferencia: empujarlo dejaba el chat en unos 160 px.
+  - **En móvil es un panel deslizable.** Dentro de un chat la barra se oculta.
+  - **El scroll va en `.app-main`**, no en la página, o se llevaría el menú.
+
+  Contrato: `crm/tests/sidebar_contract.php`. Subir `views/layout.php`,
+  `public/assets/app.css` y `public/assets/sidebar.js`. Sin migraciones.
+
