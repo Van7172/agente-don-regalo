@@ -23,7 +23,8 @@ requiresText($migration, 'CREATE TABLE IF NOT EXISTS crm_ventas_historiales', 'F
 requiresText($migration, 'INSERT IGNORE INTO crm_ventas_historiales', 'Falta backfill idempotente');
 requiresText($migration, 'ON DELETE RESTRICT', 'El historial no debe borrarse en cascada');
 
-$gitignore = source('../.gitignore');
+// El contrato corre tanto en crm/ como en la copia sandbox/crm/.
+$gitignore = source(is_file(dirname(__DIR__, 2) . '/.gitignore') ? '../.gitignore' : '../../.gitignore');
 requiresText($gitignore, '!crm/sql/*.sql', 'Las migraciones CRM deben versionarse');
 
 $repository = source('src/Repository.php');

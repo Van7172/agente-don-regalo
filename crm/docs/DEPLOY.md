@@ -150,6 +150,27 @@ esa ruta, lo recuerda para no repetirlo y sigue guardando a pelo (mismo criterio
 que el claim del outbox). Hasta que subas el CRM, el estado se guarda igual —
 solo que sin cerrar la carrera.
 
+### Etapas, etiquetas, respuestas rápidas y CSV
+
+Ejecutar **en este orden y antes de subir el PHP**, o el inbox devuelve 500:
+
+```text
+crm/sql/017_etapas.sql              → etapa de cada chat e historial de cambios
+crm/sql/018_etiquetas.sql           → catálogo de etiquetas
+crm/sql/019_respuestas_rapidas.sql  → respuestas editables, con las tres de siempre
+```
+
+Las tres son repetibles. **No requiere tocar el agente.**
+
+Subir: `public/export.php`, `public/settings.php`, `public/reports.php`,
+`public/api/index.php`, `public/assets/inbox.js`, `public/assets/settings.js`,
+`public/assets/app.css`, `src/Repository.php`, `src/helpers.php`, `views/inbox.php`,
+`views/layout.php`, `views/reports.php`, `views/sales-history.php` y `views/settings.php`.
+
+Los chats anteriores sin venta quedan como «Sin etapa», y el historial de etapas
+solo cuenta desde el despliegue: no se puede reconstruir hacia atrás.
+
+
 ## 4. Apache
 
 `public/.htaccess` requiere `mod_rewrite`. En Nginx, reescribe `/api/*` a `api/index.php`.

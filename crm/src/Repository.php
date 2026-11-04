@@ -63,11 +63,15 @@ final class Repository
         if ($existing) {
             return (int) $existing['id_conversation'];
         }
-        return Database::execute(
-            'INSERT INTO crm_conversations (id_tenant, id_contact, status_conversation, mode_conversation, bot_active)
-             VALUES (:tenantId, :contactId, \'open\', \'AI\', 1)',
+        $conversationId = Database::execute(
+            'INSERT INTO crm_conversations
+               (id_tenant, id_contact, status_conversation, mode_conversation, bot_active,
+                etapa_conversation, fecha_etapa_conversation)
+             VALUES (:tenantId, :contactId, \'open\', \'AI\', 1, \'nuevo\', NOW())',
             ['tenantId' => $tenantId, 'contactId' => $contactId]
         );
+        self::recordStageChange($conversationId, null, 'nuevo');
+        return $conversationId;
     }
 
     public static function ensureInboundConversation(string $waId, string $name = ''): array
@@ -90,10 +94,11 @@ final class Repository
      */
     const LEAD_NUEVO_MIN = 30;
 
-    public static function listConversations(int $limit = 80): array
+    public static function listConversations(int $limit = 80, array $filters = []): array
     {
         $tenantId = self::ensureTenantId();
         $limit = max(1, min(200, $limit));
+        [$filterSql, $filterParams] = self::conversationFilterSql($filters);
         // `sale`: el agente cerró la venta con todos los datos del pedido. El panel
         // pinta ese chat en verde para que el vendedor entre directo a cobrarlo.
         //
@@ -106,10 +111,11 @@ final class Repository
         // La fecha de crm_messages es la fuente de verdad. `last_message_at`
         // permanece como respaldo para datos históricos, pero no puede ocultar
         // una interacción que sí existe en el hilo.
-        return Database::fetchAll(
+        $rows = Database::fetchAll(
             "SELECT c.id_conversation, c.status_conversation, c.mode_conversation,
                     c.bot_active, c.human_support,
                     c.id_usuario_asignado, c.nombre_usuario_asignado,
+                    c.etapa_conversation, c.motivo_perdida_conversation,
                     COALESCE(
                       (SELECT MAX(activity.fecha_creacion)
                        FROM crm_messages activity
@@ -140,11 +146,686 @@ final class Repository
              LEFT JOIN crm_settings s
                     ON s.id_tenant = c.id_tenant
                    AND s.llave_setting = CONCAT('sale_', c.id_conversation)
-             WHERE c.id_tenant = :tenantId
+             WHERE c.id_tenant = :tenantId{$filterSql}
              ORDER BY last_message_at DESC, c.id_conversation DESC
              LIMIT {$limit}",
-            ['tenantId' => $tenantId, 'nuevoMin' => self::LEAD_NUEVO_MIN]
+            ['tenantId' => $tenantId, 'nuevoMin' => self::LEAD_NUEVO_MIN] + $filterParams
         );
+        return self::attachTags($rows);
+    }
+
+    /** Cuántos chats cumplen el filtro: la lista corta en 200 y hay que poder decirlo. */
+    public static function countConversations(array $filters): int
+    {
+        [$filterSql, $filterParams] = self::conversationFilterSql($filters);
+        return (int) (Database::fetchOne(
+            "SELECT COUNT(*) AS n FROM crm_conversations c
+             WHERE c.id_tenant = :tenantId{$filterSql}",
+            ['tenantId' => self::ensureTenantId()] + $filterParams
+        )['n'] ?? 0);
+    }
+
+    /**
+     * Normaliza los filtros de la bandeja. Lo que no se reconoce se descarta.
+     *
+     * Se aplican en el servidor: `listConversations` corta en un número fijo de
+     * chats, así que filtrar en el navegador ocultaría a los que quedan fuera.
+     *
+     * @return array{etapa?: string, etiqueta?: int, from?: string, to?: string}
+     */
+    public static function parseConversationFilters(array $query): array
+    {
+        $filters = [];
+        $stage = (string) ($query['etapa'] ?? '');
+        if ($stage === self::STAGE_NONE || isset(self::STAGES[$stage])) {
+            $filters['etapa'] = $stage;
+        }
+        $tag = (string) ($query['etiqueta'] ?? '');
+        if (ctype_digit($tag) && (int) $tag > 0) {
+            $filters['etiqueta'] = (int) $tag;
+        }
+        // Los dos extremos juntos: es la cohorte con la que el embudo cuenta sus
+        // números, y abrir uno de ellos debe enseñar exactamente esos chats.
+        $from = (string) ($query['from'] ?? '');
+        $to = (string) ($query['to'] ?? '');
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            $filters['from'] = $from;
+            $filters['to'] = $to;
+        }
+        return $filters;
+    }
+
+    /** @return array{0: string, 1: array<string, mixed>} */
+    private static function conversationFilterSql(array $filters): array
+    {
+        $sql = '';
+        $params = [];
+        if (isset($filters['etapa'])) {
+            if ($filters['etapa'] === self::STAGE_NONE) {
+                $sql .= ' AND c.etapa_conversation IS NULL';
+            } else {
+                $sql .= ' AND c.etapa_conversation = :filterStage';
+                $params['filterStage'] = $filters['etapa'];
+            }
+        }
+        if (isset($filters['etiqueta'])) {
+            $sql .= ' AND EXISTS (SELECT 1 FROM crm_conversacion_etiquetas ce
+                                  WHERE ce.id_conversation = c.id_conversation
+                                    AND ce.id_etiqueta = :filterTag)';
+            $params['filterTag'] = $filters['etiqueta'];
+        }
+        if (isset($filters['from'], $filters['to'])) {
+            $sql .= ' AND c.fecha_creacion BETWEEN :filterFrom AND :filterTo';
+            $params['filterFrom'] = $filters['from'] . ' 00:00:00';
+            $params['filterTo'] = $filters['to'] . ' 23:59:59';
+        }
+        return [$sql, $params];
+    }
+
+    /**
+     * Añade `tags` a cada fila con UNA sola consulta: la bandeja se refresca cada
+     * 4 s, y una consulta por chat serían 80 en cada refresco.
+     *
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private static function attachTags(array $rows): array
+    {
+        if (!$rows) {
+            return $rows;
+        }
+        $ids = array_map(static function (array $row): int {
+            return (int) $row['id_conversation'];
+        }, $rows);
+        $tags = Database::fetchAll(
+            'SELECT ce.id_conversation, e.id_etiqueta, e.nombre_etiqueta, e.color_etiqueta
+             FROM crm_conversacion_etiquetas ce
+             JOIN crm_etiquetas e ON e.id_etiqueta = ce.id_etiqueta
+             WHERE ce.id_conversation IN (' . implode(',', $ids) . ')
+             ORDER BY e.nombre_etiqueta'
+        );
+        $byConversation = [];
+        foreach ($tags as $tag) {
+            $byConversation[(int) $tag['id_conversation']][] = self::mapConversationTag($tag);
+        }
+        foreach ($rows as $i => $row) {
+            $rows[$i]['tags'] = $byConversation[(int) $row['id_conversation']] ?? [];
+        }
+        return $rows;
+    }
+
+    private static function mapConversationTag(array $tag): array
+    {
+        return [
+            'id' => (int) $tag['id_etiqueta'],
+            'name' => (string) $tag['nombre_etiqueta'],
+            'color' => (string) $tag['color_etiqueta'],
+        ];
+    }
+
+    // ── etapas de venta ─────────────────────────────────────────────────────
+
+    /** Etapas del embudo, en orden. */
+    const STAGES = [
+        'nuevo' => 'Nuevo',
+        'cotizado' => 'Cotizado',
+        'vendido' => 'Vendido',
+        'entregado' => 'Entregado',
+        'perdido' => 'Perdido',
+    ];
+
+    /** Valor del filtro para los chats anteriores a la migración 017, sin clasificar. */
+    const STAGE_NONE = 'sin_etapa';
+
+    /**
+     * Las únicas que marca una persona. Vendido y Entregado salen del historial de
+     * ventas: marcarlas a mano permitiría un embudo que contradice a ese historial.
+     */
+    const STAGES_MANUAL = ['nuevo', 'cotizado', 'perdido'];
+
+    const LOST_REASONS = [
+        'precio' => 'Precio',
+        'sin_cobertura' => 'Sin cobertura',
+        'no_respondio' => 'No respondió',
+        'compro_en_otro_lado' => 'Compró en otro lado',
+        'otro' => 'Otro',
+    ];
+
+    /**
+     * Días tras los que un mensaje entrante reabre un chat Perdido o Entregado.
+     * Con menos, el "gracias" de quien acaba de recibir su pedido lo reabriría.
+     */
+    const STAGE_REOPEN_DAYS = 7;
+
+    /**
+     * Cambio manual de etapa.
+     *
+     * Con una venta pendiente de entrega se rechaza: el chat seguiría en el
+     * historial como venta y en el embudo como otra cosa. Si un cliente recibió su
+     * pedido y vuelve a comprar, desde Entregado sí se puede mover.
+     *
+     * @throws InvalidArgumentException dato inválido
+     * @throws DomainException          la etapa actual no lo permite
+     * @throws RuntimeException         la conversación no existe
+     */
+    public static function setConversationStage(
+        int $conversationId,
+        string $stage,
+        ?string $reason,
+        int $userId,
+        string $userName = ''
+    ): array {
+        if (!in_array($stage, self::STAGES_MANUAL, true)) {
+            throw new InvalidArgumentException('Esa etapa la pone el registro de ventas');
+        }
+        $reason = $reason !== null ? trim($reason) : null;
+        if ($stage === 'perdido') {
+            if ($reason === null || !isset(self::LOST_REASONS[$reason])) {
+                throw new InvalidArgumentException('Indica el motivo de la pérdida');
+            }
+        } else {
+            $reason = null;
+        }
+
+        $tenantId = self::ensureTenantId();
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $row = Database::fetchOne(
+                'SELECT etapa_conversation, motivo_perdida_conversation
+                 FROM crm_conversations
+                 WHERE id_conversation = :id AND id_tenant = :tenantId
+                 LIMIT 1 FOR UPDATE',
+                ['id' => $conversationId, 'tenantId' => $tenantId]
+            );
+            if (!$row) {
+                throw new RuntimeException('Conversation not found');
+            }
+            $current = $row['etapa_conversation'];
+            if ($current === 'vendido') {
+                throw new DomainException(
+                    'Este chat tiene una venta pendiente de entrega. Márcala en el Historial de ventas.'
+                );
+            }
+            if ($current !== $stage || $row['motivo_perdida_conversation'] !== $reason) {
+                self::writeStage(
+                    $conversationId,
+                    $current,
+                    $stage,
+                    $reason,
+                    $userId,
+                    self::resolveUserName($userId, $userName)
+                );
+            }
+            $pdo->commit();
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+        return ['stage' => $stage, 'reason' => $reason];
+    }
+
+    /**
+     * Alinea la etapa con la ÚLTIMA venta de la conversación. Corre dentro de la
+     * transacción que escribe la venta: si la venta falla, la etapa no cambia.
+     */
+    private static function syncStageFromSales(int $conversationId): void
+    {
+        $sale = Database::fetchOne(
+            'SELECT estado_venta_historial FROM crm_ventas_historiales
+             WHERE id_conversation = :id
+             ORDER BY marca_cierre_venta_historial DESC, id_venta_historial DESC
+             LIMIT 1',
+            ['id' => $conversationId]
+        );
+        if (!$sale) {
+            return;
+        }
+        $target = $sale['estado_venta_historial'] === 'entregado' ? 'entregado' : 'vendido';
+        $row = Database::fetchOne(
+            'SELECT etapa_conversation FROM crm_conversations
+             WHERE id_conversation = :id LIMIT 1 FOR UPDATE',
+            ['id' => $conversationId]
+        );
+        if ($row && $row['etapa_conversation'] !== $target) {
+            self::writeStage($conversationId, $row['etapa_conversation'], $target);
+        }
+    }
+
+    /**
+     * Un cliente que vuelve es una venta nueva posible: el chat Perdido o Entregado
+     * hace más de STAGE_REOPEN_DAYS regresa a Nuevo con su siguiente mensaje.
+     *
+     * Quien llama no debe dejar que esto tumbe la recepción de un mensaje.
+     */
+    public static function reopenStageOnInbound(int $conversationId): bool
+    {
+        $row = Database::fetchOne(
+            'SELECT etapa_conversation FROM crm_conversations
+             WHERE id_conversation = :id
+               AND etapa_conversation IN (\'perdido\', \'entregado\')
+               AND COALESCE(fecha_etapa_conversation, fecha_creacion)
+                     < DATE_SUB(NOW(), INTERVAL ' . self::STAGE_REOPEN_DAYS . ' DAY)
+             LIMIT 1',
+            ['id' => $conversationId]
+        );
+        if (!$row) {
+            return false;
+        }
+        // Condicional: dos mensajes simultáneos no dejan dos filas de historial.
+        $changed = Database::affect(
+            'UPDATE crm_conversations
+             SET etapa_conversation = \'nuevo\',
+                 motivo_perdida_conversation = NULL,
+                 fecha_etapa_conversation = NOW()
+             WHERE id_conversation = :id AND etapa_conversation = :current',
+            ['id' => $conversationId, 'current' => $row['etapa_conversation']]
+        );
+        if ($changed !== 1) {
+            return false;
+        }
+        self::recordStageChange($conversationId, $row['etapa_conversation'], 'nuevo');
+        return true;
+    }
+
+    private static function writeStage(
+        int $conversationId,
+        ?string $from,
+        string $to,
+        ?string $reason = null,
+        ?int $userId = null,
+        ?string $userName = null
+    ): void {
+        Database::exec(
+            'UPDATE crm_conversations
+             SET etapa_conversation = :stage,
+                 motivo_perdida_conversation = :reason,
+                 fecha_etapa_conversation = NOW()
+             WHERE id_conversation = :id',
+            ['stage' => $to, 'reason' => $reason, 'id' => $conversationId]
+        );
+        self::recordStageChange($conversationId, $from, $to, $reason, $userId, $userName);
+    }
+
+    private static function recordStageChange(
+        int $conversationId,
+        ?string $from,
+        string $to,
+        ?string $reason = null,
+        ?int $userId = null,
+        ?string $userName = null
+    ): void {
+        Database::exec(
+            'INSERT INTO crm_etapas_historial
+               (id_conversation, etapa_anterior, etapa_nueva, motivo_perdida, id_usuario, nombre_usuario)
+             VALUES (:id, :from, :to, :reason, :userId, :userName)',
+            [
+                'id' => $conversationId,
+                'from' => $from,
+                'to' => $to,
+                'reason' => $reason,
+                'userId' => $userId,
+                'userName' => $userName,
+            ]
+        );
+    }
+
+    /**
+     * Embudo por cohorte: de los chats que LLEGARON en estas fechas, en qué etapa
+     * están hoy. Es el mismo criterio que Campañas; contar por fecha de venta
+     * mezclaría numerador y denominador de periodos distintos.
+     */
+    public static function stageFunnel(string $from, string $to): array
+    {
+        $params = [
+            'tenantId' => self::ensureTenantId(),
+            'from' => $from . ' 00:00:00',
+            'to' => $to . ' 23:59:59',
+        ];
+        $counts = [];
+        foreach (Database::fetchAll(
+            'SELECT etapa_conversation AS etapa, COUNT(*) AS n
+             FROM crm_conversations
+             WHERE id_tenant = :tenantId AND fecha_creacion BETWEEN :from AND :to
+             GROUP BY etapa_conversation',
+            $params
+        ) as $row) {
+            $counts[(string) ($row['etapa'] ?? self::STAGE_NONE)] = (int) $row['n'];
+        }
+
+        $reasons = [];
+        foreach (Database::fetchAll(
+            'SELECT motivo_perdida_conversation AS motivo, COUNT(*) AS n
+             FROM crm_conversations
+             WHERE id_tenant = :tenantId AND fecha_creacion BETWEEN :from AND :to
+               AND etapa_conversation = \'perdido\'
+             GROUP BY motivo_perdida_conversation
+             ORDER BY n DESC',
+            $params
+        ) as $row) {
+            $code = (string) ($row['motivo'] ?? '');
+            $reasons[] = [
+                'code' => $code,
+                'label' => self::LOST_REASONS[$code] ?? 'Sin motivo',
+                'count' => (int) $row['n'],
+            ];
+        }
+
+        $stages = [];
+        foreach (self::STAGES as $code => $label) {
+            $stages[] = ['code' => $code, 'label' => $label, 'count' => $counts[$code] ?? 0];
+        }
+        return [
+            'stages' => $stages,
+            'unclassified' => $counts[self::STAGE_NONE] ?? 0,
+            'total' => array_sum($counts),
+            'lost_reasons' => $reasons,
+        ];
+    }
+
+    // ── etiquetas ───────────────────────────────────────────────────────────
+
+    /** Paleta fija: cada valor tiene su clase CSS, así un color no puede inyectar nada. */
+    const TAG_COLORS = ['arena', 'terracota', 'oliva', 'azul', 'rosa', 'gris'];
+
+    public static function listTags(bool $includeArchived = false): array
+    {
+        $rows = Database::fetchAll(
+            'SELECT * FROM crm_etiquetas
+             WHERE id_tenant = :tenantId' . ($includeArchived ? '' : ' AND activa_etiqueta = 1') . '
+             ORDER BY activa_etiqueta DESC, nombre_etiqueta',
+            ['tenantId' => self::ensureTenantId()]
+        );
+        return array_map(static function (array $row): array {
+            return [
+                'id' => (int) $row['id_etiqueta'],
+                'name' => (string) $row['nombre_etiqueta'],
+                'color' => (string) $row['color_etiqueta'],
+                'active' => (bool) $row['activa_etiqueta'],
+                'updated_by' => (string) ($row['nombre_usuario_actualizacion'] ?? ''),
+            ];
+        }, $rows);
+    }
+
+    private static function cleanTagName(string $name): string
+    {
+        $clean = trim((string) preg_replace('/\s+/u', ' ', $name));
+        if ($clean === '' || mb_strlen($clean) > 40) {
+            throw new InvalidArgumentException('El nombre debe tener entre 1 y 40 caracteres');
+        }
+        return $clean;
+    }
+
+    private static function cleanTagColor(string $color): string
+    {
+        if (!in_array($color, self::TAG_COLORS, true)) {
+            throw new InvalidArgumentException('Color no válido');
+        }
+        return $color;
+    }
+
+    /** @throws DomainException si ya existe, aunque difiera en mayúsculas o acentos */
+    public static function createTag(string $name, string $color, int $userId, string $userName = ''): int
+    {
+        try {
+            return Database::execute(
+                'INSERT INTO crm_etiquetas
+                   (id_tenant, nombre_etiqueta, color_etiqueta, id_usuario_actualizacion, nombre_usuario_actualizacion)
+                 VALUES (:tenantId, :name, :color, :userId, :userName)',
+                [
+                    'tenantId' => self::ensureTenantId(),
+                    'name' => self::cleanTagName($name),
+                    'color' => self::cleanTagColor($color),
+                    'userId' => $userId,
+                    'userName' => self::resolveUserName($userId, $userName),
+                ]
+            );
+        } catch (PDOException $error) {
+            if ($error->getCode() === '23000') {
+                throw new DomainException('Ya existe una etiqueta con ese nombre');
+            }
+            throw $error;
+        }
+    }
+
+    /** Renombrar, cambiar color o archivar. No se borra: los chats conservan su etiqueta. */
+    public static function updateTag(int $tagId, array $changes, int $userId, string $userName = ''): void
+    {
+        $fields = [];
+        $params = [
+            'id' => $tagId,
+            'tenantId' => self::ensureTenantId(),
+            'userId' => $userId,
+            'userName' => self::resolveUserName($userId, $userName),
+        ];
+        if (array_key_exists('name', $changes)) {
+            $fields[] = 'nombre_etiqueta = :name';
+            $params['name'] = self::cleanTagName((string) $changes['name']);
+        }
+        if (array_key_exists('color', $changes)) {
+            $fields[] = 'color_etiqueta = :color';
+            $params['color'] = self::cleanTagColor((string) $changes['color']);
+        }
+        if (array_key_exists('active', $changes)) {
+            $fields[] = 'activa_etiqueta = :active';
+            $params['active'] = $changes['active'] ? 1 : 0;
+        }
+        if (!$fields) {
+            throw new InvalidArgumentException('Nada que cambiar');
+        }
+        $exists = Database::fetchOne(
+            'SELECT id_etiqueta FROM crm_etiquetas WHERE id_etiqueta = :id AND id_tenant = :tenantId LIMIT 1',
+            ['id' => $tagId, 'tenantId' => $params['tenantId']]
+        );
+        if (!$exists) {
+            throw new RuntimeException('Tag not found');
+        }
+        try {
+            Database::exec(
+                'UPDATE crm_etiquetas SET ' . implode(', ', $fields) . ',
+                   id_usuario_actualizacion = :userId, nombre_usuario_actualizacion = :userName
+                 WHERE id_etiqueta = :id AND id_tenant = :tenantId',
+                $params
+            );
+        } catch (PDOException $error) {
+            if ($error->getCode() === '23000') {
+                throw new DomainException('Ya existe una etiqueta con ese nombre');
+            }
+            throw $error;
+        }
+    }
+
+    public static function conversationTags(int $conversationId): array
+    {
+        return array_map(
+            [self::class, 'mapConversationTag'],
+            Database::fetchAll(
+                'SELECT e.id_etiqueta, e.nombre_etiqueta, e.color_etiqueta
+                 FROM crm_conversacion_etiquetas ce
+                 JOIN crm_etiquetas e ON e.id_etiqueta = ce.id_etiqueta
+                 WHERE ce.id_conversation = :id
+                 ORDER BY e.nombre_etiqueta',
+                ['id' => $conversationId]
+            )
+        );
+    }
+
+    public static function addConversationTag(
+        int $conversationId,
+        int $tagId,
+        int $userId,
+        string $userName = ''
+    ): array {
+        $tenantId = self::ensureTenantId();
+        $conversation = Database::fetchOne(
+            'SELECT id_conversation FROM crm_conversations
+             WHERE id_conversation = :id AND id_tenant = :tenantId LIMIT 1',
+            ['id' => $conversationId, 'tenantId' => $tenantId]
+        );
+        if (!$conversation) {
+            throw new RuntimeException('Conversation not found');
+        }
+        $tag = Database::fetchOne(
+            'SELECT id_etiqueta FROM crm_etiquetas
+             WHERE id_etiqueta = :id AND id_tenant = :tenantId AND activa_etiqueta = 1 LIMIT 1',
+            ['id' => $tagId, 'tenantId' => $tenantId]
+        );
+        if (!$tag) {
+            throw new InvalidArgumentException('Esa etiqueta no existe o está archivada');
+        }
+        // IGNORE: dos asesores poniendo la misma etiqueta no es un error.
+        Database::exec(
+            'INSERT IGNORE INTO crm_conversacion_etiquetas
+               (id_conversation, id_etiqueta, id_usuario, nombre_usuario)
+             VALUES (:conversationId, :tagId, :userId, :userName)',
+            [
+                'conversationId' => $conversationId,
+                'tagId' => $tagId,
+                'userId' => $userId,
+                'userName' => self::resolveUserName($userId, $userName),
+            ]
+        );
+        return self::conversationTags($conversationId);
+    }
+
+    public static function removeConversationTag(int $conversationId, int $tagId): array
+    {
+        Database::exec(
+            'DELETE ce FROM crm_conversacion_etiquetas ce
+             JOIN crm_conversations c ON c.id_conversation = ce.id_conversation
+             WHERE ce.id_conversation = :conversationId
+               AND ce.id_etiqueta = :tagId
+               AND c.id_tenant = :tenantId',
+            [
+                'conversationId' => $conversationId,
+                'tagId' => $tagId,
+                'tenantId' => self::ensureTenantId(),
+            ]
+        );
+        return self::conversationTags($conversationId);
+    }
+
+    // ── respuestas rápidas ──────────────────────────────────────────────────
+
+    /** Máximo de un mensaje de texto de WhatsApp. */
+    const QUICK_REPLY_MAX = 4096;
+
+    public static function listQuickReplies(bool $includeInactive = false): array
+    {
+        $rows = Database::fetchAll(
+            'SELECT * FROM crm_respuestas_rapidas
+             WHERE id_tenant = :tenantId' . ($includeInactive ? '' : ' AND activa_respuesta = 1') . '
+             ORDER BY activa_respuesta DESC, comando_respuesta',
+            ['tenantId' => self::ensureTenantId()]
+        );
+        return array_map(static function (array $row): array {
+            return [
+                'id' => (int) $row['id_respuesta'],
+                'cmd' => (string) $row['comando_respuesta'],
+                'label' => (string) $row['titulo_respuesta'],
+                'body' => (string) $row['texto_respuesta'],
+                'active' => (bool) $row['activa_respuesta'],
+                'updated_by' => (string) ($row['nombre_usuario_actualizacion'] ?? ''),
+                'updated_at' => self::iso($row['fecha_actualizacion'] ?? null),
+            ];
+        }, $rows);
+    }
+
+    /** @return array{0: string, 1: string, 2: string} */
+    private static function cleanQuickReply(array $input): array
+    {
+        $cmd = trim((string) ($input['cmd'] ?? ''));
+        // Sin espacios ni barras: es lo que el asesor escribe tras "/" en el chat.
+        if (!preg_match('/^[a-z0-9-]{2,32}$/', $cmd)) {
+            throw new InvalidArgumentException(
+                'El comando admite minúsculas, números y guiones (2 a 32 caracteres)'
+            );
+        }
+        $label = trim((string) ($input['label'] ?? ''));
+        if ($label === '' || mb_strlen($label) > 120) {
+            throw new InvalidArgumentException('El título debe tener entre 1 y 120 caracteres');
+        }
+        $body = str_replace("\r\n", "\n", (string) ($input['body'] ?? ''));
+        if (trim($body) === '' || mb_strlen($body) > self::QUICK_REPLY_MAX) {
+            throw new InvalidArgumentException(
+                'El texto debe tener entre 1 y ' . self::QUICK_REPLY_MAX . ' caracteres'
+            );
+        }
+        return [$cmd, $label, $body];
+    }
+
+    public static function createQuickReply(array $input, int $userId, string $userName = ''): int
+    {
+        [$cmd, $label, $body] = self::cleanQuickReply($input);
+        try {
+            return Database::execute(
+                'INSERT INTO crm_respuestas_rapidas
+                   (id_tenant, comando_respuesta, titulo_respuesta, texto_respuesta,
+                    id_usuario_actualizacion, nombre_usuario_actualizacion)
+                 VALUES (:tenantId, :cmd, :label, :body, :userId, :userName)',
+                [
+                    'tenantId' => self::ensureTenantId(),
+                    'cmd' => $cmd,
+                    'label' => $label,
+                    'body' => $body,
+                    'userId' => $userId,
+                    'userName' => self::resolveUserName($userId, $userName),
+                ]
+            );
+        } catch (PDOException $error) {
+            if ($error->getCode() === '23000') {
+                throw new DomainException('Ya existe una respuesta con ese comando');
+            }
+            throw $error;
+        }
+    }
+
+    /** Se desactiva, no se borra: así queda quién escribió qué. */
+    public static function updateQuickReply(int $id, array $input, int $userId, string $userName = ''): void
+    {
+        $tenantId = self::ensureTenantId();
+        $current = Database::fetchOne(
+            'SELECT * FROM crm_respuestas_rapidas
+             WHERE id_respuesta = :id AND id_tenant = :tenantId LIMIT 1',
+            ['id' => $id, 'tenantId' => $tenantId]
+        );
+        if (!$current) {
+            throw new RuntimeException('Quick reply not found');
+        }
+        [$cmd, $label, $body] = self::cleanQuickReply([
+            'cmd' => $input['cmd'] ?? $current['comando_respuesta'],
+            'label' => $input['label'] ?? $current['titulo_respuesta'],
+            'body' => $input['body'] ?? $current['texto_respuesta'],
+        ]);
+        $active = array_key_exists('active', $input)
+            ? ($input['active'] ? 1 : 0)
+            : (int) $current['activa_respuesta'];
+        try {
+            Database::exec(
+                'UPDATE crm_respuestas_rapidas
+                 SET comando_respuesta = :cmd, titulo_respuesta = :label, texto_respuesta = :body,
+                     activa_respuesta = :active,
+                     id_usuario_actualizacion = :userId, nombre_usuario_actualizacion = :userName
+                 WHERE id_respuesta = :id AND id_tenant = :tenantId',
+                [
+                    'cmd' => $cmd,
+                    'label' => $label,
+                    'body' => $body,
+                    'active' => $active,
+                    'userId' => $userId,
+                    'userName' => self::resolveUserName($userId, $userName),
+                    'id' => $id,
+                    'tenantId' => $tenantId,
+                ]
+            );
+        } catch (PDOException $error) {
+            if ($error->getCode() === '23000') {
+                throw new DomainException('Ya existe una respuesta con ese comando');
+            }
+            throw $error;
+        }
     }
 
     public static function getConversation(int $id): ?array
@@ -155,6 +836,7 @@ final class Repository
                     c.ad_source_type, c.ad_source_id, c.ad_headline,
                     c.ad_body, c.ad_source_url,
                     c.id_usuario_asignado, c.nombre_usuario_asignado, c.fecha_asignacion,
+                    c.etapa_conversation, c.motivo_perdida_conversation,
                     (SELECT MAX(entrante.fecha_creacion)
                      FROM crm_messages entrante
                      WHERE entrante.id_conversation = c.id_conversation
@@ -960,6 +1642,7 @@ final class Repository
                 }
                 self::setSetting($key, $snapshot);
             }
+            self::syncStageFromSales($conversationId);
             $pdo->commit();
             return $archived;
         } catch (Throwable $error) {
@@ -1078,6 +1761,7 @@ final class Repository
             );
 
             self::deleteSetting('sale_' . $conversationId);
+            self::syncStageFromSales($conversationId);
             $updated = Database::fetchOne(
                 'SELECT * FROM crm_ventas_historiales
                  WHERE id_venta_historial = :saleId LIMIT 1',
@@ -1153,6 +1837,7 @@ final class Repository
             if ($entregado) {
                 self::deleteSetting('sale_' . (int) $row['id_conversation']);
             }
+            self::syncStageFromSales((int) $row['id_conversation']);
 
             $updated = Database::fetchOne(
                 'SELECT * FROM crm_ventas_historiales
@@ -1210,9 +1895,11 @@ final class Repository
         ?string $from,
         ?string $to,
         string $status = '',
-        string $query = ''
+        string $query = '',
+        int $limit = 500
     ): array {
         $tenantId = self::ensureTenantId();
+        $limit = max(1, min(self::EXPORT_MAX_ROWS, $limit));
         $from = $from ?: date('Y-m-d', strtotime('-30 days'));
         $to = $to ?: date('Y-m-d');
         $where = [
@@ -1247,7 +1934,7 @@ final class Repository
             'SELECT * FROM crm_ventas_historiales
              WHERE ' . implode(' AND ', $where) . '
              ORDER BY fecha_cierre_venta_historial DESC
-             LIMIT 500',
+             LIMIT ' . $limit,
             $params
         );
     }
@@ -1775,6 +2462,9 @@ final class Repository
         ];
     }
 
+    /** Tope de filas de una exportación a CSV. */
+    const EXPORT_MAX_ROWS = 20000;
+
     /** KPIs para la página de reportes. */
     public static function reportsOverview(?string $from, ?string $to): array
     {
@@ -1865,10 +2555,11 @@ final class Repository
         $tenantId = self::ensureTenantId();
         $from = $from ?: date('Y-m-d', strtotime('-30 days'));
         $to = $to ?: date('Y-m-d');
-        $limit = max(1, min(500, $limit));
+        $limit = max(1, min(self::EXPORT_MAX_ROWS, $limit));
         return Database::fetchAll(
             "SELECT c.id_conversation, c.mode_conversation, c.human_support, c.bot_active,
                     c.status_conversation, c.last_message_at, c.fecha_creacion,
+                    c.etapa_conversation,
                     ct.wa_id, ct.nombre_contact,
                     (SELECT COUNT(*) FROM crm_messages m WHERE m.id_conversation = c.id_conversation) AS msg_count
              FROM crm_conversations c
@@ -1962,6 +2653,10 @@ final class Repository
             '013_venta_producto_id' => ['crm_ventas_historiales', 'id_producto_venta_historial'],
             '014_demanda_no_cubierta' => ['crm_demanda_no_cubierta', 'consulta_demanda'],
             '016_competencia' => ['crm_competencia_productos', 'url'],
+            '017_etapas' => ['crm_conversations', 'etapa_conversation'],
+            '017_etapas_historial' => ['crm_etapas_historial', 'etapa_nueva'],
+            '018_etiquetas' => ['crm_conversacion_etiquetas', 'id_etiqueta'],
+            '019_respuestas_rapidas' => ['crm_respuestas_rapidas', 'comando_respuesta'],
         ];
 
         $rows = Database::fetchAll(
@@ -2221,6 +2916,8 @@ final class Repository
             // escriba un mensaje que Meta va a rechazar.
             'window' => self::serviceWindow($c['last_inbound_at'] ?? null),
             'next_followup_at' => self::iso($c['next_followup_at'] ?? null),
+            'stage' => $c['etapa_conversation'] ?? null,
+            'tags' => $c['tags'] ?? [],
             'contact' => [
                 'wa_id' => $c['wa_id'],
                 'name' => $c['nombre_contact'],

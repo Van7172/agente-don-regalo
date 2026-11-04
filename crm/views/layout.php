@@ -38,6 +38,7 @@ $userName = (string) ($user['name'] ?? '');
       <a href="<?= e(url_to('competition.php')) ?>"<?= $name === 'competition' ? ' aria-current="page"' : '' ?>>Competencia</a>
       <a href="<?= e(url_to('content.php')) ?>"<?= $name === 'content' ? ' aria-current="page"' : '' ?>>Crear contenido</a>
       <a href="<?= e(url_to('operaciones.php')) ?>"<?= $name === 'operations' ? ' aria-current="page"' : '' ?>>Operaciones</a>
+      <a href="<?= e(url_to('settings.php')) ?>"<?= $name === 'settings' ? ' aria-current="page"' : '' ?>>Ajustes</a>
     </nav>
 
     <div class="topbar-user">

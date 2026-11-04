@@ -11,6 +11,7 @@ $to = (string) ($_GET['to'] ?? date('Y-m-d'));
 $overview = Repository::reportsOverview($from, $to);
 $rows = Repository::reportsConversations($from, $to, 150);
 $daily = Repository::reportsDaily($from, $to);
+$funnel = Repository::stageFunnel($from, $to);
 
 view('reports', [
     'from' => $from,
@@ -18,4 +19,5 @@ view('reports', [
     'overview' => $overview,
     'rows' => $rows,
     'daily' => $daily,
+    'funnel' => $funnel,
 ]);

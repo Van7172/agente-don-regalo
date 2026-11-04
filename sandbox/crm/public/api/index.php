@@ -1,0 +1,1283 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Front controller API del agente.
+ * Rutas compatibles con sandbox/app/crm/http_client.py
+ */
+
+$config = require dirname(__DIR__, 2) . '/bootstrap.php';
+// Un despliegue puede actualizar este front controller antes que bootstrap.php.
+// El asistente de venta usa AgentClient, pero el inbox completo no debe caer con
+// "Class AgentClient not found" durante esa ventana. Al cargarlo aquí también
+// mantenemos el token exclusivamente en la llamada servidor-a-servidor.
+if (!class_exists('AgentClient', false)) {
+    $agentClientFile = dirname(__DIR__, 2) . '/src/AgentClient.php';
+    if (is_file($agentClientFile)) {
+        require_once $agentClientFile;
+    }
+}
+Http::cors();
+
+$method = Http::method();
+$uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$uri = preg_replace('#/+#', '/', $uri);
+
+// Soporta document root = public/ → /api/...
+// o subcarpeta /crm/public/api/...
+$path = $uri;
+if (preg_match('#/api(/.*)?$#', $uri, $m)) {
+    $path = $m[1] ?? '/';
+}
+$path = rtrim($path, '/') ?: '/';
+
+try {
+    // Health público (sin token) — útil para smoke test
+    if ($path === '/health' && $method === 'GET') {
+        Http::jsonOk([
+            'ok' => true,
+            'service' => 'crm',
+            'tenant' => $config['tenant_slug'] ?? 'don-regalo',
+        ]);
+    }
+
+    // Rutas de agente: token interno
+    // Panel JSON (sesión): conversations GET, outbox POST, mode PATCH también vía session
+    $needsToken = true;
+    $sessionOk = Auth::user() !== null;
+
+    if ($method === 'GET' && ($path === '/conversations' || preg_match('#^/conversations/\d+$#', $path))) {
+        $needsToken = false; // sesión o token
+    }
+    if ($method === 'POST' && $path === '/outbox') {
+        $needsToken = false;
+    }
+    // Subida de medios: el asesor desde el panel (sesión) o el agente (token).
+    if ($method === 'POST' && $path === '/media') {
+        $needsToken = false;
+    }
+    if ($method === 'PATCH' && preg_match('#^/conversations/\d+/mode$#', $path)) {
+        $needsToken = false;
+    }
+    if ($method === 'PATCH' && preg_match('#^/conversations/\d+/sale/delivered$#', $path)) {
+        $needsToken = false;
+    }
+    // Módulos del asesor: van SIEMPRE con sesión (necesitan saber qué usuario
+    // actúa) y cada handler vuelve a exigir `Auth::user()`. Aquí solo se abre la
+    // puerta para que el fetch del panel, que va con cookie y sin token, no
+    // choque contra el 401 genérico.
+    if (preg_match('#^/conversations/\d+/(claim|release|sale|sale-suggestion|notes|followups|stage|tags)$#', $path)) {
+        $needsToken = false;
+    }
+    if (preg_match('#^/conversations/\d+/tags/\d+/remove$#', $path)) {
+        $needsToken = false;
+    }
+    if (preg_match('#^/(tags|quick-replies)(/\d+)?$#', $path)) {
+        $needsToken = false;
+    }
+    if (preg_match('#^/followups(/\d+)?$#', $path)) {
+        $needsToken = false;
+    }
+    if ($method === 'GET' && strpos($path, '/reports') === 0) {
+        $needsToken = false;
+    }
+    if ($method === 'GET' && $path === '/operations') {
+        $needsToken = false;
+    }
+    // Estudio de contenido: lo usa el asesor desde el panel, con su cookie. El
+    // token del agente NO baja al navegador — es el CRM quien lo presenta.
+    if (strpos($path, '/content/') === 0) {
+        $needsToken = false;
+    }
+
+    if ($needsToken) {
+        Auth::assertInternalToken();
+    } elseif (!$sessionOk && !Auth::hasValidInternalToken()) {
+        Http::jsonError('Unauthorized', 401);
+    }
+
+    // GET /conversations
+    if ($path === '/conversations' && $method === 'GET') {
+        // Con filtro caben más: quien busca "los cotizados" no quiere solo los que
+        // además estén entre los 80 más recientes.
+        $filters = Repository::parseConversationFilters($_GET);
+        $rows = Repository::listConversations($filters ? 200 : 80, $filters);
+        $tenantId = Repository::ensureTenantId();
+        $totalTenant = count($rows);
+        // Si la lista viene vacía, distinguir "no hay chats" vs "tenant equivocado".
+        $totalAll = 0;
+        try {
+            $totalAll = (int) (Database::fetchOne(
+                'SELECT COUNT(*) AS n FROM crm_conversations'
+            )['n'] ?? 0);
+        } catch (Throwable $e) {
+            $totalAll = $totalTenant;
+        }
+        Http::jsonOk([
+            'data' => array_map([Repository::class, 'mapConversationList'], $rows),
+            'meta' => [
+                'tenant_id' => $tenantId,
+                'tenant_slug' => Auth::config()['tenant_slug'] ?? 'don-regalo',
+                'count' => $totalTenant,
+                'count_all_tenants' => $totalAll,
+                'matching' => $filters ? Repository::countConversations($filters) : $totalTenant,
+            ],
+        ]);
+    }
+
+    // POST /conversations — inbound agente
+    if ($path === '/conversations' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        if (empty($body['wa_id'])) {
+            Http::jsonError('wa_id required');
+        }
+        $ids = Repository::ensureInboundConversation(
+            (string) $body['wa_id'],
+            (string) ($body['name'] ?? '')
+        );
+        // El cliente respondió a un mensaje: WhatsApp solo manda el id del citado.
+        // El texto lo tiene el CRM, así que lo resolvemos aquí y lo devolvemos:
+        // el agente lo necesita para saber a qué producto se refiere el "quiero este".
+        $quotedText = $body['quoted_text'] ?? null;
+        // Y su FOTO: el cliente suele responder a una imagen ("podría optar por
+        // esta opción?"), y el texto de una imagen es solo el marcador "[image]".
+        $quotedMediaUrl = null;
+        if (!empty($body['quoted_wa_id'])) {
+            $citado = Repository::findQuotedByWaId((string) $body['quoted_wa_id']);
+            if ($citado !== null) {
+                $quotedText = $quotedText ?? $citado['text'];
+                $quotedMediaUrl = $citado['media_url'];
+            }
+        }
+        // De qué anuncio viene el lead. Llega SOLO en el primer mensaje: si no
+        // se guarda ahora, el asesor abre "¡Hola! Quiero más información." sin
+        // saber que lo trajo un anuncio de desayunos.
+        if (!empty($body['referral']) && is_array($body['referral'])) {
+            Repository::setConversationAd($ids['conversationId'], $body['referral']);
+        }
+        $messageId = null;
+        if (!empty($body['content'])) {
+            $messageId = Repository::addMessage([
+                'conversationId' => $ids['conversationId'],
+                'direction' => $body['direction'] ?? 'inbound',
+                'senderType' => $body['sender_type'] ?? 'contact',
+                'role' => $body['role'] ?? 'user',
+                'content' => (string) $body['content'],
+                'waMessageId' => $body['wa_message_id'] ?? null,
+                'mediaUrl' => $body['media_url'] ?? null,
+                'quotedText' => $quotedText,
+                'quotedMediaUrl' => $quotedMediaUrl,
+            ]);
+            if (($body['direction'] ?? 'inbound') === 'inbound') {
+                // El mensaje ya está guardado. Que falle la etapa no puede hacer
+                // que el agente lo dé por perdido y lo reintente.
+                try {
+                    Repository::reopenStageOnInbound($ids['conversationId']);
+                } catch (Throwable $error) {
+                    error_log('[CRM] no se pudo reabrir la etapa: ' . $error->getMessage());
+                }
+            }
+        }
+        $conv = Repository::getConversation($ids['conversationId']);
+        Http::jsonOk([
+            'ok' => true,
+            'tenant_id' => $ids['tenantId'],
+            'contact_id' => $ids['contactId'],
+            'conversation_id' => $ids['conversationId'],
+            'message_id' => $messageId,
+            'quoted_text' => $quotedText,
+            'conversation' => $conv ? [
+                'id' => (int) $conv['id_conversation'],
+                'mode' => $conv['mode_conversation'],
+                'bot_active' => (bool) $conv['bot_active'],
+                'human_support' => (bool) $conv['human_support'],
+            ] : null,
+        ]);
+    }
+
+    // GET|POST /conversations/{id}
+    if (preg_match('#^/conversations/(\d+)$#', $path, $m)) {
+        $id = (int) $m[1];
+        if ($method === 'GET') {
+            $conv = Repository::getConversation($id);
+            if (!$conv) {
+                Http::jsonError('Conversation not found', 404);
+            }
+            $messages = Repository::getMessages($id);
+            $memory = Repository::getMemory((string) $conv['wa_id']);
+            Http::jsonOk([
+                'conversation' => [
+                    'id' => (int) $conv['id_conversation'],
+                    'status' => $conv['status_conversation'],
+                    'mode' => $conv['mode_conversation'],
+                    'bot_active' => (bool) $conv['bot_active'],
+                    'human_support' => (bool) $conv['human_support'],
+                    // Valor real del pin que lee el releaser. Sin devolverlo,
+                    // el checkbox conservaba solo memoria visual del navegador:
+                    // tras abrir otro chat o recargar podía mentir.
+                    'keep_human' => (string) ($conv['keep_human'] ?? '0') === '1',
+                    'last_message_at' => Repository::iso($conv['last_message_at']),
+                    // El agente cerró la venta: el panel pinta el chat en verde y
+                    // muestra el pedido para que el vendedor no lo reconstruya.
+                    'sale' => isset($conv['sale']) && $conv['sale'] !== null
+                        ? json_decode((string) $conv['sale'], true)
+                        : null,
+                    // De qué anuncio vino el lead. Sin esto el asesor abre un
+                    // "¡Hola! Quiero más información." sin saber qué lo provocó.
+                    'ad' => !empty($conv['ad_source_id']) ? [
+                        'source_type' => $conv['ad_source_type'],
+                        'source_id' => $conv['ad_source_id'],
+                        'headline' => $conv['ad_headline'],
+                        'body' => $conv['ad_body'],
+                        'url' => $conv['ad_source_url'],
+                    ] : null,
+                    // Quién tiene el chat: sin esto dos asesores pueden estar
+                    // escribiéndole cosas distintas al mismo cliente.
+                    'assigned' => $conv['id_usuario_asignado'] !== null ? [
+                        'id' => (int) $conv['id_usuario_asignado'],
+                        'name' => (string) ($conv['nombre_usuario_asignado'] ?? ''),
+                        'since' => Repository::iso($conv['fecha_asignacion'] ?? null),
+                    ] : null,
+                    // Ventana de 24h de WhatsApp. El panel la muestra ANTES de
+                    // que el asesor escriba algo que Meta va a rechazar.
+                    'window' => Repository::serviceWindow($conv['last_inbound_at'] ?? null),
+                    'stage' => $conv['etapa_conversation'] ?? null,
+                    'stage_reason' => $conv['motivo_perdida_conversation'] ?? null,
+                    'tags' => Repository::conversationTags($id),
+                    'contact' => [
+                        'wa_id' => $conv['wa_id'],
+                        'name' => $conv['nombre_contact'],
+                    ],
+                ],
+                // Alimenta el panel "Resumen del lead" del inbox.
+                'lead' => $memory ? [
+                    'nombre' => $memory['nombre_memory'] ?? null,
+                    'email' => $memory['email_memory'] ?? null,
+                    'objetivo' => $memory['objetivo_memory'] ?? null,
+                    'situacion' => $memory['situacion_memory'] ?? null,
+                    'temperatura' => $memory['temperatura_memory'] ?? null,
+                    'resumen' => $memory['resumen_memory'] ?? null,
+                ] : null,
+                'messages' => array_map(static function (array $msg): array {
+                    // media_url puede ser una clave de storage (medio de la conversación)
+                    // o una URL absoluta (imagen de catálogo que envía el bot).
+                    $media = (string) ($msg['media_url'] ?? '');
+                    $isExternal = $media !== '' && preg_match('#^https?://#i', $media);
+                    $kind = null;
+                    if ($media !== '') {
+                        if (!$isExternal) {
+                            $kind = Media::kindFor($media);
+                        } elseif (method_exists(Media::class, 'kindForExternal')) {
+                            // Despliegue completo: la clase conoce todos los tipos.
+                            $kind = Media::kindForExternal($media);
+                        } else {
+                            // Compatibilidad durante un despliegue parcial: el
+                            // API puede llegar al hosting unos segundos antes que
+                            // src/Media.php. Nunca tumbamos todo el hilo por eso.
+                            $path = parse_url($media, PHP_URL_PATH);
+                            $ext = strtolower((string) pathinfo(
+                                is_string($path) ? $path : $media,
+                                PATHINFO_EXTENSION
+                            ));
+                            if (in_array($ext, ['ogg', 'oga', 'opus', 'mp3', 'm4a', 'aac', 'amr', 'wav', 'webm'], true)) {
+                                $kind = 'audio';
+                            } elseif (in_array($ext, ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip'], true)) {
+                                $kind = 'document';
+                            } else {
+                                // Mantiene el comportamiento de fotos de catálogo
+                                // cuyas URLs de CDN no muestran una extensión.
+                                $kind = 'image';
+                            }
+                        }
+                    }
+
+                    return [
+                        'id' => (int) $msg['id_message'],
+                        'direction' => $msg['direction_message'],
+                        'sender_type' => $msg['sender_type'],
+                        'role' => $msg['role_message'],
+                        'content' => $msg['content_message'],
+                        'media_url' => $msg['media_url'],
+                        'media_kind' => $kind,
+                        'media_external' => (bool) $isExternal,
+                        'quoted_text' => $msg['quoted_text'],
+                        // La foto citada, resuelta igual que la del mensaje:
+                        // clave de storage o URL absoluta del catálogo.
+                        'quoted_media_url' => $msg['quoted_media_url'],
+                        'quoted_media_external' => !empty($msg['quoted_media_url'])
+                            && preg_match('#^https?://#i', (string) $msg['quoted_media_url']) === 1,
+                        'wa_message_id' => $msg['wa_message_id'],
+                        'created_at' => Repository::iso($msg['fecha_creacion']),
+                    ];
+                }, $messages),
+            ]);
+        }
+        if ($method === 'POST') {
+            Auth::assertInternalToken();
+            $conv = Repository::getConversation($id);
+            if (!$conv) {
+                Http::jsonError('Conversation not found', 404);
+            }
+            $body = Http::readJson();
+            $content = (string) ($body['content'] ?? '');
+            $mediaUrl = $body['media_url'] ?? null;
+            // Una foto/audio/doc puede ir sin pie de texto; el marcador lo usa el inbox.
+            if (trim($content) === '' && empty($mediaUrl)) {
+                Http::jsonError('content or media_url required');
+            }
+            if (trim($content) === '' && !empty($mediaUrl)) {
+                $content = '[media]';
+            }
+            $messageId = Repository::addMessage([
+                'conversationId' => $id,
+                'direction' => $body['direction'] ?? 'outbound',
+                'senderType' => $body['sender_type'] ?? 'bot',
+                'role' => $body['role'] ?? 'assistant',
+                'content' => $content,
+                'waMessageId' => $body['wa_message_id'] ?? null,
+                'mediaUrl' => $mediaUrl,
+                // Si el asesor respondió citando, el hilo debe mostrar la cita.
+                'quotedText' => $body['quoted_text'] ?? null,
+                'quotedMediaUrl' => $body['quoted_media_url'] ?? null,
+            ]);
+            Http::jsonOk(['ok' => true, 'message_id' => $messageId]);
+        }
+    }
+
+    // PATCH /conversations/{id}/mode
+    if (preg_match('#^/conversations/(\d+)/mode$#', $path, $m) && $method === 'PATCH') {
+        $id = (int) $m[1];
+        $body = Http::readJson();
+        if (($body['mode'] ?? '') === 'AI' || ($body['mode'] ?? '') === 'HUMAN') {
+            Repository::setMode($id, (string) $body['mode']);
+            // Devolver el chat al bot lo deja sin dueño. Si siguiera asignado,
+            // el filtro "Mis chats" se llenaría de conversaciones ya terminadas
+            // y el asesor dejaría de mirarlo — que es como muere un filtro.
+            // Incluye la × del rail, que manda mode=AI sin abrir el chat.
+            if ($body['mode'] === 'AI') {
+                Repository::releaseConversation($id);
+            }
+        }
+        if (array_key_exists('bot_active', $body)) {
+            Repository::setBotActive($id, (bool) $body['bot_active']);
+        }
+        if (array_key_exists('human_support', $body)) {
+            Repository::setHumanSupport($id, (bool) $body['human_support']);
+        }
+        if (array_key_exists('keep_human', $body)) {
+            Repository::setSetting('keep_human_' . $id, !empty($body['keep_human']) ? '1' : '0');
+        }
+        $conv = Repository::getConversation($id);
+        if (!$conv) {
+            Http::jsonError('Conversation not found', 404);
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'conversation' => [
+                'id' => (int) $conv['id_conversation'],
+                'mode' => $conv['mode_conversation'],
+                'bot_active' => (bool) $conv['bot_active'],
+                'human_support' => (bool) $conv['human_support'],
+            ],
+        ]);
+    }
+
+    // PATCH /conversations/{id}/sale/delivered — acción manual del asesor.
+    if (preg_match('#^/conversations/(\d+)/sale/delivered$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        try {
+            $sale = Repository::markSaleDelivered((int) $m[1], (int) $user['id']);
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
+    // ── asignación de asesor ────────────────────────────────────────────────
+    //
+    // "Tomar conversación" ya no era suficiente: cambiaba el modo a HUMAN sin
+    // decir de QUÉ humano, así que dos asesores podían atender al mismo cliente.
+    // El claim es un UPDATE condicional; quien no lo gana recibe `claimed: false`
+    // con el nombre de quien sí lo tiene.
+    if (preg_match('#^/conversations/(\d+)/claim$#', $path, $m) && $method === 'POST') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        if (!Repository::getConversation((int) $m[1])) {
+            Http::jsonError('Conversation not found', 404);
+        }
+        $body = Http::readJson();
+        $result = Repository::claimConversation(
+            (int) $m[1],
+            (int) $user['id'],
+            (string) ($user['name'] ?? ''),
+            !empty($body['force'])
+        );
+        // Reinicia el reloj del releaser HUMAN→AI. Sin esto, el ancla seguía
+        // siendo el handoff_at viejo: el asesor tomaba el chat y, al escribir
+        // el cliente, el bot lo recuperaba porque "ya pasaron 20 min" desde
+        // la derivación anterior (sep 2026).
+        if (!empty($result['claimed'])) {
+            Repository::setSetting(
+                'last_human_outbound_' . (int) $m[1],
+                (string) time()
+            );
+        }
+        Http::jsonOk(['ok' => true] + $result);
+    }
+
+    if (preg_match('#^/conversations/(\d+)/release$#', $path, $m) && $method === 'POST') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        Repository::releaseConversation((int) $m[1]);
+        Http::jsonOk(['ok' => true, 'assigned' => null]);
+    }
+
+    // ── asistente de registro de venta ──────────────────────────────────────
+    //
+    // La cookie se valida aquí y el token del agente queda servidor-a-servidor.
+    // Sólo se envía texto de HOY: nada de archivos, URLs ni historial antiguo.
+    // La respuesta es una sugerencia; este endpoint nunca registra la venta.
+    if (preg_match('#^/conversations/(\d+)/sale-suggestion$#', $path, $m) && $method === 'POST') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $conversationId = (int) $m[1];
+        if (!Repository::getConversation($conversationId)) {
+            Http::jsonError('Conversation not found', 404);
+        }
+
+        $timezone = (string) ($config['timezone'] ?? 'America/Lima');
+        $start = new DateTimeImmutable('today', new DateTimeZone($timezone));
+        $until = $start->modify('+1 day');
+        $messages = Repository::getMessagesBetween(
+            $conversationId,
+            $start->format('Y-m-d H:i:s'),
+            $until->format('Y-m-d H:i:s'),
+            500
+        );
+        if (!$messages) {
+            Http::jsonError('No hay mensajes de hoy para analizar.', 422);
+        }
+
+        $payload = array_map(static function (array $message): array {
+            $inbound = (string) ($message['direction_message'] ?? '') === 'inbound';
+            $sender = (string) ($message['sender_type'] ?? '');
+            return [
+                'id' => (int) $message['id_message'],
+                'speaker' => $inbound ? 'cliente' : ($sender === 'agent' ? 'asesor' : 'bot'),
+                'content' => mb_substr((string) ($message['content_message'] ?? ''), 0, 4000),
+                'quoted_text' => mb_substr((string) ($message['quoted_text'] ?? ''), 0, 1000),
+                'created_at' => Repository::iso($message['fecha_creacion'] ?? null),
+            ];
+        }, $messages);
+
+        $suggestion = AgentClient::post('/internal/sales/extract', [
+            'conversation_id' => $conversationId,
+            'today' => $start->format('Y-m-d'),
+            'timezone' => $timezone,
+            'messages' => $payload,
+        ], 60);
+        Http::jsonOk($suggestion);
+    }
+
+    // ── venta registrada por el asesor ──────────────────────────────────────
+    //
+    // El chat que llega a un humano es el que el bot no pudo cerrar: sin esto,
+    // la mayoría de las ventas del CRM no existían en ningún registro.
+    if (preg_match('#^/conversations/(\d+)/sale$#', $path, $m) && $method === 'POST') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        if (!Repository::getConversation((int) $m[1])) {
+            Http::jsonError('Conversation not found', 404);
+        }
+        try {
+            $sale = Repository::registerManualSale(
+                (int) $m[1],
+                Http::readJson(),
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 422);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
+    // ── notas internas ──────────────────────────────────────────────────────
+    if (preg_match('#^/conversations/(\d+)/notes$#', $path, $m)) {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $conversationId = (int) $m[1];
+        if ($method === 'GET') {
+            Http::jsonOk([
+                'ok' => true,
+                'data' => array_map(static function (array $n): array {
+                    return [
+                        'id' => (int) $n['id_nota'],
+                        'text' => (string) $n['nota_texto'],
+                        'author' => (string) ($n['nombre_usuario'] ?? ''),
+                        'created_at' => Repository::iso($n['fecha_creacion']),
+                    ];
+                }, Repository::listNotes($conversationId)),
+            ]);
+        }
+        if ($method === 'POST') {
+            if (!Repository::getConversation($conversationId)) {
+                Http::jsonError('Conversation not found', 404);
+            }
+            $body = Http::readJson();
+            try {
+                $note = Repository::addNote(
+                    $conversationId,
+                    (string) ($body['text'] ?? ''),
+                    (int) $user['id'],
+                    (string) ($user['name'] ?? '')
+                );
+            } catch (RuntimeException $error) {
+                Http::jsonError($error->getMessage(), 422);
+            }
+            Http::jsonOk([
+                'ok' => true,
+                'note' => [
+                    'id' => (int) ($note['id_nota'] ?? 0),
+                    'text' => (string) ($note['nota_texto'] ?? ''),
+                    'author' => (string) ($note['nombre_usuario'] ?? ''),
+                    'created_at' => Repository::iso($note['fecha_creacion'] ?? null),
+                ],
+            ]);
+        }
+    }
+
+    // ── seguimientos ────────────────────────────────────────────────────────
+    if (preg_match('#^/conversations/(\d+)/followups$#', $path, $m)) {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $conversationId = (int) $m[1];
+        if ($method === 'GET') {
+            Http::jsonOk([
+                'ok' => true,
+                'data' => array_map([Repository::class, 'mapFollowup'], Repository::listFollowups($conversationId)),
+            ]);
+        }
+        if ($method === 'POST') {
+            if (!Repository::getConversation($conversationId)) {
+                Http::jsonError('Conversation not found', 404);
+            }
+            $body = Http::readJson();
+            try {
+                $followup = Repository::addFollowup(
+                    $conversationId,
+                    (string) ($body['reason'] ?? ''),
+                    (string) ($body['when'] ?? ''),
+                    (int) $user['id'],
+                    (string) ($user['name'] ?? '')
+                );
+            } catch (RuntimeException $error) {
+                Http::jsonError($error->getMessage(), 422);
+            }
+            Http::jsonOk(['ok' => true, 'followup' => Repository::mapFollowup($followup)]);
+        }
+    }
+
+    // Lista global: alimenta el rail "seguimientos vencidos" del inbox. Un
+    // recordatorio en una tabla que nadie mira no sirve de nada.
+    if ($path === '/followups' && $method === 'GET') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'data' => array_map([Repository::class, 'mapFollowup'], Repository::listDueFollowups()),
+        ]);
+    }
+
+    if (preg_match('#^/followups/(\d+)$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $body = Http::readJson();
+        $status = (string) ($body['status'] ?? '');
+        if (!in_array($status, Repository::FOLLOWUP_STATUSES, true)) {
+            Http::jsonError('Invalid followup status');
+        }
+        try {
+            $followup = Repository::setFollowupStatus(
+                (int) $m[1],
+                $status,
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'followup' => Repository::mapFollowup($followup)]);
+    }
+
+    // PATCH /sales/{id}/status — cambio de estado desde el Historial de Ventas.
+    // Va por id de venta (no por conversación, como /sale/delivered): en el
+    // historial el vendedor tiene delante una fila concreta, y una conversación
+    // puede tener varias ventas.
+    if (preg_match('#^/sales/(\d+)/status$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $body = Http::readJson();
+        $status = (string) ($body['status'] ?? '');
+        if (!in_array($status, Repository::SALE_STATUSES, true)) {
+            Http::jsonError('Invalid status');
+        }
+        try {
+            $sale = Repository::setSaleStatus((int) $m[1], $status, (int) $user['id']);
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
+    // ── etapas, etiquetas y respuestas rápidas ──────────────────────────────
+    //
+    // Siempre con sesión: dejan constancia de qué asesor hizo cada cambio.
+    // PDOException hereda de RuntimeException: sin relanzarla, un fallo de MySQL
+    // saldría como un 404 "no existe".
+    $panelAction = static function (callable $action) {
+        try {
+            return $action();
+        } catch (InvalidArgumentException $error) {
+            Http::jsonError($error->getMessage(), 422);
+        } catch (DomainException $error) {
+            Http::jsonError($error->getMessage(), 409);
+        } catch (PDOException $error) {
+            throw $error;
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+    };
+    $panelUser = static function (): array {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        return $user;
+    };
+
+    if (preg_match('#^/conversations/(\d+)/stage$#', $path, $m) && $method === 'PATCH') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $reason = isset($body['reason']) ? (string) $body['reason'] : null;
+        $result = $panelAction(static function () use ($m, $body, $reason, $user) {
+            return Repository::setConversationStage(
+                (int) $m[1],
+                (string) ($body['stage'] ?? ''),
+                $reason,
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        });
+        Http::jsonOk(['ok' => true] + $result);
+    }
+
+    if (preg_match('#^/conversations/(\d+)/tags$#', $path, $m) && $method === 'POST') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $tags = $panelAction(static function () use ($m, $body, $user) {
+            return Repository::addConversationTag(
+                (int) $m[1],
+                (int) ($body['tag_id'] ?? 0),
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        });
+        Http::jsonOk(['ok' => true, 'tags' => $tags]);
+    }
+
+    // POST y no DELETE: hay hostings compartidos que filtran ese verbo.
+    if (preg_match('#^/conversations/(\d+)/tags/(\d+)/remove$#', $path, $m) && $method === 'POST') {
+        $panelUser();
+        Http::jsonOk([
+            'ok' => true,
+            'tags' => Repository::removeConversationTag((int) $m[1], (int) $m[2]),
+        ]);
+    }
+
+    if ($path === '/tags' && $method === 'GET') {
+        $panelUser();
+        Http::jsonOk(['data' => Repository::listTags(($_GET['all'] ?? '') === '1')]);
+    }
+    if ($path === '/tags' && $method === 'POST') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $id = $panelAction(static function () use ($body, $user) {
+            return Repository::createTag(
+                (string) ($body['name'] ?? ''),
+                (string) ($body['color'] ?? 'arena'),
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        });
+        Http::jsonOk(['ok' => true, 'id' => $id], 201);
+    }
+    if (preg_match('#^/tags/(\d+)$#', $path, $m) && $method === 'PATCH') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $panelAction(static function () use ($m, $body, $user) {
+            Repository::updateTag((int) $m[1], $body, (int) $user['id'], (string) ($user['name'] ?? ''));
+        });
+        Http::jsonOk(['ok' => true]);
+    }
+
+    if ($path === '/quick-replies' && $method === 'GET') {
+        $panelUser();
+        Http::jsonOk(['data' => Repository::listQuickReplies(($_GET['all'] ?? '') === '1')]);
+    }
+    if ($path === '/quick-replies' && $method === 'POST') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $id = $panelAction(static function () use ($body, $user) {
+            return Repository::createQuickReply($body, (int) $user['id'], (string) ($user['name'] ?? ''));
+        });
+        Http::jsonOk(['ok' => true, 'id' => $id], 201);
+    }
+    if (preg_match('#^/quick-replies/(\d+)$#', $path, $m) && $method === 'PATCH') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $panelAction(static function () use ($m, $body, $user) {
+            Repository::updateQuickReply((int) $m[1], $body, (int) $user['id'], (string) ($user['name'] ?? ''));
+        });
+        Http::jsonOk(['ok' => true]);
+    }
+
+    // Memory
+    if (preg_match('#^/memory/([^/]+)$#', $path, $m)) {
+        $waId = preg_replace('/\D/', '', $m[1]) ?: $m[1];
+        if ($method === 'GET') {
+            Http::jsonOk(['ok' => true, 'memory' => Repository::getMemory($waId)]);
+        }
+        if ($method === 'PUT') {
+            Auth::assertInternalToken();
+            Repository::upsertMemory($waId, Http::readJson());
+            Http::jsonOk(['ok' => true, 'memory' => Repository::getMemory($waId)]);
+        }
+    }
+
+    // Leads
+    if ($path === '/leads' && $method === 'GET') {
+        $phone = preg_replace('/\D/', '', (string) ($_GET['phone'] ?? '')) ?: '';
+        if ($phone === '') {
+            Http::jsonError('phone required');
+        }
+        Http::jsonOk(['ok' => true, 'lead' => Repository::getLeadByPhone($phone)]);
+    }
+    if ($path === '/leads' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        if (empty($body['wa_id'])) {
+            Http::jsonError('wa_id required');
+        }
+        Repository::upsertLead([
+            'waId' => (string) $body['wa_id'],
+            'name' => $body['name'] ?? null,
+            'email' => $body['email'] ?? null,
+            'notes' => $body['notes'] ?? null,
+            'temperatura' => $body['temperatura'] ?? null,
+        ]);
+        Http::jsonOk(['ok' => true]);
+    }
+
+    // Settings
+    if ($path === '/settings' && $method === 'GET') {
+        $key = $_GET['key'] ?? null;
+        if ($key) {
+            Http::jsonOk(['ok' => true, 'key' => $key, 'value' => Repository::getSetting((string) $key)]);
+        }
+        $paused = Repository::getSetting('paused');
+        Http::jsonOk(['ok' => true, 'settings' => ['paused' => $paused === '1']]);
+    }
+    if ($path === '/settings' && $method === 'PUT') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        foreach ($body as $key => $value) {
+            $stored = is_bool($value) ? ($value ? '1' : '0') : (string) $value;
+            $key = (string) $key;
+            if (preg_match('/^sale_(\d+)$/', $key, $saleMatch)) {
+                $sale = json_decode($stored, true);
+                if (
+                    !is_array($sale) ||
+                    empty($sale['producto']) ||
+                    empty($sale['cerrada_en'])
+                ) {
+                    Http::jsonError('Invalid sale payload', 422);
+                }
+                Repository::storeActiveSale((int) $saleMatch[1], $sale);
+                continue;
+            }
+            Repository::setSetting($key, $stored);
+        }
+        Http::jsonOk(['ok' => true]);
+    }
+
+    // POST /settings/cas — escritura condicional por versión.
+    //
+    // El estado del harness lo escriben tres caminos (el turno, el releaser y el
+    // handoff) y el lock de Redis solo serializa los turnos entrantes. Sin esto,
+    // el releaser guardaba una foto vieja del documento y borraba lo que el turno
+    // había avanzado mientras tanto.
+    //
+    // `stored: false` significa "otro escribió antes que tú": el agente relee y
+    // reintenta. Va con 200 a propósito — un 409 lo contaría como fallo del CRM
+    // en el circuit breaker del agente, y esto es funcionamiento normal.
+    if ($path === '/settings/cas' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        $key = trim((string) ($body['key'] ?? ''));
+        if ($key === '') {
+            Http::jsonError('key required');
+        }
+        if (!array_key_exists('value', $body)) {
+            Http::jsonError('value required');
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'stored' => Repository::casSetting(
+                $key,
+                (string) $body['value'],
+                (int) ($body['expected_version'] ?? 0)
+            ),
+        ]);
+    }
+
+    // GET /schema — qué migraciones tiene corridas esta base.
+    //
+    // Va con token y NO dentro de `/health`, que es público: el esquema le
+    // dice a cualquiera qué versión del CRM corre y qué columnas tiene. Es lo
+    // que consulta `scripts/check_deploy.py` después de subir, para que
+    // saltarse una migración dé un error en vez de una pantalla vacía.
+    if ($path === '/schema' && $method === 'GET') {
+        Auth::assertInternalToken();
+        Http::jsonOk(['ok' => true, 'schema' => Repository::schemaState()]);
+    }
+
+    // POST /competition/products — lote de productos ajenos (Fase 2).
+    //
+    // El crawl vive en el agente; aquí solo se persiste. Sin URL no se guarda.
+    if ($path === '/competition/products' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        $slug = trim((string) ($body['slug'] ?? ''));
+        if ($slug === '') {
+            Http::jsonError('slug required');
+        }
+        $products = $body['products'] ?? [];
+        if (!is_array($products)) {
+            Http::jsonError('products must be an array');
+        }
+        $upserted = Repository::upsertCompetitionProducts(
+            $slug,
+            $products,
+            (string) ($body['crawl_started'] ?? date('Y-m-d H:i:s')),
+            !empty($body['mark_missing_inactive'])
+        );
+        Http::jsonOk(['ok' => true, 'upserted' => $upserted]);
+    }
+
+    // POST /demand — el agente buscó algo y el catálogo no lo tenía.
+    //
+    // No es recuperable hacia atrás: el histórico no guarda qué devolvió cada
+    // búsqueda, así que solo cuenta desde que esto existe. Responde 200 aunque
+    // la fila no se llegue a escribir — el agente lo manda en segundo plano y
+    // no reintenta, y un error aquí solo serviría para sumar fallos al circuit
+    // breaker por un dato que no afecta a ninguna conversación.
+    if ($path === '/demand' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        $query = trim((string) ($body['query'] ?? ''));
+        if ($query === '') {
+            Http::jsonError('query required');
+        }
+        $conversationId = isset($body['conversation_id']) && $body['conversation_id'] !== null
+            ? (int) $body['conversation_id']
+            : null;
+        Repository::recordDemandMiss(
+            $query,
+            (string) ($body['resultado'] ?? 'vacio'),
+            (int) ($body['n_resultados'] ?? 0),
+            isset($body['categoria']) && $body['categoria'] !== null
+                ? (string) $body['categoria']
+                : null,
+            $conversationId
+        );
+        Http::jsonOk(['ok' => true]);
+    }
+
+    // POST /media — sube un archivo y devuelve su clave de almacenamiento.
+    if ($path === '/media' && $method === 'POST') {
+        // Cuando el archivo pasa del límite de PHP (`upload_max_filesize` /
+        // `post_max_size`), $_FILES llega vacío o con código de error y esto
+        // respondía "file required" — que hace pensar en un bug del panel cuando
+        // en realidad es el hosting rechazando el archivo. El asesor veía "no se
+        // envió" sin ninguna pista de por qué.
+        $subida = $_FILES['file'] ?? null;
+        $codigo = is_array($subida) ? (int) ($subida['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+        if (!is_array($subida) || $codigo !== UPLOAD_ERR_OK) {
+            $limite = ini_get('upload_max_filesize') ?: '?';
+            $post = ini_get('post_max_size') ?: '?';
+            $motivos = [
+                UPLOAD_ERR_INI_SIZE => "El archivo supera el máximo del servidor (upload_max_filesize = {$limite}).",
+                UPLOAD_ERR_FORM_SIZE => 'El archivo supera el máximo del formulario.',
+                UPLOAD_ERR_PARTIAL => 'La subida se cortó a medias. Reintenta.',
+                UPLOAD_ERR_NO_FILE => 'No llegó ningún archivo.',
+                UPLOAD_ERR_NO_TMP_DIR => 'El servidor no tiene carpeta temporal para subidas.',
+                UPLOAD_ERR_CANT_WRITE => 'El servidor no pudo escribir el archivo.',
+                UPLOAD_ERR_EXTENSION => 'Una extensión de PHP bloqueó la subida.',
+            ];
+            // Sin $_FILES y con CONTENT_LENGTH grande, fue post_max_size: PHP
+            // descarta TODO el POST antes de poblar $_FILES.
+            $enviado = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+            if (!is_array($subida) && $enviado > 0) {
+                Http::jsonError(
+                    "El envío pesa " . round($enviado / 1048576, 1) . " MB y el servidor "
+                    . "acepta hasta {$post} por POST (post_max_size).",
+                    413
+                );
+            }
+            Http::jsonError($motivos[$codigo] ?? 'No se pudo subir el archivo.', 413);
+        }
+        try {
+            $key = Media::storeUploaded($_FILES['file']);
+        } catch (RuntimeException $e) {
+            Http::jsonError($e->getMessage(), 422);
+        }
+        Http::jsonOk([
+            'ok' => true,
+            'key' => $key,
+            'kind' => Media::kindFor($key),
+            'mime' => Media::mimeFor($key),
+            'name' => (string) ($_FILES['file']['name'] ?? ''),
+        ]);
+    }
+
+    // Outbox
+    if ($path === '/outbox' && $method === 'GET') {
+        Auth::assertInternalToken();
+        Http::jsonOk(['ok' => true, 'data' => Repository::listPendingOutbox(30)]);
+    }
+    // Reclamar una fila antes de mandarla a WhatsApp. `claimed: false` significa
+    // que otro camino (el push o el drenaje) ya la tiene: quien recibe eso NO
+    // debe enviar nada. Es lo que impide que el mismo mensaje del asesor salga
+    // dos y tres veces.
+    if ($path === '/outbox/claim' && $method === 'POST') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        if (empty($body['outbox_id'])) {
+            Http::jsonError('outbox_id required');
+        }
+        $claimed = Repository::claimOutbox((int) $body['outbox_id']);
+        Http::jsonOk(['ok' => true, 'claimed' => $claimed]);
+    }
+    if ($path === '/outbox' && $method === 'POST') {
+        $body = Http::readJson();
+        if (empty($body['conversation_id'])) {
+            Http::jsonError('conversation_id required');
+        }
+
+        $mediaPath = (string) ($body['media_path'] ?? '');
+        $content = (string) ($body['content'] ?? '');
+        // Un adjunto puede ir sin texto (una foto sola), pero un mensaje de texto no puede ir vacío.
+        if ($mediaPath === '' && trim($content) === '') {
+            Http::jsonError('content or media_path required');
+        }
+        if ($mediaPath !== '' && Media::pathFor($mediaPath) === null) {
+            Http::jsonError('media_path not found', 404);
+        }
+
+        $type = $mediaPath !== '' ? Media::kindFor($mediaPath) : 'text';
+
+        $convId = (int) $body['conversation_id'];
+        $conv = Repository::getConversation($convId);
+        if (!$conv) {
+            Http::jsonError('Conversation not found', 404);
+        }
+
+        // Ventana de servicio de WhatsApp. Pasadas 24h desde el último mensaje
+        // del cliente, la Cloud API rechaza el texto libre: el mensaje se
+        // encolaba, moría en `failed` y el panel decía "No se envió" sin más — el
+        // asesor reintentaba y volvía a fallar. Frenarlo aquí con el motivo es
+        // estrictamente mejor: al cliente no le llegaba de ninguna manera.
+        //
+        // Solo se bloquea cuando SABEMOS que está cerrada (`known`). Sin ningún
+        // mensaje entrante no hay evidencia, y sin evidencia no se le quita al
+        // equipo la posibilidad de escribir.
+        $window = Repository::serviceWindow($conv['last_inbound_at'] ?? null);
+        if ($window['known'] && !$window['open']) {
+            $desde = $window['last_inbound_at']
+                ? date('d/m/Y H:i', (int) strtotime($window['last_inbound_at']))
+                : '?';
+            Http::jsonError(
+                'WhatsApp no permite escribir: pasaron más de '
+                . Repository::SERVICE_WINDOW_HOURS . ' horas desde el último mensaje '
+                . "del cliente ({$desde}). Hay que esperar a que vuelva a escribir "
+                . 'o contactarlo con una plantilla aprobada por Meta.',
+                422
+            );
+        }
+        // El asesor respondió a un mensaje desde el inbox: la cita viaja hasta la
+        // Cloud API para que el cliente la vea en su WhatsApp, y se guarda en el
+        // hilo del CRM para que el resto del equipo sepa a qué se respondía.
+        $replyToWaId = trim((string) ($body['reply_to_wa_id'] ?? '')) ?: null;
+        $replyCitado = $replyToWaId !== null
+            ? Repository::findQuotedByWaId($replyToWaId)
+            : null;
+        $replyQuoted = $replyCitado['text'] ?? null;
+        // El asesor también cita fotos (las suyas o las del cliente).
+        $replyQuotedMedia = $replyCitado['media_url'] ?? null;
+
+        $filename = trim((string) ($body['filename'] ?? ''));
+        $outboxId = Repository::enqueueOutbox([
+            'conversationId' => $convId,
+            'waId' => $conv['wa_id'],
+            'content' => $content,
+            'type' => $type,
+            'mediaPath' => $mediaPath !== '' ? $mediaPath : null,
+            'filename' => $filename,
+            'replyToWaId' => $replyToWaId,
+        ]);
+        // Marca actividad del asesor para el auto-releaser HUMAN→AI del agente.
+        Repository::setSetting('last_human_outbound_' . $convId, (string) time());
+
+        $agentUrl = rtrim((string) ($config['agent_base_url'] ?? ''), '/');
+        $agentToken = (string) ($config['agent_internal_token'] ?? '');
+        $urlLooksFake = $agentUrl === ''
+            || strpos($agentUrl, 'XXXX') !== false
+            || strpos($agentUrl, 'example') !== false
+            || strpos($agentUrl, 'cambia-') !== false;
+
+        // Sin URL válida: dejamos pending para que el agente lo drene; avisamos al panel.
+        if ($urlLooksFake) {
+            Http::jsonOk([
+                'ok' => true,
+                'outbox_id' => $outboxId,
+                'queued' => true,
+                'pushed' => false,
+                'warning' =>
+                    'agent_base_url vacío o de ejemplo en config.php. '
+                    . 'El mensaje quedó en cola; configura la URL pública del agente en EasyPanel.',
+            ]);
+        }
+
+        $payload = json_encode([
+            'outbox_id' => $outboxId,
+            'wa_id' => $conv['wa_id'],
+            'content' => $content,
+            'conversation_id' => $convId,
+            'type' => $type,
+            'media_path' => $mediaPath !== '' ? $mediaPath : null,
+            'filename' => $filename,
+            'reply_to_wa_id' => $replyToWaId,
+            'quoted_text' => $replyQuoted,
+            'quoted_media_url' => $replyQuotedMedia,
+        ], JSON_UNESCAPED_UNICODE);
+
+        $ch = curl_init($agentUrl . '/internal/outbox/send');
+        if ($ch === false) {
+            // Pending: el drenaje del agente puede recuperarlo.
+            Http::jsonOk([
+                'ok' => true,
+                'outbox_id' => $outboxId,
+                'queued' => true,
+                'pushed' => false,
+                'warning' => 'No se pudo iniciar curl hacia el agente; mensaje en cola.',
+            ]);
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => array_filter([
+                'Content-Type: application/json',
+                $agentToken !== '' ? 'X-Agent-Token: ' . $agentToken : null,
+            ]),
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_RETURNTRANSFER => true,
+            // Los medios tardan más: el agente descarga, convierte y sube a Meta.
+            CURLOPT_TIMEOUT => $type === 'text' ? 25 : 60,
+        ]);
+        $resBody = (string) curl_exec($ch);
+        $curlErr = curl_error($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        // El agente ya: envió a WA, marcó el outbox, guardó el mensaje y puso modo HUMAN.
+        // No insertar el mensaje aquí (evita duplicados en el inbox).
+        if ($code < 200 || $code >= 300) {
+            // Dejamos pending (no failed) para que el drenaje del agente reintente.
+            $detail = $curlErr !== '' ? $curlErr : (substr($resBody, 0, 300) ?: "HTTP {$code}");
+            Http::jsonOk([
+                'ok' => true,
+                'outbox_id' => $outboxId,
+                'queued' => true,
+                'pushed' => false,
+                'warning' =>
+                    'El agente no respondió bien al push (' . $detail . '). '
+                    . 'Mensaje en cola; si en ~30s no llega a WhatsApp, revisa agent_base_url y AGENT_INTERNAL_TOKEN.',
+            ]);
+        }
+
+        Http::jsonOk(['ok' => true, 'outbox_id' => $outboxId, 'queued' => false, 'pushed' => true]);
+    }
+    if ($path === '/outbox' && $method === 'PATCH') {
+        Auth::assertInternalToken();
+        $body = Http::readJson();
+        if (empty($body['outbox_id']) || empty($body['status'])) {
+            Http::jsonError('outbox_id and status required');
+        }
+        Repository::markOutbox((int) $body['outbox_id'], (string) $body['status'], $body['error'] ?? null);
+        Http::jsonOk(['ok' => true]);
+    }
+
+    // Outbox RAG: solo agente autenticado. MySQL permanece cerrado a Internet.
+    if ($path === '/embedding-jobs/claim' && $method === 'POST') {
+        $body = Http::readJson();
+        $limit = max(1, min(50, (int) ($body['limit'] ?? 10)));
+        Http::jsonOk([
+            'ok' => true,
+            'data' => Repository::claimEmbeddingJobs($limit),
+        ]);
+    }
+
+    if (preg_match('#^/embedding-jobs/(\d+)$#', $path, $matches)
+        && $method === 'PATCH') {
+        $body = Http::readJson();
+        $status = (string) ($body['status'] ?? '');
+        if (!in_array($status, ['done', 'deleted', 'retry'], true)) {
+            Http::jsonError('invalid embedding job status', 422);
+        }
+        if ($status === 'done') {
+            if (empty($body['content_hash'])
+                || empty($body['embedding_model'])
+                || empty($body['dimensions'])
+                || empty($body['embedding_base64'])) {
+                Http::jsonError('embedding result incomplete', 422);
+            }
+            $binary = base64_decode((string) $body['embedding_base64'], true);
+            if ($binary === false || strlen($binary) !== (int) $body['dimensions'] * 4) {
+                Http::jsonError('embedding payload invalid', 422);
+            }
+        }
+        $updated = Repository::finishEmbeddingJob((int) $matches[1], $body);
+        if (!$updated) {
+            Http::jsonError('embedding job is not processing', 409);
+        }
+        Http::jsonOk(['ok' => true]);
+    }
+
+    // Watchdog
+    if ($path === '/watchdog/unanswered' && $method === 'GET') {
+        Auth::assertInternalToken();
+        $minSec = (int) ($_GET['min_sec'] ?? 180);
+        $maxSec = (int) ($_GET['max_sec'] ?? 7200);
+        $rows = Repository::getUnansweredConversations($minSec, $maxSec);
+        Http::jsonOk([
+            'ok' => true,
+            'data' => array_map(static function (array $r): array {
+                return [
+                    'id' => (int) $r['id_conversation'],
+                    'phone' => $r['phone'],
+                    'name' => $r['name'],
+                    'last_role' => $r['last_role'],
+                    'last_at' => $r['last_at'],
+                ];
+            }, $rows),
+        ]);
+    }
+
+    // Reports (sesión o token)
+    if ($path === '/reports/overview' && $method === 'GET') {
+        Http::jsonOk([
+            'ok' => true,
+            'data' => Repository::reportsOverview(
+                isset($_GET['from']) ? (string) $_GET['from'] : null,
+                isset($_GET['to']) ? (string) $_GET['to'] : null
+            ),
+        ]);
+    }
+    if ($path === '/reports/conversations' && $method === 'GET') {
+        Http::jsonOk([
+            'ok' => true,
+            'data' => Repository::reportsConversations(
+                isset($_GET['from']) ? (string) $_GET['from'] : null,
+                isset($_GET['to']) ? (string) $_GET['to'] : null
+            ),
+        ]);
+    }
+    if ($path === '/operations' && $method === 'GET') {
+        Http::jsonOk([
+            'ok' => true,
+            'crm' => Repository::operationalOverview(),
+            'agent' => OperationsClient::fetch($config),
+        ]);
+    }
+
+    // ── estudio de contenido ────────────────────────────────────────────────
+    //
+    // El CRM hace de puente hacia el agente y no consulta el catálogo por su
+    // cuenta: `tools/adapters.py` es lo único que sabe normalizar las tres
+    // formas de producto que devuelve la API y convertir de dólares a soles.
+    // Repetir esa conversión en PHP sería garantizar que el precio del post y
+    // el que cotiza el bot acaben divergiendo.
+
+    if ($path === '/content/products' && $method === 'GET') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $q = trim((string) ($_GET['q'] ?? ''));
+        // Mismo mínimo que el selector del panel. El corte se repite aquí porque
+        // el navegador no es quien decide cuánto se le pregunta al agente.
+        if (mb_strlen($q) < 3) {
+            Http::jsonOk(['data' => [], 'total' => 0]);
+        }
+        $res = AgentClient::get('/internal/catalog/search', ['q' => $q, 'limit' => 8], 15);
+        Http::jsonOk([
+            'data' => $res['data'] ?? [],
+            'total' => (int) ($res['total'] ?? 0),
+        ]);
+    }
+
+    if ($path === '/content/draft' && $method === 'POST') {
+        if (!Auth::user()) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        $body = Http::readJson();
+        $producto = $body['producto'] ?? null;
+        if (!is_array($producto) || ($producto['nombre'] ?? '') === '') {
+            Http::jsonError('Elige un producto del catálogo antes de generar.', 422);
+        }
+        // El LLM tarda más que cualquier otra cosa del panel: timeout propio.
+        $res = AgentClient::post('/internal/content/draft', [
+            'producto' => $producto,
+            'tono' => (string) ($body['tono'] ?? 'casual'),
+            'formato' => (string) ($body['formato'] ?? '9:16'),
+            'instrucciones' => (string) ($body['instrucciones'] ?? ''),
+            'incluir_precio' => (bool) ($body['incluir_precio'] ?? true),
+            'incluir_cta' => (bool) ($body['incluir_cta'] ?? true),
+            'variantes' => (int) ($body['variantes'] ?? 3),
+        ], 60);
+        Http::jsonOk($res);
+    }
+
+    Http::jsonError('Not found', 404);
+} catch (Throwable $e) {
+    Http::jsonError($e->getMessage(), 500);
+}
