@@ -240,7 +240,8 @@
 
   ## Menú lateral
 
-  Sustituye a la barra superior: ampliado (icono y texto) o simple (solo iconos).
+  Sustituye a la barra superior: simple (solo iconos) por defecto, o ampliado (icono y
+  texto) si el asesor lo elige.
 
   - **El modo lo pone un script en `<head>`**, antes de pintar: desde `sidebar.js` el
     lateral se abriría y cerraría de golpe en cada cambio de página.

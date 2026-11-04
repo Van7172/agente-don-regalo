@@ -36,15 +36,15 @@ foreach ($navItems as $item) {
 <?php if ($showChrome): ?>
   <?php /* Va aquí y no en sidebar.js: el modo debe estar puesto antes de pintar, o
            el lateral se abriría y se cerraría de golpe en cada cambio de página.
-           En pantallas medianas arranca siempre simple: el inbox no tiene ancho
-           que ceder, y ampliarlo ahí lo pone encima del contenido. */ ?>
+           Por defecto es simple, para dejarle el ancho al trabajo; solo arranca
+           ampliado si el asesor lo eligió, y nunca en pantallas medianas, donde
+           ampliarlo lo pone encima del contenido. */ ?>
   <script>
     (function () {
       var mode = "simple";
       if (window.innerWidth >= 1200) {
-        mode = "full";
         try {
-          if (localStorage.getItem("dr.sidebar") === "simple") mode = "simple";
+          if (localStorage.getItem("dr.sidebar") === "full") mode = "full";
         } catch (e) { /* sin localStorage: el modo por defecto */ }
       }
       document.documentElement.setAttribute("data-sidebar", mode);

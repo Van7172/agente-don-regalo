@@ -46,6 +46,8 @@ $head = substr($layout, 0, (int) strpos($layout, '</head>'));
 requiresText($head, 'localStorage.getItem("dr.sidebar")', 'El modo se decide en <head>');
 requiresText($js, 'localStorage.setItem("dr.sidebar"', 'La preferencia debe recordarse');
 requiresText($head, 'try {', 'localStorage puede lanzar en modo privado');
+requiresText($head, 'var mode = "simple"', 'Por defecto el menú va en modo simple');
+requiresText($head, '=== "full"', 'Solo arranca ampliado si el asesor lo eligió');
 
 // 4. Los dos modos existen en CSS y el panel móvil no ocupa foco cerrado.
 requiresText($css, 'html[data-sidebar="simple"] .sidebar-label', 'El modo simple oculta los textos');

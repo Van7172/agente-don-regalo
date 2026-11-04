@@ -1,6 +1,7 @@
 /**
  * Menú lateral.
- *  - Pantalla ancha: ampliado o simple (solo iconos); la elección se recuerda.
+ *  - Pantalla ancha: simple (solo iconos) por defecto, o ampliado si el asesor lo
+ *    elige; la elección se recuerda.
  *  - Pantalla mediana: siempre simple al cargar. Ampliarlo lo pone encima del
  *    contenido, sin empujarlo, porque el inbox no tiene ancho que ceder.
  *  - Móvil: panel deslizable.
@@ -22,10 +23,9 @@
 
   function savedMode() {
     try {
-      const saved = localStorage.getItem("dr.sidebar");
-      return saved === "simple" || saved === "full" ? saved : "full";
+      return localStorage.getItem("dr.sidebar") === "full" ? "full" : "simple";
     } catch {
-      return "full";
+      return "simple";
     }
   }
 
