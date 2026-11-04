@@ -10,7 +10,10 @@
            de 8 MB pasaba el filtro del navegador, se subía entero y volvía
            rechazado. Ahora la cifra sale de `ini_get`, así que el asesor se
            entera antes de esperar la subida. */ ?>
-  data-max-upload="<?= e((string) Media::effectiveMaxBytes()) ?>">
+  data-max-upload="<?= e((string) Media::effectiveMaxBytes()) ?>"
+  data-stages="<?= e((string) json_encode(Repository::STAGES, JSON_UNESCAPED_UNICODE)) ?>"
+  data-lost-reasons="<?= e((string) json_encode(Repository::LOST_REASONS, JSON_UNESCAPED_UNICODE)) ?>"
+  data-stage-none="<?= e(Repository::STAGE_NONE) ?>">
 
   <!-- Seguimientos vencidos: leads a los que tocaba volver y nadie ha vuelto.
        Va sobre la cola de ayuda porque son los únicos chats que NO se van a
@@ -72,6 +75,23 @@
           <button type="button" class="scope-tab" data-scope="mine" role="tab" aria-selected="false">Mías</button>
           <button type="button" class="scope-tab" data-scope="free" role="tab" aria-selected="false">Sin asignar</button>
         </div>
+        <div class="list-filters">
+          <select class="input" id="filter-stage" aria-label="Filtrar por etapa">
+            <option value="">Todas las etapas</option>
+            <?php foreach (Repository::STAGES as $stageCode => $stageLabel): ?>
+              <option value="<?= e($stageCode) ?>"><?= e($stageLabel) ?></option>
+            <?php endforeach; ?>
+            <option value="<?= e(Repository::STAGE_NONE) ?>">Sin etapa</option>
+          </select>
+          <select class="input" id="filter-tag" aria-label="Filtrar por etiqueta">
+            <option value="">Todas las etiquetas</option>
+          </select>
+        </div>
+        <div class="filter-cohort" id="filter-cohort" hidden>
+          <span id="filter-cohort-text"></span>
+          <button type="button" class="label-remove" id="filter-cohort-clear"
+                  aria-label="Quitar filtro de fechas" title="Quitar filtro de fechas">×</button>
+        </div>
         <div class="list-count" id="conv-count">—</div>
       </div>
       <div class="list-scroll" id="conv-list"></div>
@@ -111,6 +131,7 @@
               <span class="chip-assign" id="chip-assign" hidden></span>
               <!-- Cuánto queda de la ventana de 24h de WhatsApp. -->
               <span class="chip-window" id="chip-window" hidden></span>
+              <select class="stage-select input" id="stage-select" aria-label="Etapa de venta"></select>
             </div>
           </div>
           <!-- En escritorio estas acciones viven en línea. En móvil son el menú
@@ -279,6 +300,12 @@
         <div class="lead-sub" id="lead-sub"></div>
         <div class="lead-fields" id="lead-fields"></div>
 
+        <section class="lead-block">
+          <h5>Etiquetas</h5>
+          <div class="tag-chips" id="tag-chips"></div>
+          <select class="input" id="tag-add" aria-label="Añadir etiqueta"></select>
+        </section>
+
         <!-- Seguimientos: lo único que impide que el lead que dijo "lo consulto
              y te aviso" se hunda en la bandeja y no vuelva nunca. -->
         <section class="lead-block">
@@ -336,6 +363,23 @@
     <span>Copiar</span>
   </button>
 </div>
+
+<!-- Perdido exige motivo: sin él, el embudo dice cuántos se pierden pero no por qué. -->
+<dialog class="lost-dialog" id="lost-dialog" aria-labelledby="lost-dialog-title">
+  <form method="dialog" class="lost-form" id="lost-form">
+    <h4 id="lost-dialog-title">¿Por qué se perdió?</h4>
+    <select class="input" id="lost-reason" required aria-label="Motivo de la pérdida">
+      <option value="">Elige un motivo…</option>
+      <?php foreach (Repository::LOST_REASONS as $reasonCode => $reasonLabel): ?>
+        <option value="<?= e($reasonCode) ?>"><?= e($reasonLabel) ?></option>
+      <?php endforeach; ?>
+    </select>
+    <div class="lost-actions">
+      <button type="button" class="btn btn-secondary" id="lost-cancel">Cancelar</button>
+      <button type="submit" class="btn btn-primary">Marcar como perdido</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- Registrar una venta que cerró el asesor.
      `crm_ventas_historiales` solo recogía los cierres del bot, y el chat que

@@ -92,6 +92,18 @@
     windowBanner: document.getElementById("window-banner"),
     windowBannerText: document.getElementById("window-banner-text"),
     scopeTabs: document.querySelectorAll(".scope-tab"),
+    filterStage: document.getElementById("filter-stage"),
+    filterTag: document.getElementById("filter-tag"),
+    filterCohort: document.getElementById("filter-cohort"),
+    filterCohortText: document.getElementById("filter-cohort-text"),
+    filterCohortClear: document.getElementById("filter-cohort-clear"),
+    stageSelect: document.getElementById("stage-select"),
+    lostDialog: document.getElementById("lost-dialog"),
+    lostForm: document.getElementById("lost-form"),
+    lostReason: document.getElementById("lost-reason"),
+    lostCancel: document.getElementById("lost-cancel"),
+    tagChips: document.getElementById("tag-chips"),
+    tagAdd: document.getElementById("tag-add"),
 
     // Venta registrada por el asesor.
     btnSale: document.getElementById("btn-sale"),
@@ -137,6 +149,30 @@
   let query = "";
   // Filtro de la bandeja: todas / mías / sin asignar.
   let scope = "all";
+  // Etapas y motivos salen del servidor: una sola lista, en Repository.
+  const STAGES = JSON.parse(root.dataset.stages || "{}");
+  const LOST_REASONS = JSON.parse(root.dataset.lostReasons || "{}");
+  const STAGE_NONE = root.dataset.stageNone || "sin_etapa";
+  // Filtros de la bandeja. Se resuelven en el servidor: `conversations` trae solo
+  // los 80 chats más recientes y filtrarla aquí ocultaría a los demás.
+  const urlFilters = new URLSearchParams(window.location.search);
+  const filters = {
+    stage: urlFilters.get("etapa") || "",
+    tag: urlFilters.get("etiqueta") || "",
+    // Cohorte del embudo: abrir un número debe enseñar exactamente esos chats.
+    from: urlFilters.get("from") || "",
+    to: urlFilters.get("to") || "",
+  };
+  // Resultado del filtro, solo para mostrar. `conversations` sigue siendo la lista
+  // completa: de ella salen el aviso sonoro y la cola de ayuda. Si el filtro la
+  // sustituyera, un chat filtrado dejaría de sonar, y al quitar el filtro todos los
+  // que reaparecen parecerían mensajes nuevos.
+  let filteredList = null;
+  let filteredTotal = 0;
+  let tagCatalog = [];
+  let quickReplies = [];
+  let stageSig = "";
+  let tagsSig = "";
   let dueFollowups = []; // seguimientos vencidos, para el rail
   let railSig = "";
   let listSig = "";
@@ -201,28 +237,6 @@
     );
     return next;
   }
-
-  // Mensajes rápidos fijos (editar aquí / redeploy CRM). Slash: /
-  const QUICK_REPLIES = [
-    {
-      cmd: "formulario",
-      label: "Pedir formulario de pedido",
-      body:
-        "Llene los siguientes datos en este formulario para registrar su pedido porfavor. Es importante nos avise una vez lo termine. No coloque comillas simples ' ni emojis.",
-    },
-    {
-      cmd: "origen",
-      label: "Encuesta: ¿dónde nos encontraste?",
-      body:
-        "Buenas tardes, Queríamos hacerle una consulta rápida 🙏 ¿Dónde nos encontraste? 👀\n1️⃣ Google\n2️⃣ Instagram\n3️⃣ TikTok\n4️⃣ Facebook\n5️⃣ RAPPI",
-    },
-    {
-      cmd: "ubicacion",
-      label: "Pedir pin de Google Maps (MZ/Lte)",
-      body:
-        "Dado que la ubicación es por MZ y Lte le pido compartir la ubicación exacta del lugar de entrega por Google maps, ya que puede tomar mucho tiempo llegar a la ubicación y la idea es llegar a tiempo.",
-    },
-  ];
 
   let slashOpen = false;
   let slashMatches = [];
@@ -383,7 +397,7 @@
 
   function visibleConversations() {
     const q = query.toLowerCase();
-    return conversations.filter((c) => {
+    return (filteredList ?? conversations).filter((c) => {
       if (!matchesScope(c)) return false;
       if (!q) return true;
       const hay = [displayName(c), c.contact?.wa_id, c.last_message].join(" ").toLowerCase();
@@ -417,6 +431,12 @@
     return !!due && due.getTime() <= Date.now();
   }
 
+  /** El color viene de una paleta fija; se limpia igual porque acaba en una clase. */
+  function labelChip(tag) {
+    const color = String(tag.color || "arena").replace(/[^a-z]/g, "");
+    return `<span class="label-chip label-${color}">${esc(tag.name)}</span>`;
+  }
+
   function conversationItem(c) {
     const status = statusOf(c);
     const meta = STATUS_META[status];
@@ -438,6 +458,15 @@
     const followTag = followupOverdue(c)
       ? `<span class="tag tag-followup">⏰ SEGUIMIENTO</span>`
       : "";
+    // Nuevo no se pinta: se confundiría con "✨ NUEVO", que es lead de hace minutos.
+    // Vendido tampoco si ya está "💚 VENTA CERRADA": dirían lo mismo dos veces.
+    const stageTag =
+      c.stage && c.stage !== "nuevo" && !(c.stage === "vendido" && sold)
+        ? `<span class="tag tag-stage is-${esc(c.stage)}">${esc(
+            String(STAGES[c.stage] || c.stage).toUpperCase()
+          )}</span>`
+        : "";
+    const labelChips = (c.tags || []).map(labelChip).join("");
     btn.innerHTML = `
       <div class="avatar-wrap">
         <div class="avatar ${avatarClass(c.contact?.wa_id || c.id)}">${esc(initials(displayName(c)))}</div>
@@ -454,8 +483,10 @@
           ${sold ? `<span class="tag tag-sold">💚 VENTA CERRADA</span>` : ""}
           ${c.is_new ? `<span class="tag tag-new">✨ NUEVO</span>` : ""}
           ${followTag}
+          ${stageTag}
           <span class="tag ${meta.tag}">${esc(meta.badge)}</span>
           ${assignTag}
+          ${labelChips}
           ${wait ? `<span class="item-wait">${esc(wait)}</span>` : ""}
         </div>
       </div>`;
@@ -529,16 +560,21 @@
     el.railChips.replaceChildren(...helpQueue.map(railChip));
 
     const rows = visibleConversations();
+    const pool = filteredList ?? conversations;
+    // Con filtro se dice el total real: la lista corta en 200 y no debe parecer
+    // que esos son todos.
+    const poolTotal = filteredList ? Math.max(filteredTotal, pool.length) : pool.length;
     el.count.textContent =
-      rows.length === conversations.length
-        ? `${conversations.length} conversaciones`
-        : `${rows.length} de ${conversations.length} conversaciones`;
+      rows.length === poolTotal
+        ? `${poolTotal} conversaciones`
+        : `${rows.length} de ${poolTotal} conversaciones`;
 
     if (!rows.length) {
       // El motivo importa: "no tienes chats asignados" y "la búsqueda no
       // encontró nada" mandan al asesor a sitios distintos.
-      const vacio =
-        scope === "mine"
+      const vacio = filteredList && !filteredList.length
+        ? "Ningún chat con este filtro."
+        : scope === "mine"
           ? "No tienes ninguna conversación asignada. Toma una de la lista «Todas»."
           : scope === "free"
             ? "No hay conversaciones sin asignar."
@@ -987,6 +1023,8 @@
     // bot callado — que es por lo que basta este flag para el composer.
     renderAssignChip(conv);
     renderWindow(conv);
+    renderStage(conv);
+    renderConversationTags(conv);
 
     const isHuman = conv.mode === "HUMAN";
     // No conservar el check de la conversación anterior ni confiar en que el
@@ -1026,6 +1064,143 @@
     }
 
     renderLead(conv, lead);
+  }
+
+  // ── etapa de venta ──────────────────────────────────────────
+
+  /**
+   * Vendido y Entregado no se marcan a mano: salen del historial de ventas. Elegir
+   * Vendido abre "Registrar venta", y con una venta pendiente el selector se bloquea.
+   */
+  function renderStage(conv) {
+    if (!el.stageSelect) return;
+    const current = conv.stage || "";
+    const locked = current === "vendido";
+    const sig = JSON.stringify([conv.id, current, conv.stage_reason || "", locked]);
+    if (sig === stageSig) return;
+    // Repintar mientras el asesor tiene el desplegable abierto se lo cerraría.
+    if (document.activeElement === el.stageSelect) return;
+    stageSig = sig;
+
+    const options = [];
+    if (!current) options.push(new Option("Sin etapa", ""));
+    Object.entries(STAGES).forEach(([code, label]) => {
+      const reason = code === "perdido" && current === "perdido" ? LOST_REASONS[conv.stage_reason] : "";
+      const option = new Option(reason ? `${label} · ${reason}` : label, code);
+      // Entregado solo lo pone la confirmación de entrega.
+      if (code === "entregado" && current !== "entregado") option.disabled = true;
+      options.push(option);
+    });
+    el.stageSelect.replaceChildren(...options);
+    el.stageSelect.value = current;
+    el.stageSelect.disabled = locked;
+    el.stageSelect.className = `stage-select input is-${current || STAGE_NONE}`;
+    el.stageSelect.title = locked
+      ? "Tiene una venta pendiente de entrega. Se actualiza desde el Historial de ventas."
+      : "Etapa de venta";
+  }
+
+  async function saveStage(stage, reason = null) {
+    const convId = selectedId;
+    if (convId == null) return;
+    try {
+      await api(`/conversations/${convId}/stage`, {
+        method: "PATCH",
+        body: JSON.stringify({ stage, reason }),
+      });
+      el.stageSelect?.blur();
+      stageSig = "";
+      listSig = "";
+      await Promise.all([loadList(), loadThread()]);
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  function onStageChange() {
+    const conv = lastThread?.conv;
+    if (!conv) return;
+    const next = el.stageSelect.value;
+    // Hasta que el servidor confirme, el selector dice la verdad: lo que hay guardado.
+    el.stageSelect.value = conv.stage || "";
+    el.stageSelect.blur();
+    if (next === "vendido") {
+      openSaleDialog();
+    } else if (next === "perdido") {
+      el.lostReason.value = "";
+      el.lostDialog.showModal();
+    } else if (next) {
+      saveStage(next);
+    }
+  }
+
+  // ── etiquetas ───────────────────────────────────────────────
+
+  async function loadTagCatalog() {
+    try {
+      const json = await api("/tags");
+      tagCatalog = Array.isArray(json.data) ? json.data : [];
+    } catch (err) {
+      console.warn("[tags]", err);
+      return;
+    }
+    if (el.filterTag) {
+      el.filterTag.replaceChildren(
+        new Option("Todas las etiquetas", ""),
+        ...tagCatalog.map((tag) => new Option(tag.name, String(tag.id)))
+      );
+      el.filterTag.value = filters.tag;
+    }
+    tagsSig = "";
+    if (lastThread) renderConversationTags(lastThread.conv);
+  }
+
+  function renderConversationTags(conv) {
+    if (!el.tagChips || !el.tagAdd) return;
+    const tags = conv.tags || [];
+    const sig = JSON.stringify([conv.id, tags, tagCatalog.map((tag) => tag.id)]);
+    if (sig === tagsSig) return;
+    tagsSig = sig;
+
+    el.tagChips.innerHTML = tags.length
+      ? tags
+          .map(
+            (tag) => `<span class="label-chip-wrap">${labelChip(tag)}<button type="button"
+              class="label-remove" data-tag-remove="${Number(tag.id)}"
+              aria-label="Quitar etiqueta ${esc(tag.name)}" title="Quitar">×</button></span>`
+          )
+          .join("")
+      : `<div class="lead-block-empty">Sin etiquetas.</div>`;
+
+    const taken = new Set(tags.map((tag) => tag.id));
+    const free = tagCatalog.filter((tag) => !taken.has(tag.id));
+    el.tagAdd.replaceChildren(
+      new Option(
+        tagCatalog.length ? "Añadir etiqueta…" : "Crea etiquetas en Ajustes",
+        ""
+      ),
+      ...free.map((tag) => new Option(tag.name, String(tag.id)))
+    );
+    el.tagAdd.disabled = !free.length;
+  }
+
+  async function changeTag(path, body) {
+    const convId = selectedId;
+    if (convId == null) return;
+    try {
+      const json = await api(`/conversations/${convId}/tags${path}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (selectedId === convId && lastThread) {
+        lastThread.conv.tags = json.tags || [];
+        renderConversationTags(lastThread.conv);
+      }
+      listSig = "";
+      loadList();
+    } catch (err) {
+      showError(err.message || String(err));
+    }
   }
 
   // ── asignación de asesor ────────────────────────────────────
@@ -1929,9 +2104,40 @@
     if (aviso) notifyInbound(aviso);
   }
 
+  function activeFilterQuery() {
+    const params = new URLSearchParams();
+    if (filters.stage) params.set("etapa", filters.stage);
+    if (filters.tag) params.set("etiqueta", filters.tag);
+    if (filters.from && filters.to) {
+      params.set("from", filters.from);
+      params.set("to", filters.to);
+    }
+    return params.toString();
+  }
+
+  function applyFilters() {
+    listSig = "";
+    loadList();
+  }
+
+  function renderFilterControls() {
+    if (el.filterStage) el.filterStage.value = filters.stage;
+    const cohort = !!(filters.from && filters.to);
+    if (el.filterCohort) el.filterCohort.hidden = !cohort;
+    if (cohort && el.filterCohortText) {
+      el.filterCohortText.textContent = `Llegaron del ${filters.from} al ${filters.to}`;
+    }
+  }
+
   async function loadList() {
     try {
-      const json = await api("/conversations");
+      const filterQuery = activeFilterQuery();
+      const [json, filtered] = await Promise.all([
+        api("/conversations"),
+        filterQuery ? api(`/conversations?${filterQuery}`) : null,
+      ]);
+      // El asesor cambió el filtro mientras esto viajaba: ya viene otra petición.
+      if (filterQuery !== activeFilterQuery()) return;
       if (!json || !Array.isArray(json.data)) {
         throw new Error(
           `Respuesta inválida del API (${apiBase}/conversations). Revisa base_path en config.php.`
@@ -1941,7 +2147,9 @@
       // La respuesta del API puede ser idéntica al cruzar medianoche. El día
       // local forma parte de la firma para que 15:00 cambie a "Ayer" sin que
       // tenga que llegar otro mensaje.
-      const sig = `${localDayKey(new Date())}|${JSON.stringify(next)}`;
+      const sig = `${localDayKey(new Date())}|${JSON.stringify(next)}|${filterQuery}|${JSON.stringify(
+        filtered?.data ?? null
+      )}`;
       if (sig !== listSig) {
         beepGastado = false;
         alertOnHandoff(conversations, next);
@@ -1949,6 +2157,8 @@
         alertOnInbound(next);
         listSig = sig;
         conversations = next;
+        filteredList = filtered && Array.isArray(filtered.data) ? filtered.data : null;
+        filteredTotal = Number(filtered?.meta?.matching || 0);
         renderList();
       }
       const meta = json.meta || {};
@@ -2224,6 +2434,16 @@
     }
   }
 
+  /** Se editan en Ajustes. Si no cargan, el menú sale vacío y el chat sigue funcionando. */
+  async function loadQuickReplies() {
+    try {
+      const json = await api("/quick-replies");
+      quickReplies = Array.isArray(json.data) ? json.data : [];
+    } catch (err) {
+      console.warn("[quick-replies]", err);
+    }
+  }
+
   /** Detecta un token /cmd justo antes del caret. */
   function detectSlashToken(text, caret) {
     const before = text.slice(0, caret ?? text.length);
@@ -2236,8 +2456,8 @@
 
   function filterQuickReplies(query) {
     const q = String(query || "").toLowerCase();
-    if (!q) return QUICK_REPLIES.slice();
-    return QUICK_REPLIES.filter(
+    if (!q) return quickReplies.slice();
+    return quickReplies.filter(
       (r) =>
         r.cmd.includes(q) ||
         r.label.toLowerCase().includes(q) ||
@@ -2520,6 +2740,53 @@
     });
   });
 
+  if (el.filterStage) {
+    el.filterStage.addEventListener("change", () => {
+      filters.stage = el.filterStage.value;
+      applyFilters();
+    });
+  }
+  if (el.filterTag) {
+    el.filterTag.addEventListener("change", () => {
+      filters.tag = el.filterTag.value;
+      applyFilters();
+    });
+  }
+  if (el.filterCohortClear) {
+    el.filterCohortClear.addEventListener("click", () => {
+      filters.from = "";
+      filters.to = "";
+      // Si no, recargar la página volvería a aplicar la cohorte del enlace.
+      window.history.replaceState(window.history.state, "", window.location.pathname);
+      renderFilterControls();
+      applyFilters();
+    });
+  }
+  if (el.stageSelect) el.stageSelect.addEventListener("change", onStageChange);
+  if (el.lostForm) {
+    el.lostForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const reason = el.lostReason.value;
+      if (!reason) return;
+      el.lostDialog.close();
+      saveStage("perdido", reason);
+    });
+  }
+  if (el.lostCancel) el.lostCancel.addEventListener("click", () => el.lostDialog.close());
+  if (el.tagAdd) {
+    el.tagAdd.addEventListener("change", () => {
+      const tagId = Number(el.tagAdd.value);
+      el.tagAdd.value = "";
+      if (tagId) changeTag("", { tag_id: tagId });
+    });
+  }
+  if (el.tagChips) {
+    el.tagChips.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tag-remove]");
+      if (button) changeTag(`/${Number(button.dataset.tagRemove)}/remove`, {});
+    });
+  }
+
   if (el.btnSale) el.btnSale.addEventListener("click", openSaleDialog);
   if (el.saleForm) el.saleForm.addEventListener("submit", submitSale);
   if (el.saleForm) {
@@ -2607,8 +2874,11 @@
     );
   }
 
+  renderFilterControls();
   loadList();
   loadDueFollowups();
+  loadTagCatalog();
+  loadQuickReplies();
   setInterval(loadList, pollList);
   setInterval(loadThread, pollThread);
   // Los seguimientos vencen por el paso del tiempo, no por un mensaje nuevo, así

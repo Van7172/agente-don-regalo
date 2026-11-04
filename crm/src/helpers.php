@@ -32,6 +32,25 @@ function url_to(string $path = ''): string
     return $full === '' ? '/' : $full;
 }
 
+/**
+ * Celda de CSV a salvo de inyección de fórmulas.
+ *
+ * Nombres y productos los escriben los clientes: una celda "=HYPERLINK(...)" se
+ * ejecutaría al abrir el archivo en Excel. Se mira tras los espacios porque Excel
+ * los ignora, y la comilla delante hace que la trate como texto.
+ */
+function csv_cell($value): string
+{
+    if ($value === null) {
+        return '';
+    }
+    $text = (string) $value;
+    if (preg_match('/^[\s\x00-\x1f]*[=+\-@]/u', $text) && !is_numeric($text)) {
+        return "'" . $text;
+    }
+    return $text;
+}
+
 /** Iniciales para los avatares (máx. 2 letras). */
 function initials(?string $name, string $fallback = '?'): string
 {

@@ -1,7 +1,12 @@
 #!/usr/bin/env python
-"""Valida sintaxis y contratos estáticos del CRM PHP."""
+"""Valida sintaxis y contratos estáticos del CRM PHP.
+
+    python scripts/check_crm.py                    # crm/, lo que va a producción
+    python scripts/check_crm.py --dir sandbox/crm  # el borrador
+"""
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -9,7 +14,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CRM = ROOT / "crm"
 
 
 def _binary(name: str, fallback: Path | None = None) -> str:
@@ -25,6 +29,13 @@ def _binary(name: str, fallback: Path | None = None) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dir", default="crm", help="carpeta del CRM, relativa a la raíz")
+    crm = ROOT / parser.parse_args().dir
+    if not (crm / "src" / "Repository.php").is_file():
+        print(f"[crm-check] {crm} no es una carpeta de CRM", file=sys.stderr)
+        return 2
+
     try:
         php = _binary("php", Path("C:/xampp/php/php.exe"))
         node = _binary("node")
@@ -33,16 +44,16 @@ def main() -> int:
         return 2
 
     commands: list[tuple[str, ...]] = []
-    commands.extend((php, "-l", str(path)) for path in sorted(CRM.rglob("*.php")))
+    commands.extend((php, "-l", str(path)) for path in sorted(crm.rglob("*.php")))
     commands.extend(
         (node, "--check", str(path))
-        for path in sorted((CRM / "public" / "assets").glob("*.js"))
+        for path in sorted((crm / "public" / "assets").glob("*.js"))
     )
     commands.extend(
-        (php, str(path)) for path in sorted((CRM / "tests").glob("*.php"))
+        (php, str(path)) for path in sorted((crm / "tests").glob("*.php"))
     )
     commands.extend(
-        (node, str(path)) for path in sorted((CRM / "tests").glob("*.js"))
+        (node, str(path)) for path in sorted((crm / "tests").glob("*.js"))
     )
 
     for command in commands:
@@ -53,7 +64,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return int(completed.returncode) or 1
-    print("[crm-check] sintaxis y contratos CRM: OK")
+    print(f"[crm-check] sintaxis y contratos de {crm.relative_to(ROOT).as_posix()}: OK")
     return 0
 
 

@@ -265,6 +265,7 @@ def main() -> int:
             _check_page(client, base, "campaigns.php"),
             _check_page(client, base, "opportunities.php"),
             _check_page(client, base, "competition.php"),
+            _check_page(client, base, "settings.php"),
         ]
 
     for check in checks:

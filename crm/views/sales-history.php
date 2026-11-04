@@ -42,6 +42,7 @@
       />
     </label>
     <button class="btn btn-primary" type="submit">Filtrar</button>
+    <a class="btn btn-secondary" href="<?= e(url_to('export.php') . '?' . http_build_query(['tipo' => 'ventas', 'from' => $from, 'to' => $to, 'status' => $status, 'q' => $query])) ?>">Exportar CSV</a>
   </form>
 
   <div class="history-table-wrap">

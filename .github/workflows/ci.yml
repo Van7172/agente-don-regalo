@@ -35,6 +35,9 @@ jobs:
       - name: Sintaxis PHP, JavaScript y contratos del CRM
         run: python scripts/check_crm.py
 
+      - name: Lo mismo sobre el borrador del CRM
+        run: python scripts/check_crm.py --dir sandbox/crm
+
   quality-gate:
     name: quality-gate / production
     runs-on: ubuntu-latest

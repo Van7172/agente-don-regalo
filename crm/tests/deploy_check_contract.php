@@ -60,7 +60,7 @@ foreach (
 }
 
 // 3. El script no escribe en la tabla de análisis para probar la ruta.
-$script = source('../scripts/check_deploy.py');
+$script = source(is_file(dirname(__DIR__, 2) . '/scripts/check_deploy.py') ? '../scripts/check_deploy.py' : '../../scripts/check_deploy.py');
 requiresText(
     $script,
     'json={}',

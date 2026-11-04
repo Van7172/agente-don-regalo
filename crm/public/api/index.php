@@ -67,7 +67,13 @@ try {
     // actúa) y cada handler vuelve a exigir `Auth::user()`. Aquí solo se abre la
     // puerta para que el fetch del panel, que va con cookie y sin token, no
     // choque contra el 401 genérico.
-    if (preg_match('#^/conversations/\d+/(claim|release|sale|sale-suggestion|notes|followups)$#', $path)) {
+    if (preg_match('#^/conversations/\d+/(claim|release|sale|sale-suggestion|notes|followups|stage|tags)$#', $path)) {
+        $needsToken = false;
+    }
+    if (preg_match('#^/conversations/\d+/tags/\d+/remove$#', $path)) {
+        $needsToken = false;
+    }
+    if (preg_match('#^/(tags|quick-replies)(/\d+)?$#', $path)) {
         $needsToken = false;
     }
     if (preg_match('#^/followups(/\d+)?$#', $path)) {
@@ -93,7 +99,10 @@ try {
 
     // GET /conversations
     if ($path === '/conversations' && $method === 'GET') {
-        $rows = Repository::listConversations(80);
+        // Con filtro caben más: quien busca "los cotizados" no quiere solo los que
+        // además estén entre los 80 más recientes.
+        $filters = Repository::parseConversationFilters($_GET);
+        $rows = Repository::listConversations($filters ? 200 : 80, $filters);
         $tenantId = Repository::ensureTenantId();
         $totalTenant = count($rows);
         // Si la lista viene vacía, distinguir "no hay chats" vs "tenant equivocado".
@@ -112,6 +121,7 @@ try {
                 'tenant_slug' => Auth::config()['tenant_slug'] ?? 'don-regalo',
                 'count' => $totalTenant,
                 'count_all_tenants' => $totalAll,
+                'matching' => $filters ? Repository::countConversations($filters) : $totalTenant,
             ],
         ]);
     }
@@ -160,6 +170,15 @@ try {
                 'quotedText' => $quotedText,
                 'quotedMediaUrl' => $quotedMediaUrl,
             ]);
+            if (($body['direction'] ?? 'inbound') === 'inbound') {
+                // El mensaje ya está guardado. Que falle la etapa no puede hacer
+                // que el agente lo dé por perdido y lo reintente.
+                try {
+                    Repository::reopenStageOnInbound($ids['conversationId']);
+                } catch (Throwable $error) {
+                    error_log('[CRM] no se pudo reabrir la etapa: ' . $error->getMessage());
+                }
+            }
         }
         $conv = Repository::getConversation($ids['conversationId']);
         Http::jsonOk([
@@ -224,6 +243,9 @@ try {
                     // Ventana de 24h de WhatsApp. El panel la muestra ANTES de
                     // que el asesor escriba algo que Meta va a rechazar.
                     'window' => Repository::serviceWindow($conv['last_inbound_at'] ?? null),
+                    'stage' => $conv['etapa_conversation'] ?? null,
+                    'stage_reason' => $conv['motivo_perdida_conversation'] ?? null,
+                    'tags' => Repository::conversationTags($id),
                     'contact' => [
                         'wa_id' => $conv['wa_id'],
                         'name' => $conv['nombre_contact'],
@@ -626,6 +648,118 @@ try {
             Http::jsonError($error->getMessage(), 404);
         }
         Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
+    // ── etapas, etiquetas y respuestas rápidas ──────────────────────────────
+    //
+    // Siempre con sesión: dejan constancia de qué asesor hizo cada cambio.
+    // PDOException hereda de RuntimeException: sin relanzarla, un fallo de MySQL
+    // saldría como un 404 "no existe".
+    $panelAction = static function (callable $action) {
+        try {
+            return $action();
+        } catch (InvalidArgumentException $error) {
+            Http::jsonError($error->getMessage(), 422);
+        } catch (DomainException $error) {
+            Http::jsonError($error->getMessage(), 409);
+        } catch (PDOException $error) {
+            throw $error;
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+    };
+    $panelUser = static function (): array {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        return $user;
+    };
+
+    if (preg_match('#^/conversations/(\d+)/stage$#', $path, $m) && $method === 'PATCH') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $reason = isset($body['reason']) ? (string) $body['reason'] : null;
+        $result = $panelAction(static function () use ($m, $body, $reason, $user) {
+            return Repository::setConversationStage(
+                (int) $m[1],
+                (string) ($body['stage'] ?? ''),
+                $reason,
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        });
+        Http::jsonOk(['ok' => true] + $result);
+    }
+
+    if (preg_match('#^/conversations/(\d+)/tags$#', $path, $m) && $method === 'POST') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $tags = $panelAction(static function () use ($m, $body, $user) {
+            return Repository::addConversationTag(
+                (int) $m[1],
+                (int) ($body['tag_id'] ?? 0),
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        });
+        Http::jsonOk(['ok' => true, 'tags' => $tags]);
+    }
+
+    // POST y no DELETE: hay hostings compartidos que filtran ese verbo.
+    if (preg_match('#^/conversations/(\d+)/tags/(\d+)/remove$#', $path, $m) && $method === 'POST') {
+        $panelUser();
+        Http::jsonOk([
+            'ok' => true,
+            'tags' => Repository::removeConversationTag((int) $m[1], (int) $m[2]),
+        ]);
+    }
+
+    if ($path === '/tags' && $method === 'GET') {
+        $panelUser();
+        Http::jsonOk(['data' => Repository::listTags(($_GET['all'] ?? '') === '1')]);
+    }
+    if ($path === '/tags' && $method === 'POST') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $id = $panelAction(static function () use ($body, $user) {
+            return Repository::createTag(
+                (string) ($body['name'] ?? ''),
+                (string) ($body['color'] ?? 'arena'),
+                (int) $user['id'],
+                (string) ($user['name'] ?? '')
+            );
+        });
+        Http::jsonOk(['ok' => true, 'id' => $id], 201);
+    }
+    if (preg_match('#^/tags/(\d+)$#', $path, $m) && $method === 'PATCH') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $panelAction(static function () use ($m, $body, $user) {
+            Repository::updateTag((int) $m[1], $body, (int) $user['id'], (string) ($user['name'] ?? ''));
+        });
+        Http::jsonOk(['ok' => true]);
+    }
+
+    if ($path === '/quick-replies' && $method === 'GET') {
+        $panelUser();
+        Http::jsonOk(['data' => Repository::listQuickReplies(($_GET['all'] ?? '') === '1')]);
+    }
+    if ($path === '/quick-replies' && $method === 'POST') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $id = $panelAction(static function () use ($body, $user) {
+            return Repository::createQuickReply($body, (int) $user['id'], (string) ($user['name'] ?? ''));
+        });
+        Http::jsonOk(['ok' => true, 'id' => $id], 201);
+    }
+    if (preg_match('#^/quick-replies/(\d+)$#', $path, $m) && $method === 'PATCH') {
+        $user = $panelUser();
+        $body = Http::readJson();
+        $panelAction(static function () use ($m, $body, $user) {
+            Repository::updateQuickReply((int) $m[1], $body, (int) $user['id'], (string) ($user['name'] ?? ''));
+        });
+        Http::jsonOk(['ok' => true]);
     }
 
     // Memory

@@ -4,6 +4,7 @@
 /** @var array $overview */
 /** @var array $rows */
 /** @var array $daily */
+/** @var array $funnel */
 
 $kpis = [
     ['kicker' => 'Conversaciones', 'value' => (int) $overview['conversations'], 'meta' => 'creadas en el rango'],
@@ -74,6 +75,7 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
       <input class="input" id="to" type="date" name="to" value="<?= e($to) ?>" />
     </div>
     <button type="submit" class="btn btn-primary">Filtrar</button>
+    <a class="btn btn-secondary" href="<?= e(url_to('export.php') . '?' . http_build_query(['tipo' => 'conversaciones', 'from' => $from, 'to' => $to])) ?>">Exportar CSV</a>
   </form>
 
   <div class="kpi-grid">
@@ -84,6 +86,45 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
         <div class="card-meta"><?= e($k['meta']) ?></div>
       </div>
     <?php endforeach; ?>
+  </div>
+
+  <div class="card elev-sm funnel-card">
+    <h4>Embudo de ventas</h4>
+    <p class="funnel-note">
+      De los chats que llegaron en estas fechas, en qué etapa están hoy. Los recientes
+      todavía pueden avanzar. Pulsa un número para ver esos chats.
+    </p>
+    <?php
+    $funnelLink = static function (string $stage) use ($from, $to): string {
+        return url_to('/') . '?' . http_build_query(['etapa' => $stage, 'from' => $from, 'to' => $to]);
+    };
+    $funnelTotal = (int) $funnel['total'];
+    ?>
+    <div class="funnel-stages">
+      <?php foreach ($funnel['stages'] as $stage): ?>
+        <a class="funnel-stage is-<?= e($stage['code']) ?>" href="<?= e($funnelLink($stage['code'])) ?>">
+          <span class="funnel-count"><?= (int) $stage['count'] ?></span>
+          <span class="funnel-label"><?= e($stage['label']) ?></span>
+          <span class="funnel-pct"><?= $funnelTotal > 0 ? e((string) round($stage['count'] / $funnelTotal * 100, 1)) . '%' : '—' ?></span>
+        </a>
+      <?php endforeach; ?>
+      <?php if ((int) $funnel['unclassified'] > 0): ?>
+        <a class="funnel-stage is-sin_etapa" href="<?= e($funnelLink(Repository::STAGE_NONE)) ?>"
+           title="Chats anteriores a las etapas, sin venta registrada">
+          <span class="funnel-count"><?= (int) $funnel['unclassified'] ?></span>
+          <span class="funnel-label">Sin etapa</span>
+          <span class="funnel-pct"><?= e((string) round($funnel['unclassified'] / $funnelTotal * 100, 1)) ?>%</span>
+        </a>
+      <?php endif; ?>
+    </div>
+    <?php if ($funnel['lost_reasons']): ?>
+      <h5 class="funnel-subtitle">Por qué se perdieron</h5>
+      <ul class="funnel-reasons">
+        <?php foreach ($funnel['lost_reasons'] as $reason): ?>
+          <li><span><?= e($reason['label']) ?></span><strong><?= (int) $reason['count'] ?></strong></li>
+        <?php endforeach; ?>
+      </ul>
+    <?php endif; ?>
   </div>
 
   <div class="card elev-sm chart-card">
@@ -126,6 +167,7 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
             <th>Cliente</th>
             <th>Teléfono</th>
             <th>Estado</th>
+            <th>Etapa</th>
             <th>Mensajes</th>
             <th>Última actividad</th>
             <th>Creada</th>
@@ -150,13 +192,14 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
               <td style="font-weight:600;"><?= e($r['nombre_contact'] ?: '—') ?></td>
               <td><?= e($r['wa_id']) ?></td>
               <td><span class="tag <?= e($badgeClass) ?>"><?= e($badgeLabel) ?></span></td>
+              <td><?= e(Repository::STAGES[$r['etapa_conversation'] ?? ''] ?? 'Sin etapa') ?></td>
               <td><?= (int) $r['msg_count'] ?></td>
               <td><?= e((string) ($r['last_message_at'] ?? '—')) ?></td>
               <td><?= e((string) $r['fecha_creacion']) ?></td>
             </tr>
           <?php endforeach; ?>
           <?php if (!$rows): ?>
-            <tr><td colspan="7">Sin conversaciones en el rango.</td></tr>
+            <tr><td colspan="8">Sin conversaciones en el rango.</td></tr>
           <?php endif; ?>
         </tbody>
       </table>

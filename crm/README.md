@@ -217,3 +217,24 @@
   Contratos: `crm/tests/generador_contenido_contract.php` (vigila que los tonos
   del panel existan en el agente: uno que no exista no da error, cae al de por
   defecto en silencio) y `tests/test_generador_contenido.py`.
+
+  ## Etapas, etiquetas, respuestas rápidas y CSV
+
+  - **Vendido y Entregado no se marcan a mano.** Salen de `crm_ventas_historiales`
+    (`syncStageFromSales`, en la misma transacción que la venta), para que el embudo
+    no pueda contradecir al historial. Se llama Vendido y no Pagó porque la venta del
+    bot se cierra antes de cobrarla.
+  - **Los filtros van en el servidor y no sustituyen a `conversations`.** De esa lista
+    salen el aviso sonoro y la cola de ayuda: si el filtro la reemplazara, un chat
+    oculto dejaría de sonar y al quitarlo los demás parecerían mensajes nuevos.
+  - **Un chat Perdido o Entregado se reabre** con un mensaje entrante pasados
+    `STAGE_REOPEN_DAYS` (7): con menos, un "gracias" lo reabriría.
+  - **El embudo cuenta por fecha de llegada del chat**, como Campañas, y cada número
+    abre exactamente esos chats.
+  - **Una celda de CSV que empiece por `=`, `+`, `-` o `@` se neutraliza**
+    (`csv_cell`): nombres y productos los escriben los clientes.
+  - **Sin permisos por rol**, cualquier asesor con sesión puede editar Ajustes y
+    descargar teléfonos en CSV. Queda el autor del cambio y un log de cada exportación.
+
+  Contrato: `crm/tests/etapas_etiquetas_contract.php`.
+
