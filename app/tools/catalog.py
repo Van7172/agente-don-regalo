@@ -8,6 +8,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.observability import record_api_call, record_operation
 from app.resilience import circuit_breaker
 from app.tools import adapters
 from app.tools.image_validation import valid_products
@@ -21,23 +22,41 @@ _IMAGE_CANDIDATE_POOL = 50
 # distritos_cobertura, metodos_pago y tipo_cambio raramente cambian;
 # cachearlos elimina 1-3 HTTP calls extra por conversación (~200-400 ms).
 _cache: dict[str, tuple[float, object]] = {}  # url → (timestamp, data)
+# Con la API caída, una copia de hasta un día vale más que un error: distritos, tarifas
+# y tipo de cambio casi no cambian, y lo que sí se confirma luego es el pago.
+_STALE_MAX_SECONDS = 24 * 60 * 60
 
 
 async def _cached_get(client: httpx.AsyncClient, url: str) -> object:
     now = time.monotonic()
-    if url in _cache and now - _cache[url][0] < settings.cache_ttl_seconds:
+    cached = _cache.get(url)
+    if cached and now - cached[0] < settings.cache_ttl_seconds:
         log.debug("[CACHE-HIT] %s", url)
-        return _cache[url][1]
-    data = await get(client, url)
+        return cached[1]
+    try:
+        data = await get(client, url)
+    except Exception as err:
+        if cached and now - cached[0] < _STALE_MAX_SECONDS:
+            log.warning("[CACHE-VIEJA] %s no respondió (%s); uso la última copia", url, err)
+            record_operation("catalog.stale_cache", "served")
+            return cached[1]
+        raise
     _cache[url] = (now, data)
     return data
 
 
 async def get(client: httpx.AsyncClient, url: str, params: dict | None = None):
     async def _request():
-        r = await client.get(url, params=params)
-        r.raise_for_status()
-        return r.json()
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            r = await client.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+            outcome = "ok"
+            return data
+        finally:
+            record_api_call("rest", outcome, (time.monotonic() - started) * 1000)
 
     return await circuit_breaker("catalog.rest").call(_request)
 
@@ -149,6 +168,8 @@ async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
     slug = args.get("slug", "").strip("/")
     url = f"{settings.donregalo_api_base}/productos/buscar"
     params: dict = {"categoria": slug, "per_page": DEFAULT_PER_PAGE}
+    if args.get("orden") in ("asc", "desc"):
+        params["orden"] = args["orden"]
     result = await _productos(client, url, params)
 
     # `buscar` excluye los fúnebres salvo `incluir_funebre`, así que pedir la

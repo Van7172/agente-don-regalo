@@ -13,8 +13,8 @@ from app.harness import taxonomy
 from app.harness.taxonomy import RECIPIENT_WORDS, match_recipient, parse_filtros
 from app.observability import audit_event, record_operation
 from app.services import demand
-from app.tools import catalog, mcp_client, search
-from app.tools.attributes import colors_from, enforce_attributes, turn_text
+from app.tools import adapters, catalog, mcp_client, search
+from app.tools.attributes import colors_from, enforce_attributes, turn_budget, turn_text
 
 log = logging.getLogger(__name__)
 
@@ -511,6 +511,11 @@ async def execute_tool(name: str, args: dict) -> str:
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
+            # Con presupuesto, lo barato primero: el listado va paginado y, si no, lo
+            # que cabe podría quedarse fuera de la página que se le filtra al cliente.
+            if turn_budget() and name in ("buscar_productos", "catalogo_categoria"):
+                args = {**(args or {}), "orden": "asc"}
+
             if name == "buscar_productos":
                 args = dict(args or {})
                 result = await _pick("buscar_productos", catalog.buscar_productos)(client, args)
@@ -610,6 +615,16 @@ async def execute_tool(name: str, args: dict) -> str:
 
             elif name == "buscar_semantico":
                 args = dict(args or {})
+                # El índice guarda el precio en USD, y convertir no es tarea del
+                # modelo: el tope lo pone el código, venga lo que venga en los args.
+                presupuesto = turn_budget()
+                if presupuesto:
+                    importe, moneda = presupuesto
+                    args["precio_max"] = (
+                        importe
+                        if moneda == "USD"
+                        else round(importe / await adapters.usd_pen_rate(client), 2)
+                    )
                 if _is_free_campaign_search(args):
                     result = {
                         "error": (

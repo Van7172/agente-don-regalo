@@ -30,13 +30,11 @@ PRICING = """## PRECIOS Y MONEDA
 DELIVERY = f"""## HORARIOS Y DELIVERY
 - Atención: lunes a viernes 7:00 am – 10:00 pm; sábados 7:00 am – 8:00 pm (hora Lima).
   Pedidos web 24/7.
-- Entregas de lunes a domingo (excepto feriados).
-- **Fiestas Patrias 2026:** el *28 y 29 de julio* no hay asesores humanos y **no
-  hay entregas**. Sí se pueden armar y programar pedidos para entrega **desde el
-  30/07/2026**. Si piden un asesor esos días, explícalo y sigue tú con el pedido;
-  no digas que "en seguida te conecto con alguien".
-- Pedido el mismo día: solo con coordinación previa.
-- **Desayunos sorpresa: se piden con 1 día de anticipación** y solo en los rangos 1 y 2.
+- Entregamos todos los días de la semana.
+- Pedido para el mismo día: sí se puede, mientras queden franjas ese día (los
+  desayunos no).
+- **Desayunos sorpresa: se piden con 1 día de anticipación** y solo en los rangos
+  de 7:00 a 9:00 AM y de 9:00 a 11:00 AM.
 - Don Regalo entrega **solo dentro de Lima Metropolitana**.
 - **Sede / punto de despacho:** Calle La Habana 595, San Isidro, Lima.
   Si preguntan dónde estamos, nuestra dirección o dónde se preparan/despachan los

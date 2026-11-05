@@ -6,6 +6,7 @@ import io
 import ipaddress
 import logging
 import socket
+import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -13,6 +14,7 @@ import httpx
 from PIL import Image
 
 from app.config import settings
+from app.observability import record_api_call
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +128,7 @@ async def valid_products(
 ) -> list[dict[str, Any]]:
     """Conserva el orden y sigue buscando hasta completar el cupo válido."""
     valid: list[dict[str, Any]] = []
+    started = time.monotonic()
     try:
         async with asyncio.timeout(_TOTAL_VALIDATION_SECONDS):
             cursor = 0
@@ -148,4 +151,7 @@ async def valid_products(
             _TOTAL_VALIDATION_SECONDS,
             len(valid),
         )
+    # Descarga cada foto para comprobarla: en un listado pesa más que la propia API.
+    if products:
+        record_api_call("images", "ok", (time.monotonic() - started) * 1000)
     return valid

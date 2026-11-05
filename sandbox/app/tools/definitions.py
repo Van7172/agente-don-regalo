@@ -66,7 +66,7 @@ TOOLS = [
                         "type": "number",
                         "minimum": 0,
                         "maximum": 10000,
-                        "description": "Opcional. Precio máximo en USD si el cliente dio un presupuesto.",
+                        "description": "Opcional y normalmente innecesario: si el cliente dio un presupuesto, el sistema ya lo aplica. No conviertas monedas.",
                     },
                     "incluir_funebre": {
                         "type": "boolean",

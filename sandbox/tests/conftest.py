@@ -16,6 +16,7 @@ from app.config import settings as app_settings
 from app.crm import http_client as crm_http
 from app.harness import master as master_mod
 from app.harness import state as state_mod
+from app.services import agent as agent_mod
 from app.services import buffer as buffer_mod
 from app.resilience import reset_circuit_breakers
 
@@ -79,3 +80,27 @@ def sin_verificar_stock(monkeypatch):
         return None
 
     monkeypatch.setattr(master_mod, "is_available", no_verificable)
+
+
+@pytest.fixture(autouse=True)
+def equipo_en_horario(monkeypatch):
+    """El texto del handoff no puede depender de la hora a la que corre la suite."""
+    monkeypatch.setattr(agent_mod, "team_is_open", lambda *_a: True)
+
+
+@pytest.fixture(autouse=True)
+def cierre_sin_red(monkeypatch):
+    """El cierre consulta cobertura y ficha del producto; aquí, sin salir a la red.
+
+    Mismo default que `is_available`: el camino de "la API no respondió", que es el
+    que no bloquea la venta. Quien quiera probar esas consultas restaura el original
+    (ver `test_cierre_venta.py`).
+    """
+    async def sin_cobertura(_text, _state):
+        raise RuntimeError("cobertura no disponible en tests")
+
+    async def sin_ficha(_state):
+        return None
+
+    monkeypatch.setattr(master_mod, "_checkout_coverage", sin_cobertura)
+    monkeypatch.setattr(master_mod, "_load_product_facts", sin_ficha)

@@ -31,7 +31,7 @@ import httpx
 
 from app.config import settings
 from app.guardrails import ParameterValidationError, validate_mcp_arguments
-from app.observability import audit_event, record_operation
+from app.observability import audit_event, record_api_call, record_operation
 from app.resilience import circuit_breaker
 from app.tools import adapters, catalog
 from app.tools.image_validation import valid_products
@@ -105,12 +105,18 @@ async def _post(
     initialized: bool = False,
     expect_response: bool = True,
 ) -> dict:
-    response = await client.post(
-        settings.donregalo_mcp_url,
-        json=payload,
-        headers=_headers(initialized=initialized),
-    )
-    response.raise_for_status()
+    started = time.monotonic()
+    outcome = "error"
+    try:
+        response = await client.post(
+            settings.donregalo_mcp_url,
+            json=payload,
+            headers=_headers(initialized=initialized),
+        )
+        response.raise_for_status()
+        outcome = "ok"
+    finally:
+        record_api_call("mcp", outcome, (time.monotonic() - started) * 1000)
     if not expect_response:
         if response.status_code not in (200, 202, 204):
             raise McpError(f"notificación MCP rechazada con HTTP {response.status_code}")
@@ -395,6 +401,8 @@ async def catalogo_categoria(client: httpx.AsyncClient, args: dict):
         mcp_args: dict[str, Any] = {"limite": _IMAGE_CANDIDATE_POOL}
         if slug:
             mcp_args["categoria"] = slug
+        if args.get("orden") in ("asc", "desc"):
+            mcp_args["orden"] = args["orden"]
         result = await _call(client, "donregalo_buscar_productos", mcp_args)
         if result.get("isError"):
             return {"data": [], "total": 0}

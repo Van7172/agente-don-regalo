@@ -8,10 +8,12 @@ eso lo hace `harness/orders.py`; este módulo solo habla HTTP.
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
 from app.config import settings
+from app.observability import record_api_call
 
 log = logging.getLogger(__name__)
 
@@ -23,9 +25,15 @@ async def crear_pedido_temporal(client: httpx.AsyncClient, body: dict) -> dict:
     que quien llame decida — el flujo de cierre lo trata como best-effort y nunca
     tumba el handoff al asesor.
     """
-    r = await client.post(
-        f"{settings.donregalo_api_base}/pedidos/temporales",
-        json=body,
-    )
-    r.raise_for_status()
+    started = time.monotonic()
+    outcome = "error"
+    try:
+        r = await client.post(
+            f"{settings.donregalo_api_base}/pedidos/temporales",
+            json=body,
+        )
+        r.raise_for_status()
+        outcome = "ok"
+    finally:
+        record_api_call("pedidos", outcome, (time.monotonic() - started) * 1000)
     return r.json()

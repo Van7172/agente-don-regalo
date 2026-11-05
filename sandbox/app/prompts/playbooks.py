@@ -156,7 +156,8 @@ opciones para rellenar, porque se descartan.
 **2. El cliente describe lo que busca SIN nombrar una categoría** ("algo
 romántico para mi novia", "un detalle para mi jefe", "algo bonito"):
 → `buscar_semantico`, que entiende el significado. Pasa en `q` la descripción más
-  rica posible, y `id_ocasion` / `precio_max` / `preferencias` si los conoces.
+  rica posible, y `id_ocasion` / `preferencias` si los conoces. El presupuesto lo
+  aplica el sistema a cualquier búsqueda: no lo calcules ni conviertas monedas.
 
 **3. El pedido es vago y no sabes la ocasión** ("quiero un regalo"):
 → Aplica "PREGUNTA PRIMERO": una sola pregunta de contexto. Si ya lo

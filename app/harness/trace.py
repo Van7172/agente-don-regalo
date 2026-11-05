@@ -53,6 +53,9 @@ class Trace:
     completion_tokens: int = 0
     cached_tokens: int = 0
     llm_calls: int = 0
+    # Cuánta red de Don Regalo gastó, para saber si la espera la puso el modelo o la API.
+    api_calls: int = 0
+    api_ms: int = 0
     _started: float = field(default_factory=time.monotonic, repr=False)
 
     def with_usage(self, usage: dict[str, int] | None) -> "Trace":
@@ -62,6 +65,12 @@ class Trace:
         self.completion_tokens = int(usage.get("completion", 0))
         self.cached_tokens = int(usage.get("cached", 0))
         self.llm_calls = int(usage.get("calls", 0))
+        return self
+
+    def with_api(self, api: dict[str, int] | None) -> "Trace":
+        if api:
+            self.api_calls = int(api.get("calls", 0))
+            self.api_ms = int(api.get("ms", 0))
         return self
 
     def done(self) -> "Trace":
@@ -112,6 +121,8 @@ class Trace:
             completion_tokens=self.completion_tokens,
             cached_tokens=self.cached_tokens,
             llm_calls=self.llm_calls,
+            api_calls=self.api_calls,
+            api_ms=self.api_ms,
         )
         level = logging.WARNING if self.violations else logging.INFO
         log.log(level, "[trace] %s", json.dumps(payload, ensure_ascii=False))

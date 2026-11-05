@@ -64,6 +64,21 @@ def _fmt(y: int, mo: int, d: int) -> str | None:
         return None
 
 
+def _without_year(d: int, mo: int, today: date) -> str | None:
+    """La aparición de esa fecha más cercana a hoy, hacia atrás o hacia adelante.
+
+    Con el año en curso a secas, "2 de enero" en noviembre se rechazaba con "Esa
+    fecha ya pasó", justo cuando más se encarga por adelantado. Saltar siempre al
+    año siguiente sería el error contrario: "30/10" el 4 de noviembre es un error de
+    tipeo, y agendarlo doce meses más tarde no lo notaría nadie.
+    """
+    opciones = [_fmt(y, mo, d) for y in (today.year - 1, today.year, today.year + 1)]
+    validas = [iso for iso in opciones if iso]
+    if not validas:
+        return None
+    return min(validas, key=lambda iso: abs((date.fromisoformat(iso) - today).days))
+
+
 _RE_ISO = re.compile(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})")
 _RE_DIA_MES = re.compile(
     r"\b(\d{1,2})\s*(?:de\s+)?(" + "|".join(_MESES) + r")(?:\s+(?:de\s+)?(20\d{2}))?\b"
@@ -114,8 +129,9 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
 
     for m in _RE_DIA_MES.finditer(t):
         d, mo = int(m.group(1)), _MESES[m.group(2)]
-        y = int(m.group(3)) if m.group(3) else today.year
-        candidates.append(_fmt(y, mo, d))
+        candidates.append(
+            _fmt(int(m.group(3)), mo, d) if m.group(3) else _without_year(d, mo, today)
+        )
     t = _RE_DIA_MES.sub(" ", t)
 
     for m in _RE_DIA_BARRA.finditer(t):
@@ -123,9 +139,9 @@ def normalize_fecha(text: str, today: date | None = None) -> str | None:
         if m.group(3):
             y = int(m.group(3))
             y = y + 2000 if y < 100 else y
+            candidates.append(_fmt(y, mo, d))
         else:
-            y = today.year
-        candidates.append(_fmt(y, mo, d))
+            candidates.append(_without_year(d, mo, today))
     t = _RE_DIA_BARRA.sub(" ", t)
 
     for name, idx in _DIAS.items():
@@ -182,6 +198,9 @@ def build_body(
     # la venta: lo dejamos como marcador y el asesor lo corrige en el panel.
     apellidos_cliente = state.apellidos_cliente or ("." if state.nombre_cliente else "")
     apellidos_dest = state.apellidos_destinatario or ("." if state.nombre_destinatario else "")
+    # Es un regalo: a veces no se tiene el teléfono de quien lo recibe, o no se quiere
+    # estropear la sorpresa. El motorizado llama entonces a quien lo pidió.
+    telefono_dest = state.telefono_destinatario or telefono_cliente
 
     required: dict[str, object | None] = {
         "nombre_cliente": state.nombre_cliente,
@@ -190,7 +209,7 @@ def build_body(
         "email_cliente": state.email_cliente,
         "nombre_destinatario": state.nombre_destinatario,
         "apellidos_destinatario": apellidos_dest,
-        "telefono_destinatario": state.telefono_destinatario,
+        "telefono_destinatario": telefono_dest,
         "fecha_entrega": fecha,
         "hora_entrega": hora,
         "dedicatoria": state.dedicatoria or "Sin dedicatoria",

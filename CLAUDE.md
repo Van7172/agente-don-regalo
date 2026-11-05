@@ -175,6 +175,63 @@ Si el LLM falla, mandan las reglas — nunca tumba un turno.
    no cita lo que no parece un lugar (`_looks_like_place`): citar la frase entera
    convertía cualquier desvío en un absurdo. Ver `tests/test_cita_no_es_del_cliente.py`.
 
+9. **El cierre se probó con respuestas de manual, no con frases de clientes.** Una
+   auditoría (04/11/2026) pasó frases cotidianas por el código real con 1183 tests en
+   verde. "no, es San Isidro" confirmaba la compra porque se buscaba `si` como
+   subcadena; "Ya no puedo vivir sin ti" en la dedicatoria y "déjalo en portería" en
+   la dirección cedían el chat como abandono; "regalo personalizado" derivaba por
+   contener `persona`; "Arequipa" y "cuánto es el delivery?" se guardaban como
+   distrito; y el resumen pedía confirmar sin decir cuánto se pagaba. Reglas que
+   salieron de ahí:
+   - **Aprobar es que TODAS las palabras aprueben** (`harness/replies.py`), nunca
+     contener una: es la única lectura de sí/no del cierre. Ante la duda no se cierra
+     una venta, y lo contradictorio ("sí, no") se repregunta.
+   - **El texto libre no es una señal.** En dedicatoria, destinatario, dirección y
+     resumen solo cuenta el abandono inequívoco (`_is_abandon`), y en la dedicatoria el
+     router no interpreta nada.
+   - **El cierre es una conversación.** Una duda sale del formulario sin gastar
+     reintento y `master` retoma la pregunta pendiente (`_checkout_interruption`,
+     `pending_question`). Desde el resumen se corrige cualquier dato y se vuelve
+     (`checkout_return_step`).
+   - **Lo que cuesta dinero se valida en el paso.** El distrito pasa por cobertura
+     (`master._district_step`), el resumen trae precio vigente y total, y sin los dos
+     no se suma nada ni se invita a pagar.
+   - **Validar en el paso no basta: entre el paso y el "sí" pasan cosas.** Una franja
+     de hoy empieza mientras escribe, o la ficha responde tarde y revela que era un
+     desayuno. `revalidate_delivery` corre al reanudar, al llegar al resumen y justo
+     antes de confirmar.
+   - **Primero se cede, luego se anuncia.** Si el CRM rechaza la cesión no hay verde:
+     se vuelve al resumen y el reintento no duplica el pedido temporal. El equipo recibe
+     un solo aviso por venta.
+   - **Un distrito puede tener varias tarifas.** La API repite ATE ($7 y $15), LA MOLINA
+     ($6 y $7) y CHORRILLOS ($6.32 y $7). Si `informacion_distrito` describe cada zona,
+     se pregunta cuál (`district_options`); si no hay con qué distinguirlas, no se da
+     ninguna cifra ni total. Lo que la API avisa ("No cubre Santa Rosa") se le dice al
+     cliente.
+   - **Con la API caída se sigue atendiendo.** `_cached_get` sirve la última copia de
+     hasta 24 h. Sin copia, fuera del cierre se responde sin confirmar tarifa, y dentro
+     solo se acepta un lugar conocido de Lima (`resolve_alias`), sin total. Los fallos se
+     prueban recorriendo el cierre entero (`tests/test_api_caida.py`), porque los stubs
+     de `conftest` esconden justo eso.
+   - **Cada llamada a la red se cuenta.** `api_calls` y `api_ms` en la traza, `api.rest`,
+     `api.mcp`, `api.pedidos` y `api.images` (por lote, para medir su espera real) en
+     `/metrics`, y `tests/test_costo_turno.py` falla si un turno del cierre se pasa de su
+     presupuesto de llamadas.
+   - **El estado sobrevive al despliegue.** El código nuevo recibe documentos que escribió
+     el viejo: `tests/test_cierre_despliegue.py` los prueba. Un resumen mostrado sin total
+     no acepta el "sí" hasta enseñárselo.
+   - **Si algo es un desayuno lo dice la categoría de la API**, no el nombre: existe
+     "1era Sorpresa del día". Se piden con 1 día de anticipación y solo de 7 a 11 AM
+     (`windows_for(breakfast=True)`). Las reglas de negocio del cierre van en código:
+     el prompt de `checkout` no lo lee ningún modelo.
+   - **Las conversaciones no se cierran y el estado no caduca.** Al volver otro día,
+     `forget_stale_turns` suelta lo que no debe sobrevivir, y una venta se anuncia una
+     sola vez. Reanudar un pedido revalida stock y fecha.
+   - **El presupuesto es un límite en código** (`harness/budget.py`), como el color o
+     la categoría; el modelo no convierte monedas.
+   Ver `tests/test_cierre_criterio.py`, `test_cierre_venta.py` y
+   `test_cierre_conversacion.py`. Al tocar el cierre, añade la frase real que lo rompió.
+
 ## Evals: la red de regresión
 
 Cada bug arreglado deja un caso en el corpus. Es lo que impide que el parche de hoy
@@ -229,7 +286,7 @@ teléfono del destinatario se marcaría como fuga. Los canales oficiales van en
 ## Tests
 
 ```bash
-python -m pytest tests/ -q       # 817 pasan, 2 skip, offline
+python -m pytest tests/ -q       # offline; el total crece con cada bug arreglado
 ```
 
 **Qué cuesta un turno.** `donregalo_llm_tokens_total{agent,type}` y
@@ -327,10 +384,20 @@ llama a endpoints que aún no existen. Por eso el claim del outbox degrada en ve
 fallar (`deliver_outbox`): si el CRM no sabe reclamar todavía, envía igual — quedarse
 callado dejaría al equipo sin poder escribirle a ningún cliente.
 
-## Deuda conocida: que Regalito sepa QUÉ CONTIENE cada producto
+## Deuda conocida: clientes que se enfrían
+
+- **Recuperar a quien deja el pedido a medias.** No se aborda por ahora: exige
+  plantillas de Meta fuera de la ventana de 24 h, que tienen costo.
+- **Días de entrega.** Se entrega todos los días (confirmado por el negocio, 04/11/2026)
+  y la API no restringe por fecha. `holidays.py` solo guarda el cierre puntual del 28 y
+  29 de julio de 2026, que ya pasó: no tiene efecto, y sirve de molde si hay otro.
+- **Datos por limpiar en el panel.** LA MOLINA y CHORRILLOS están duplicados con tarifa
+  distinta y sin zona descrita: mientras sigan así, el bot no puede dar su tarifa.
+
+## Deuda conocida: que Don Regalo sepa QUÉ CONTIENE cada producto
 
 Un cliente citó un desayuno y preguntó *"¿Qué contiene? ¿Se puede quitar y aumentar
-otros, y qué opciones hay?"*. Regalito ofreció **"lo consulto con un asesor y te
+otros, y qué opciones hay?"*. El bot ofreció **"lo consulto con un asesor y te
 vuelvo"** — algo que no puede hacer: no tiene forma de preguntarle nada a nadie,
 solo de ceder el chat. Lo que hay hoy, verificado contra la API real:
 
@@ -349,11 +416,14 @@ Estado:
    `metodos_pago` — su descripción envuelve el número de cuenta y el CCI en `<p>`/`<strong>`,
    y es texto que el cliente copia para pagar. Cubierto en `tests/test_adapters.py`.
 2. **Personalizar un producto no existe en la API.** Mientras no exista, "¿se puede
-   cambiar el globo / quitar el croissant?" se escala, no se improvisa. **Sigue abierto.**
+   cambiar el globo / quitar el croissant?" se deriva en código (`asks_customization`),
+   con el producto y lo pedido en el motivo, para que el asesor entre sabiendo qué
+   cotizar. Antes iba a catálogo por la palabra "peluche", sin forma de ceder el chat.
+   Ver `tests/test_personalizacion.py`.
 
 Regla que ya es determinista (no depende del prompt): si la respuesta del modelo
 **promete** meter a un asesor ("consulto con un asesor", "un asesor te enviará…"),
-`master` ejecuta el handoff de verdad y descarta esa frase. Regalito no puede
+`master` ejecuta el handoff de verdad y descarta esa frase. El bot no puede
 consultar y volver; solo ceder el chat. Ver `_promises_handoff` en
 [`harness/master.py`](app/harness/master.py) y las RESTRICCIONES del
 [`CORE`](app/prompts/core.py).

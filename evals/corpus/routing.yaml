@@ -4,6 +4,122 @@
 # milisegundos. Su caso por defecto es `catalog_search`, de modo que un fallo aquí
 # significa que un mensaje acaba buscando productos cuando no debía.
 
+# Auditoría del 04/11/2026: frases cotidianas que el router entendía al revés.
+- id: persona-no-es-pedir-una-persona
+  text: "quiero un regalo personalizado"
+  expect_not_intent: escalate
+
+- id: es-para-una-persona
+  text: "es para una persona muy especial"
+  expect_not_intent: escalate
+
+- id: pedir-una-persona-si-deriva
+  text: "quiero hablar con una persona"
+  expect_intent: escalate
+
+- id: cancelar-es-pagar
+  text: "como cancelo con yape?"
+  expect_intent: policy_faq
+
+- id: cancelar-el-pedido-deriva
+  text: "quiero cancelar mi pedido"
+  expect_intent: escalate
+
+- id: querer-comprar-sin-producto-es-buscar
+  text: "Quiero comprar un regalo para mi mamá"
+  expect_intent: catalog_search
+
+- id: querer-ver-mas-no-abre-el-cierre
+  text: "quiero ver más rosas"
+  state:
+    recent_products:
+      - {id_producto: 103, nombre: "Ramo de Rosas Rojas"}
+  expect_intent: catalog_search
+
+- id: posicion-en-la-lista
+  text: "el segundo"
+  state:
+    recent_products:
+      - {id_producto: 101, nombre: "Desayuno Clasico"}
+      - {id_producto: 102, nombre: "Desayuno Romantico"}
+  expect_intent: product_detail
+
+- id: cantidad-no-es-posicion
+  text: "quiero dos desayunos"
+  state:
+    recent_products:
+      - {id_producto: 101, nombre: "Desayuno Clasico"}
+      - {id_producto: 102, nombre: "Desayuno Romantico"}
+  expect_not_intent: checkout
+
+- id: si-tras-la-ficha-es-comprar
+  text: "sí"
+  state:
+    intent_last: product_detail
+    chosen_product_id: 101
+    chosen_product_name: "Ramo de Rosas"
+  expect_intent: checkout
+
+- id: duda-de-contenido-en-el-cierre
+  text: "¿qué contiene?"
+  state:
+    checkout_step: date
+    chosen_product_id: 101
+    chosen_product_name: "Ramo de Rosas"
+  expect_intent: product_detail
+
+- id: otra-pregunta-en-el-cierre
+  text: "¿entregan los domingos?"
+  state:
+    checkout_step: date
+    chosen_product_id: 101
+  expect_intent: policy_faq
+
+- id: una-fecha-como-pregunta-contesta-el-paso
+  text: "¿puede ser el viernes?"
+  state:
+    checkout_step: date
+    chosen_product_id: 101
+  expect_intent: checkout
+
+- id: la-dedicatoria-sigue-en-el-cierre
+  text: "Eres la persona más importante de mi vida"
+  state:
+    checkout_step: card_text
+    chosen_product_id: 101
+  expect_intent: checkout
+
+- id: cambiar-un-componente-lo-ve-una-persona
+  text: "¿se puede cambiar el peluche por chocolates?"
+  expect_intent: escalate
+
+- id: quitar-un-componente-lo-ve-una-persona
+  text: "pueden quitarle el croissant?"
+  expect_intent: escalate
+
+- id: cambiar-algo-del-producto-lo-ve-una-persona
+  text: "¿Se puede cambiar el color del regalo?"
+  expect_intent: escalate
+
+- id: regalo-personalizado-sigue-siendo-buscar
+  text: "quiero un regalo personalizado"
+  expect_not_intent: escalate
+
+- id: cancelar-pedido-mencionando-el-pago-deriva
+  text: "quiero cancelar mi pedido con yape"
+  expect_intent: escalate
+
+- id: un-numero-elige-la-zona-no-el-producto
+  text: "2"
+  state:
+    district_options:
+      - {id_distrito: 1, nombre: "Ate", informacion: "De Salamanca"}
+      - {id_distrito: 2, nombre: "Ate", informacion: "Puruchuco"}
+    recent_products:
+      - {id_producto: 101, nombre: "Desayuno Clasico"}
+      - {id_producto: 102, nombre: "Desayuno Romantico"}
+  expect_intent: coverage
+
 - id: saludo
   text: "Hola buenas tardes"
   expect_intent: greet
