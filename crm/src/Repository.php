@@ -160,9 +160,25 @@ final class Repository
         [$filterSql, $filterParams] = self::conversationFilterSql($filters);
         return (int) (Database::fetchOne(
             "SELECT COUNT(*) AS n FROM crm_conversations c
+             JOIN crm_contacts ct ON ct.id_contact = c.id_contact
              WHERE c.id_tenant = :tenantId{$filterSql}",
             ['tenantId' => self::ensureTenantId()] + $filterParams
         )['n'] ?? 0);
+    }
+
+    /** Cola actual separada de los 80 chats recientes de la bandeja. */
+    public static function attentionSummary(): array
+    {
+        $row = Database::fetchOne(
+            "SELECT COUNT(*) AS total,
+                    SUM(COALESCE(last_message_at, fecha_actualizacion) >= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS recent7,
+                    SUM(COALESCE(last_message_at, fecha_actualizacion) < DATE_SUB(NOW(), INTERVAL 7 DAY)) AS older7,
+                    SUM(COALESCE(last_message_at, fecha_actualizacion) < DATE_SUB(NOW(), INTERVAL 30 DAY)) AS older30
+             FROM crm_conversations
+             WHERE id_tenant = :t AND human_support = 1 AND status_conversation = 'open'",
+            ['t' => self::ensureTenantId()]
+        ) ?: [];
+        return array_map('intval', $row);
     }
 
     /**
@@ -183,6 +199,14 @@ final class Repository
         $tag = (string) ($query['etiqueta'] ?? '');
         if (ctype_digit($tag) && (int) $tag > 0) {
             $filters['etiqueta'] = (int) $tag;
+        }
+        $attention = (string) ($query['atencion'] ?? '');
+        if (in_array($attention, ['reciente', 'antigua'], true)) {
+            $filters['atencion'] = $attention;
+        }
+        $search = trim((string) ($query['q'] ?? ''));
+        if (mb_strlen($search) >= 2) {
+            $filters['q'] = mb_substr($search, 0, 80);
         }
         // Los dos extremos juntos: es la cohorte con la que el embudo cuenta sus
         // números, y abrir uno de ellos debe enseñar exactamente esos chats.
@@ -213,6 +237,17 @@ final class Repository
                                   WHERE ce.id_conversation = c.id_conversation
                                     AND ce.id_etiqueta = :filterTag)';
             $params['filterTag'] = $filters['etiqueta'];
+        }
+        if (isset($filters['atencion'])) {
+            $sql .= " AND c.human_support = 1 AND c.status_conversation = 'open'";
+            $sql .= $filters['atencion'] === 'reciente'
+                ? ' AND COALESCE(c.last_message_at, c.fecha_actualizacion) >= DATE_SUB(NOW(), INTERVAL 7 DAY)'
+                : ' AND COALESCE(c.last_message_at, c.fecha_actualizacion) < DATE_SUB(NOW(), INTERVAL 7 DAY)';
+        }
+        if (isset($filters['q'])) {
+            $sql .= ' AND (ct.nombre_contact LIKE :searchName OR ct.wa_id LIKE :searchPhone)';
+            $params['searchName'] = '%' . $filters['q'] . '%';
+            $params['searchPhone'] = '%' . $filters['q'] . '%';
         }
         if (isset($filters['from'], $filters['to'])) {
             $sql .= ' AND c.fecha_creacion BETWEEN :filterFrom AND :filterTo';
@@ -269,6 +304,7 @@ final class Repository
     const STAGES = [
         'nuevo' => 'Nuevo',
         'cotizado' => 'Cotizado',
+        'pendiente_pago' => 'Pendiente de pago',
         'vendido' => 'Vendido',
         'entregado' => 'Entregado',
         'perdido' => 'Perdido',
@@ -342,9 +378,9 @@ final class Repository
                 throw new RuntimeException('Conversation not found');
             }
             $current = $row['etapa_conversation'];
-            if ($current === 'vendido') {
+            if ($current === 'vendido' || $current === 'pendiente_pago') {
                 throw new DomainException(
-                    'Este chat tiene una venta pendiente de entrega. Márcala en el Historial de ventas.'
+                    'Este chat tiene un pedido en curso. Actualiza su pago o entrega en el Historial.'
                 );
             }
             if ($current !== $stage || $row['motivo_perdida_conversation'] !== $reason) {
@@ -374,7 +410,7 @@ final class Repository
     private static function syncStageFromSales(int $conversationId): void
     {
         $sale = Database::fetchOne(
-            'SELECT estado_venta_historial FROM crm_ventas_historiales
+            'SELECT estado_venta_historial, fecha_confirmacion_pago FROM crm_ventas_historiales
              WHERE id_conversation = :id
              ORDER BY marca_cierre_venta_historial DESC, id_venta_historial DESC
              LIMIT 1',
@@ -383,7 +419,9 @@ final class Repository
         if (!$sale) {
             return;
         }
-        $target = $sale['estado_venta_historial'] === 'entregado' ? 'entregado' : 'vendido';
+        $target = $sale['estado_venta_historial'] === 'entregado'
+            ? 'entregado'
+            : ($sale['fecha_confirmacion_pago'] !== null ? 'vendido' : 'pendiente_pago');
         $row = Database::fetchOne(
             'SELECT etapa_conversation FROM crm_conversations
              WHERE id_conversation = :id LIMIT 1 FOR UPDATE',
@@ -1629,6 +1667,20 @@ final class Repository
         $pdo->beginTransaction();
         try {
             $archived = self::archiveSale($conversationId, $sale);
+            if (!empty($sale['pago_confirmado']) && empty($archived['fecha_confirmacion_pago'])) {
+                Database::exec(
+                    'UPDATE crm_ventas_historiales
+                     SET fecha_confirmacion_pago = NOW(), id_usuario_pago = :userId,
+                         nombre_usuario_pago = :userName
+                     WHERE id_venta_historial = :saleId',
+                    [
+                        'userId' => (int) ($sale['registrado_por_id'] ?? 0) ?: null,
+                        'userName' => $sale['registrado_por'] ?? null,
+                        'saleId' => (int) $archived['id_venta_historial'],
+                    ]
+                );
+                $archived['fecha_confirmacion_pago'] = date('Y-m-d H:i:s');
+            }
             $key = 'sale_' . $conversationId;
             if (($archived['estado_venta_historial'] ?? '') === 'entregado') {
                 self::deleteSetting($key);
@@ -1705,6 +1757,7 @@ final class Repository
             'horario' => $texto($input['horario'] ?? null, 80),
             'motivo' => $texto($input['motivo'] ?? null, 255),
             'origen' => 'asesor',
+            'pago_confirmado' => !empty($input['pago_confirmado']),
             'registrado_por_id' => $userId,
             'registrado_por' => self::resolveUserName($userId, $userName),
             'cerrada_en' => time(),
@@ -1742,6 +1795,9 @@ final class Repository
             if (!$row) {
                 throw new RuntimeException('Sale not found');
             }
+            if ($row['fecha_confirmacion_pago'] === null) {
+                throw new DomainException('Confirma el pago antes de marcar el pedido como entregado');
+            }
 
             $userName = self::userDisplayName($userId);
 
@@ -1778,7 +1834,25 @@ final class Repository
     }
 
     /** Estados que puede tener una venta en el historial. */
-    const SALE_STATUSES = ['pendiente', 'entregado'];
+    const SALE_STATUSES = ['pendiente_pago', 'pendiente', 'entregado'];
+
+    /** Confirma el cobro de la ficha visible en el chat. */
+    public static function markSalePaid(int $conversationId, int $userId): array
+    {
+        $row = Database::fetchOne(
+            'SELECT * FROM crm_ventas_historiales
+             WHERE id_tenant = :tenantId AND id_conversation = :conversationId
+             ORDER BY marca_cierre_venta_historial DESC, id_venta_historial DESC LIMIT 1',
+            ['tenantId' => self::ensureTenantId(), 'conversationId' => $conversationId]
+        );
+        if (!$row) {
+            throw new RuntimeException('Sale not found');
+        }
+        if ($row['fecha_confirmacion_pago'] !== null) {
+            return $row;
+        }
+        return self::setSaleStatus((int) $row['id_venta_historial'], 'pendiente', $userId);
+    }
 
     /**
      * Cambia el estado de UNA venta del historial, en los dos sentidos.
@@ -1812,18 +1886,24 @@ final class Repository
             }
 
             $entregado = $status === 'entregado';
+            if ($entregado && $row['fecha_confirmacion_pago'] === null) {
+                throw new DomainException('Confirma el pago antes de marcar el pedido como entregado');
+            }
             // Sin COALESCE: si se revierte y se vuelve a confirmar, la auditoría
             // debe decir quién dejó la venta como está AHORA, no quién la tocó la
             // primera vez.
             Database::exec(
                 'UPDATE crm_ventas_historiales
                  SET estado_venta_historial = :status,
+                     fecha_confirmacion_pago = ' . ($status === 'pendiente_pago' ? 'NULL' : 'COALESCE(fecha_confirmacion_pago, NOW())') . ',
+                     id_usuario_pago = ' . ($status === 'pendiente_pago' ? 'NULL' : 'COALESCE(id_usuario_pago, :userId)') . ',
+                     nombre_usuario_pago = ' . ($status === 'pendiente_pago' ? 'NULL' : 'COALESCE(nombre_usuario_pago, :userName)') . ',
                      fecha_confirmacion_entrega = ' . ($entregado ? 'NOW()' : 'NULL') . ',
                      id_usuario = :userId,
                      nombre_usuario_confirmacion = :userName
                  WHERE id_venta_historial = :saleId',
                 [
-                    'status' => $status,
+                    'status' => $status === 'pendiente_pago' ? 'pendiente' : $status,
                     'userId' => $userId,
                     'userName' => self::userDisplayName($userId),
                     'saleId' => $saleId,
@@ -1913,9 +1993,14 @@ final class Repository
             'toDate' => $to,
         ];
 
-        if (in_array($status, ['pendiente', 'entregado'], true)) {
+        if (in_array($status, self::SALE_STATUSES, true)) {
             $where[] = 'estado_venta_historial = :status';
-            $params['status'] = $status;
+            $params['status'] = $status === 'pendiente_pago' ? 'pendiente' : $status;
+            if ($status === 'pendiente_pago') {
+                $where[] = 'fecha_confirmacion_pago IS NULL';
+            } elseif ($status === 'pendiente') {
+                $where[] = 'fecha_confirmacion_pago IS NOT NULL';
+            }
         }
         $query = trim($query);
         if ($query !== '') {
@@ -2392,6 +2477,12 @@ final class Repository
         $handoff = Database::fetchOne(
             'SELECT
                 SUM(CASE WHEN human_support = 1 AND status_conversation = \'open\' THEN 1 ELSE 0 END) AS pending_handoffs,
+                SUM(CASE WHEN human_support = 1 AND status_conversation = \'open\'
+                    AND COALESCE(last_message_at, fecha_actualizacion) >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                    THEN 1 ELSE 0 END) AS recent_handoffs,
+                SUM(CASE WHEN human_support = 1 AND status_conversation = \'open\'
+                    AND COALESCE(last_message_at, fecha_actualizacion) < DATE_SUB(NOW(), INTERVAL 30 DAY)
+                    THEN 1 ELSE 0 END) AS stale_handoffs,
                 SUM(CASE WHEN mode_conversation = \'HUMAN\' AND status_conversation = \'open\' THEN 1 ELSE 0 END) AS human_conversations,
                 MAX(CASE WHEN human_support = 1 AND status_conversation = \'open\'
                     THEN TIMESTAMPDIFF(MINUTE, COALESCE(last_message_at, fecha_actualizacion), NOW())
@@ -2406,6 +2497,7 @@ final class Repository
                 SUM(status_outbox = \'pending\') AS pending,
                 SUM(status_outbox = \'sending\') AS sending,
                 SUM(status_outbox = \'failed\') AS failed,
+                SUM(status_outbox = \'failed\' AND fecha_creacion >= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS failed_recent7,
                 SUM(status_outbox = \'sent\') AS sent,
                 MAX(CASE WHEN status_outbox IN (\'pending\', \'sending\')
                     THEN TIMESTAMPDIFF(MINUTE, fecha_creacion, NOW())
@@ -2426,6 +2518,7 @@ final class Repository
              WHERE c.id_tenant = :tenantId
                AND c.status_conversation = \'open\'
                AND (c.human_support = 1 OR c.mode_conversation = \'HUMAN\')
+               AND COALESCE(c.last_message_at, c.fecha_actualizacion) >= DATE_SUB(NOW(), INTERVAL 7 DAY)
              ORDER BY c.human_support DESC,
                       COALESCE(c.last_message_at, c.fecha_actualizacion) ASC
              LIMIT 12',
@@ -2438,6 +2531,7 @@ final class Repository
              FROM crm_outbox o
              JOIN crm_conversations c ON c.id_conversation = o.id_conversation
              WHERE c.id_tenant = :tenantId AND o.status_outbox = \'failed\'
+               AND o.fecha_creacion >= DATE_SUB(NOW(), INTERVAL 7 DAY)
              ORDER BY o.id_outbox DESC
              LIMIT 10',
             ['tenantId' => $tenantId]
@@ -2447,6 +2541,8 @@ final class Repository
             'generated_at' => gmdate('c'),
             'handoffs' => [
                 'pending' => (int) ($handoff['pending_handoffs'] ?? 0),
+                'recent7' => (int) ($handoff['recent_handoffs'] ?? 0),
+                'stale30' => (int) ($handoff['stale_handoffs'] ?? 0),
                 'human_conversations' => (int) ($handoff['human_conversations'] ?? 0),
                 'oldest_minutes' => (int) ($handoff['oldest_handoff_minutes'] ?? 0),
                 'items' => $handoffs,
@@ -2455,6 +2551,7 @@ final class Repository
                 'pending' => (int) ($outbox['pending'] ?? 0),
                 'sending' => (int) ($outbox['sending'] ?? 0),
                 'failed' => (int) ($outbox['failed'] ?? 0),
+                'failed_recent7' => (int) ($outbox['failed_recent7'] ?? 0),
                 'sent' => (int) ($outbox['sent'] ?? 0),
                 'oldest_pending_minutes' => (int) ($outbox['oldest_pending_minutes'] ?? 0),
                 'failed_items' => $failedOutbox,
@@ -2500,9 +2597,14 @@ final class Repository
             ['t' => $tenantId]
         )['n'] ?? 0);
 
+        // El primer chat es la fuente histórica de captación. crm_leads era una
+        // ficha opcional y podía estar vacía aun con contactos reales.
         $leads = (int) (Database::fetchOne(
-            'SELECT COUNT(*) AS n FROM crm_leads
-             WHERE id_tenant = :t AND fecha_creacion BETWEEN :f AND :to',
+            'SELECT COUNT(*) AS n FROM (
+               SELECT id_contact, MIN(fecha_creacion) AS first_at
+               FROM crm_conversations WHERE id_tenant = :t
+               GROUP BY id_contact
+             ) first_chats WHERE first_at BETWEEN :f AND :to',
             ['t' => $tenantId, 'f' => $fromDt, 'to' => $toDt]
         )['n'] ?? 0);
 
@@ -2615,7 +2717,7 @@ final class Repository
         $cursor = strtotime($from);
         $end = strtotime($to);
         // Cota de seguridad: rangos enormes no deben reventar el gráfico.
-        for ($i = 0; $cursor <= $end && $i < 180; $i++) {
+        for ($i = 0; $cursor <= $end && $i < 3660; $i++) {
             $key = date('Y-m-d', $cursor);
             $series[] = [
                 'date' => $key,
@@ -2657,6 +2759,9 @@ final class Repository
             '017_etapas_historial' => ['crm_etapas_historial', 'etapa_nueva'],
             '018_etiquetas' => ['crm_conversacion_etiquetas', 'id_etiqueta'],
             '019_respuestas_rapidas' => ['crm_respuestas_rapidas', 'comando_respuesta'],
+            '020_meta_ads_sync' => ['crm_meta_ads_sync', 'synced_at'],
+            '020_meta_ads_daily' => ['crm_meta_ads_daily', 'report_date'],
+            '021_pago_confirmado' => ['crm_ventas_historiales', 'fecha_confirmacion_pago'],
         ];
 
         $rows = Database::fetchAll(
@@ -2786,6 +2891,20 @@ final class Repository
         );
     }
 
+    /** Indicadores del período completo, sin el límite de la tabla. */
+    public static function unmetDemandTotals(string $from, string $to): array
+    {
+        $row = Database::fetchOne(
+            "SELECT COUNT(DISTINCT consulta_demanda) AS terminos,
+                    SUM(resultado_demanda = 'vacio') AS vacio,
+                    SUM(resultado_demanda = 'aproximado') AS aproximado
+             FROM crm_demanda_no_cubierta
+             WHERE id_tenant = :t AND fecha_creacion BETWEEN :f AND :to",
+            ['t' => self::ensureTenantId(), 'f' => $from . ' 00:00:00', 'to' => $to . ' 23:59:59']
+        ) ?: [];
+        return array_map('intval', $row);
+    }
+
     /**
      * Qué anuncio trae compradores y cuál trae curiosos.
      *
@@ -2829,8 +2948,15 @@ final class Repository
                 -- contaría dos veces al mismo cliente atendido por un humano.
                 COUNT(DISTINCT CASE WHEN c.mode_conversation = 'HUMAN'
                                     THEN c.id_conversation END) AS leads_human,
-                COUNT(DISTINCT v.id_venta_historial) AS ventas,
-                COALESCE(SUM(v.monto_venta_historial), 0) AS monto
+                COUNT(DISTINCT CASE WHEN v.fecha_confirmacion_pago IS NOT NULL
+                                    THEN c.id_conversation END) AS buyers,
+                COUNT(DISTINCT CASE WHEN v.fecha_confirmacion_pago IS NOT NULL
+                                    THEN v.id_venta_historial END) AS ventas,
+                COUNT(DISTINCT CASE WHEN v.fecha_confirmacion_pago IS NOT NULL
+                                    AND v.monto_venta_historial IS NOT NULL
+                                    THEN v.id_venta_historial END) AS valued_sales,
+                COALESCE(SUM(CASE WHEN v.fecha_confirmacion_pago IS NOT NULL
+                                  THEN v.monto_venta_historial ELSE 0 END), 0) AS monto
              FROM crm_conversations c
              LEFT JOIN crm_ventas_historiales v
                     ON v.id_conversation = c.id_conversation
@@ -2838,13 +2964,72 @@ final class Repository
              WHERE c.id_tenant = :t
                AND c.fecha_creacion BETWEEN :f AND :to
              GROUP BY c.ad_source_id
-             ORDER BY leads DESC, ventas DESC
-             LIMIT 100",
+             ORDER BY leads DESC, ventas DESC",
             [
                 't' => $tenantId,
                 'f' => $from . ' 00:00:00',
                 'to' => $to . ' 23:59:59',
             ]
+        );
+    }
+
+    public static function metaAdsSync(string $accountId): ?array
+    {
+        return Database::fetchOne(
+            'SELECT date_from, date_to, synced_at, row_count FROM crm_meta_ads_sync
+             WHERE id_tenant = :tenant AND account_id = :account',
+            ['tenant' => self::ensureTenantId(), 'account' => $accountId]
+        );
+    }
+
+    public static function metaAdMap(string $accountId): array
+    {
+        return Database::fetchAll(
+            'SELECT ad_id, MAX(ad_name) AS ad_name, MAX(campaign_id) AS campaign_id,
+                    MAX(campaign_name) AS campaign_name
+             FROM crm_meta_ads_daily
+             WHERE id_tenant = :tenant AND account_id = :account
+             GROUP BY ad_id',
+            ['tenant' => self::ensureTenantId(), 'account' => $accountId]
+        );
+    }
+
+    public static function metaAdPerformance(string $accountId, string $from, string $to): array
+    {
+        return Database::fetchAll(
+            'SELECT ad_id, SUM(spend) AS spend, SUM(impressions) AS impressions, SUM(clicks) AS clicks
+             FROM crm_meta_ads_daily
+             WHERE id_tenant = :tenant AND account_id = :account AND report_date BETWEEN :from AND :to
+             GROUP BY ad_id',
+            ['tenant' => self::ensureTenantId(), 'account' => $accountId, 'from' => $from, 'to' => $to]
+        );
+    }
+
+    public static function metaDailyPerformance(string $accountId, string $from, string $to): array
+    {
+        return Database::fetchAll(
+            'SELECT report_date AS date, campaign_id, SUM(spend) AS spend,
+                    SUM(impressions) AS impressions, SUM(clicks) AS clicks
+             FROM crm_meta_ads_daily
+             WHERE id_tenant = :tenant AND account_id = :account AND report_date BETWEEN :from AND :to
+             GROUP BY report_date, campaign_id ORDER BY report_date',
+            ['tenant' => self::ensureTenantId(), 'account' => $accountId, 'from' => $from, 'to' => $to]
+        );
+    }
+
+    public static function campaignCrmDaily(string $from, string $to): array
+    {
+        return Database::fetchAll(
+            'SELECT DATE(c.fecha_creacion) AS date, c.ad_source_id,
+                    COUNT(DISTINCT c.id_conversation) AS chats,
+                    COUNT(DISTINCT CASE WHEN v.fecha_confirmacion_pago IS NOT NULL
+                                        THEN c.id_conversation END) AS buyers
+             FROM crm_conversations c
+             LEFT JOIN crm_ventas_historiales v ON v.id_conversation = c.id_conversation
+                                          AND v.id_tenant = c.id_tenant
+             WHERE c.id_tenant = :tenant AND c.fecha_creacion BETWEEN :f AND :to
+             GROUP BY DATE(c.fecha_creacion), c.ad_source_id ORDER BY date',
+            ['tenant' => self::ensureTenantId(), 'f' => $from . ' 00:00:00', 'to' => $to . ' 23:59:59']
         );
     }
 
@@ -3072,6 +3257,7 @@ final class Repository
             'SELECT c.slug_competidor, c.nombre_competidor,
                     SUM(CASE WHEN p.activo = 1 THEN 1 ELSE 0 END) AS activos,
                     SUM(CASE WHEN p.activo = 1 AND p.es_hueco = 1 THEN 1 ELSE 0 END) AS huecos,
+                    SUM(CASE WHEN p.activo = 1 AND p.match_score IS NULL THEN 1 ELSE 0 END) AS sin_evaluar,
                     MAX(p.visto_por_ultima_vez) AS ultima_vez
                FROM crm_competidores c
                LEFT JOIN crm_competencia_productos p

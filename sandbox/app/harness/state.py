@@ -320,13 +320,10 @@ async def save_state(
         try:
             stored = await crm_http.put_setting_cas(key, payload, expected)
         except Exception as err:
-            log.warning("[harness] save_state setting falló: %s", err)
-            if wa_id:
-                try:
-                    await crm_http.put_memory(wa_id, {"resumen": f"HARNESS:{payload}"})
-                except Exception as err2:
-                    log.warning("[harness] save_state memory falló: %s", err2)
-            return
+            # El resumen de memoria no sustituye un CAS: en la siguiente lectura
+            # el setting viejo tiene prioridad y el cliente recibe otro paso.
+            log.error("[harness] save_state CAS falló conversation=%s: %s", conversation_id, err)
+            raise RuntimeError("No se pudo guardar el estado de la conversación") from err
 
         if stored is None:
             # CRM antiguo, sin escritura condicional. Se guarda igual: quedarse
@@ -336,7 +333,8 @@ async def save_state(
             try:
                 await crm_http.put_setting(key, payload)
             except Exception as err:
-                log.warning("[harness] save_state setting falló: %s", err)
+                log.error("[harness] save_state setting falló conversation=%s: %s", conversation_id, err)
+                raise RuntimeError("No se pudo guardar el estado de la conversación") from err
             return
 
         if stored:
@@ -362,6 +360,7 @@ async def save_state(
         conversation_id,
         _SAVE_RETRIES,
     )
+    raise RuntimeError("No se pudo guardar el estado tras reintentos de concurrencia")
 
 
 def _save_local(

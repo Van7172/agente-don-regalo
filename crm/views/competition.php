@@ -6,60 +6,18 @@
 <div class="reports">
   <h2>Competencia</h2>
   <p class="lead">
-    Lo que ofrecen Rosatel, Magia.pe y Sorprende Lima y nosotros no tenemos cerca.
-    Solo precios públicos de catálogo, con URL de origen.
+    Productos públicos de competidores comparados con nuestro catálogo. Los huecos son candidatos para revisión.
   </p>
 
+  <?php if ((int) $totals['activos'] > 0 && (int) $totals['huecos'] >= (int) $totals['activos'] * .9): ?>
+  <p class="campaigns-notice">Casi todos los productos aparecen como huecos. Revisa ejemplos y el umbral de similitud antes de decidir qué añadir al catálogo.</p>
+  <?php endif; ?>
+  <?php if ((int) ($totals['sin_evaluar'] ?? 0) > 0): ?>
+  <p class="campaigns-notice"><?= (int) $totals['sin_evaluar'] ?> productos activos aún no tienen comparación con nuestro catálogo.</p>
+  <?php endif; ?>
+
   <?php if ((int) $totals['activos'] === 0): ?>
-  <div class="card elev-sm reports-caveats" style="margin-bottom:1rem;border-left:4px solid #c9a227;">
-    <p style="margin:0 0 .75rem;">
-      Todavía no hay productos scrapeados. Eso <strong>no</strong> significa que
-      el catálogo esté completo: la migración <code>016</code> solo crea las
-      tablas, y los productos los escribe el <em>agente</em> tras un crawl.
-    </p>
-    <p style="margin:0 0 .75rem;">
-      <strong>Lo primero, porque no se ve desde aquí:</strong> un crawl que falla
-      deja esta pantalla exactamente igual que uno que nunca corrió. El crawl solo
-      marca su cooldown si hubo avance, así que un fallo de red o de robots.txt no
-      deja rastro en el panel. Dispáralo a mano y lee lo que devuelve — el resumen
-      trae los errores:
-    </p>
-    <pre style="margin:0 0 .75rem;overflow-x:auto;"><code>curl -X POST https://TU-AGENTE/internal/competition/crawl \
-     -H "X-Agent-Token: AGENT_INTERNAL_TOKEN"</code></pre>
-    <ul>
-      <li>
-        <strong>Devuelve productos</strong> → el crawl funciona y lo que falla es
-        la programación: revisa <code>WATCHDOG_ENABLED=1</code>. El crawl no tiene
-        bucle propio, cuelga del tick del watchdog, así que con el watchdog apagado
-        <code>COMPETITION_CRAWL_ENABLED=1</code> no sirve de nada.
-      </li>
-      <li>
-        <strong>Devuelve <code>errores</code></strong> → el crawl sí corre y falla.
-        Ahí está la causa.
-      </li>
-      <li>
-        <strong><code>500</code></strong> → el crawl revienta antes de poder
-        contarlo. Ojo: <code>run_crawl</code> ya captura los fallos <em>por
-        competidor</em>, así que un 500 significa que se rompió algo
-        <em>fuera</em> de esa red — mira los logs del agente. Pasó el 03-08 y
-        costó tres días: la métrica del bucle se llamaba con un argumento que no
-        existe, y la copia dentro del <code>except</code> tumbaba el manejador.
-      </li>
-      <li>
-        <strong><code>404</code></strong> → el agente no se ha redesplegado con el
-        código de competencia. Poner la variable en el panel no despliega el código.
-      </li>
-      <li>
-        <strong><code>skipped: crm_disabled</code></strong> → falta
-        <code>CRM_MODE=external</code> o <code>CRM_BASE_URL</code> en el agente.
-      </li>
-    </ul>
-    <p style="margin:0;">
-      Y si acabas de redesplegar, espera: el primer crawl tarda hasta un tick
-      (<code>WATCHDOG_TICK_SECONDS</code>, 5 min por defecto) y entre crawls pasan
-      12 h (<code>COMPETITION_CRAWL_INTERVAL_SECONDS</code>).
-    </p>
-  </div>
+    <p class="campaigns-notice">Aún no hay productos de competidores. Un administrador puede revisar la captura en Operaciones.</p>
   <?php endif; ?>
 
   <div class="kpi-grid">
@@ -76,7 +34,7 @@
     <div class="card elev-sm kpi-card is-warn">
       <div class="card-kicker">Huecos candidatos</div>
       <div class="kpi-value"><?= (int) $totals['huecos'] ?></div>
-      <div class="card-meta">sin equivalente cercano en nuestro catálogo</div>
+      <div class="card-meta">posibles huecos; validar con demanda real</div>
     </div>
   </div>
 

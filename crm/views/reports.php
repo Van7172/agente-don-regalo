@@ -12,11 +12,11 @@ $kpis = [
     ['kicker' => 'Inbound', 'value' => (int) $overview['inbound_messages'], 'meta' => 'escritos por clientes'],
     ['kicker' => 'Msgs bot', 'value' => (int) $overview['bot_messages'], 'meta' => 'enviados por Don Regalo'],
     ['kicker' => 'Msgs asesor', 'value' => (int) $overview['agent_messages'], 'meta' => 'enviados por humanos'],
-    ['kicker' => 'Modo AI', 'value' => (int) $overview['mode_ai'], 'meta' => 'chats con el bot al mando'],
-    ['kicker' => 'Modo HUMAN', 'value' => (int) $overview['mode_human'], 'meta' => 'chats tomados'],
-    ['kicker' => '% en modo HUMAN', 'value' => $overview['pct_human'] . '%', 'meta' => 'del total de chats'],
-    ['kicker' => 'Leads', 'value' => (int) $overview['leads'], 'meta' => 'con interés de compra'],
-    ['kicker' => 'Piden ayuda', 'value' => (int) $overview['open_needs_help'], 'meta' => 'abiertas ahora mismo', 'warn' => true],
+    ['kicker' => 'Modo AI actual', 'value' => (int) $overview['mode_ai'], 'meta' => 'de los chats que llegaron en el rango'],
+    ['kicker' => 'Modo HUMAN actual', 'value' => (int) $overview['mode_human'], 'meta' => 'de los chats que llegaron en el rango'],
+    ['kicker' => '% en modo HUMAN', 'value' => $overview['pct_human'] . '%', 'meta' => 'estado actual de la cohorte'],
+    ['kicker' => 'Contactos captados', 'value' => (int) $overview['leads'], 'meta' => 'primer registro en el rango'],
+    ['kicker' => 'Piden ayuda ahora', 'value' => (int) $overview['open_needs_help'], 'meta' => 'cola actual, sin filtro de fechas', 'warn' => true],
 ];
 
 // Geometría del gráfico (mismo viewBox que el diseño).
@@ -75,7 +75,7 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
       <input class="input" id="to" type="date" name="to" value="<?= e($to) ?>" />
     </div>
     <button type="submit" class="btn btn-primary">Filtrar</button>
-    <a class="btn btn-secondary" href="<?= e(url_to('export.php') . '?' . http_build_query(['tipo' => 'conversaciones', 'from' => $from, 'to' => $to])) ?>">Exportar CSV</a>
+    <?php if (Auth::canManage()): ?><a class="btn btn-secondary" href="<?= e(url_to('export.php') . '?' . http_build_query(['tipo' => 'conversaciones', 'from' => $from, 'to' => $to])) ?>">Exportar CSV</a><?php endif; ?>
   </form>
 
   <div class="kpi-grid">
@@ -159,6 +159,7 @@ $labelEvery = max(1, (int) ceil(count($points) / 10));
 
   <div class="card elev-sm table-card">
     <h4>Detalle de conversaciones</h4>
+    <?php if (count($rows) >= 150): ?><p class="card-meta">Se muestran las 150 conversaciones más recientes del período.</p><?php endif; ?>
     <div class="table-scroll">
       <table class="table">
         <thead>

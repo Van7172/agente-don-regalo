@@ -6,6 +6,7 @@ import re
 import asyncio
 import logging
 import unicodedata
+from datetime import date
 from urllib.parse import urlparse
 
 import httpx
@@ -363,6 +364,14 @@ async def buscar_conocimiento(args: dict):
         if h.score < settings.kb_min_score:
             continue
         p = h.payload or {}
+        # Los puntos heredados se indexaron automáticamente, sin revisión ni
+        # vencimiento. No se usan hasta que alguien los vuelva a aprobar.
+        try:
+            active = date.fromisoformat(str(p.get("expires_at") or "")) >= date.today()
+        except ValueError:
+            active = False
+        if p.get("approved") is not True or not active:
+            continue
         resultados.append({
             "pregunta":  p.get("pregunta"),
             "respuesta": p.get("respuesta"),

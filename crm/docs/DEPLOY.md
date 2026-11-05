@@ -134,6 +134,33 @@ rompe nada — la tabla existe y nadie la escribe.
 
 Detalle documentado en [`INTELIGENCIA_COMERCIAL.md`](INTELIGENCIA_COMERCIAL.md).
 
+### Meta Ads en Campañas
+
+Aplicar `crm/sql/020_meta_ads_snapshot.sql` **antes** de subir el panel nuevo.
+Después importar una lectura de Meta con el comando CLI o el endpoint interno.
+El archivo local de primera carga está en `tmp/meta_ads_snapshot.json` y no se
+incluye en Git ni en el despliegue por defecto. Ver el orden y el formato en
+[`META_ADS_CAMPAIGNS.md`](META_ADS_CAMPAIGNS.md).
+
+### Pedidos, pagos y ventas verificadas
+
+Ejecutar `crm/sql/021_pago_confirmado.sql` **antes** de publicar el CRM PHP de esta
+versión. La migración añade la fecha y el asesor que confirmó el pago, y la etapa
+`pendiente_pago`. Los pedidos históricos sin confirmación de entrega quedan como
+**pago no verificado**; la migración no supone que se cobraron. Las entregas ya
+registradas se consideran pagadas.
+
+Después publicar `src/Repository.php`, `public/api/index.php`,
+`public/sales-history.php`, `public/export.php`, `public/assets/inbox.js`,
+`public/assets/sales-history.js`, `public/assets/app.css`,
+`views/inbox.php` y `views/sales-history.php`. El agente puede publicarse después;
+su aviso al equipo dirá «pedido confirmado» hasta que un asesor confirme el pago.
+
+El conocimiento del equipo se revisa con `sync_conocimiento.py proponer` y
+`sync_conocimiento.py aprobar` en el servidor del agente. La aprobación requiere
+nombre de revisor y caduca a los 90 días. Los puntos anteriores sin aprobación
+no se ofrecen al bot.
+
 ### Escritura condicional del estado (`POST /api/settings/cas`)
 
 **Sin migración SQL.** Basta subir `src/Repository.php` y `public/api/index.php`.

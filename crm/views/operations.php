@@ -67,7 +67,7 @@ $jsonFlags = JSON_UNESCAPED_UNICODE
       <div class="ops-panel-head">
         <div>
           <span class="card-kicker">Atención humana</span>
-          <h3>Handoffs activos</h3>
+          <h3>Atención humana de los últimos 7 días</h3>
         </div>
         <a class="btn btn-secondary btn-sm" href="<?= e(url_to('/')) ?>">Abrir inbox</a>
       </div>

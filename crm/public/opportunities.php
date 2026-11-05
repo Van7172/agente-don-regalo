@@ -14,14 +14,9 @@ $validDate = static function ($value, string $fallback): string {
 $from = $validDate($_GET['from'] ?? '', date('Y-m-d', strtotime('-30 days')));
 $to = $validDate($_GET['to'] ?? '', date('Y-m-d'));
 
-$totalVacio = 0;
-$totalAprox = 0;
-
-$rows = array_map(static function (array $row) use (&$totalVacio, &$totalAprox): array {
+$rows = array_map(static function (array $row): array {
     $vacio = (int) $row['veces_vacio'];
     $aprox = (int) $row['veces_aproximado'];
-    $totalVacio += $vacio;
-    $totalAprox += $aprox;
 
     $ultima = (string) ($row['ultima_vez'] ?? '');
     $ts = $ultima !== '' ? strtotime($ultima) : false;
@@ -41,9 +36,5 @@ view('opportunities', [
     'from' => $from,
     'to' => $to,
     'rows' => $rows,
-    'totals' => [
-        'terminos' => count($rows),
-        'vacio' => $totalVacio,
-        'aproximado' => $totalAprox,
-    ],
+    'totals' => Repository::unmetDemandTotals($from, $to),
 ]);

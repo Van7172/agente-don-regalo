@@ -78,7 +78,7 @@ async def test_announce_deja_el_pedido_en_el_crm(monkeypatch):
 
     # Y el equipo se entera en el momento, con el pedido delante.
     assert len(avisos) == 1
-    assert "VENTA CERRADA" in avisos[0]
+    assert "PEDIDO CONFIRMADO" in avisos[0]
     assert "Desayuno Dulce Rosita" in avisos[0]
     assert "Miraflores" in avisos[0]
 
@@ -100,7 +100,7 @@ async def test_si_el_crm_falla_el_handoff_sigue_adelante(monkeypatch):
 def test_el_resumen_es_legible_de_un_vistazo():
     texto = sale_mod.summary(sale_mod.build_sale(CERRADA), 42)
 
-    assert "VENTA CERRADA" in texto
+    assert "PEDIDO CONFIRMADO" in texto
     assert "Desayuno Dulce Rosita" in texto
     assert "S/14.18" in texto
     assert "09:00 AM a 11:00 AM" in texto

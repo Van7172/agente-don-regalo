@@ -111,13 +111,13 @@ sobreviva reinicios y escale).
 |---|---|---|
 | Corto plazo | Historial reciente de la conversación (ventana de horas) | Plataforma de chat |
 | Largo plazo | Perfil del cliente: datos estables (nombre, zona) + notas episódicas con fecha | Atributos de contacto |
-| Conocimiento del equipo | Pares pregunta/respuesta aprendidos de vendedores humanos | Base vectorial |
+| Conocimiento del equipo | Respuestas propuestas desde chats reales, aprobadas por una persona y vigentes por 90 días | Base vectorial |
 
 Criterios:
 
 - Datos estables se sobrescriben; las notas episódicas se acumulan con fecha.
 - No anunciar que se guardan datos; hacerlo de forma natural.
-- El conocimiento del equipo se captura al resolverse una conversación con intervención humana.
+- Las respuestas de asesores se proponen con `sync_conocimiento.py proponer`; solo las seleccionadas y aprobadas con `sync_conocimiento.py aprobar` llegan al agente.
 
 ---
 

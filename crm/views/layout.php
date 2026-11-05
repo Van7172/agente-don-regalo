@@ -20,6 +20,17 @@ $navItems = [
     ['operations', url_to('operaciones.php'), 'Operaciones', '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>'],
     ['settings', url_to('settings.php'), 'Ajustes', '<line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line>'],
 ];
+if (!Auth::canManage()) {
+    $navItems = array_values(array_filter($navItems, static function (array $item): bool {
+        return $item[0] !== 'settings' && $item[0] !== 'operations';
+    }));
+}
+$navGroups = [
+    'inbox' => 'Atención',
+    'reports' => 'Análisis',
+    'content' => 'Herramientas',
+    'operations' => 'Administración',
+];
 $currentLabel = 'Don Regalo';
 foreach ($navItems as $item) {
     if ($item[0] === $name) {
@@ -84,6 +95,9 @@ foreach ($navItems as $item) {
 
     <nav class="sidebar-nav">
       <?php foreach ($navItems as [$itemName, $href, $label, $paths]): ?>
+        <?php if (isset($navGroups[$itemName])): ?>
+          <span class="sidebar-group"><?= e($navGroups[$itemName]) ?></span>
+        <?php endif; ?>
         <a class="sidebar-link" href="<?= e($href) ?>" title="<?= e($label) ?>" aria-label="<?= e($label) ?>"<?= $name === $itemName ? ' aria-current="page"' : '' ?>>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><?= $paths ?></svg>
           <span class="sidebar-label"><?= e($label) ?></span>

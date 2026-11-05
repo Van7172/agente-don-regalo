@@ -60,7 +60,7 @@ try {
     if ($method === 'PATCH' && preg_match('#^/conversations/\d+/mode$#', $path)) {
         $needsToken = false;
     }
-    if ($method === 'PATCH' && preg_match('#^/conversations/\d+/sale/delivered$#', $path)) {
+    if ($method === 'PATCH' && preg_match('#^/conversations/\d+/sale/(delivered|paid)$#', $path)) {
         $needsToken = false;
     }
     // Módulos del asesor: van SIEMPRE con sesión (necesitan saber qué usuario
@@ -97,12 +97,29 @@ try {
         Http::jsonError('Unauthorized', 401);
     }
 
+    // El conector MCP vive en el cliente, no en PHP. Recibimos una lectura
+    // completa, autenticada con el token interno, y nunca credenciales de Meta.
+    if ($path === '/campaigns/meta-snapshot' && $method === 'POST') {
+        $size = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+        if ($size > 8000000) {
+            Http::jsonError('Lectura de Meta demasiado grande.', 413);
+        }
+        try {
+            $count = MetaAdsSnapshot::import(Http::readJson(), (string) ($config['meta_ads_account_id'] ?? '1149788199387012'));
+        } catch (InvalidArgumentException $e) {
+            Http::jsonError($e->getMessage(), 422);
+        }
+        Http::jsonOk(['ok' => true, 'rows' => $count]);
+    }
+
     // GET /conversations
     if ($path === '/conversations' && $method === 'GET') {
         // Con filtro caben más: quien busca "los cotizados" no quiere solo los que
         // además estén entre los 80 más recientes.
         $filters = Repository::parseConversationFilters($_GET);
         $rows = Repository::listConversations($filters ? 200 : 80, $filters);
+        $attention = Repository::attentionSummary();
+        $attentionRows = Repository::listConversations(60, ['atencion' => 'reciente']);
         $tenantId = Repository::ensureTenantId();
         $totalTenant = count($rows);
         // Si la lista viene vacía, distinguir "no hay chats" vs "tenant equivocado".
@@ -116,7 +133,9 @@ try {
         }
         Http::jsonOk([
             'data' => array_map([Repository::class, 'mapConversationList'], $rows),
+            'attention' => array_map([Repository::class, 'mapConversationList'], $attentionRows),
             'meta' => [
+                'attention' => $attention,
                 'tenant_id' => $tenantId,
                 'tenant_slug' => Auth::config()['tenant_slug'] ?? 'don-regalo',
                 'count' => $totalTenant,
@@ -179,6 +198,16 @@ try {
                     error_log('[CRM] no se pudo reabrir la etapa: ' . $error->getMessage());
                 }
             }
+        }
+        // Cada contacto que inicia una conversación cuenta como contacto captado.
+        // La ficha es única por WhatsApp; mensajes posteriores no duplican leads.
+        try {
+            Repository::upsertLead([
+                'waId' => (string) $body['wa_id'],
+                'name' => (string) ($body['name'] ?? '') ?: null,
+            ]);
+        } catch (Throwable $error) {
+            error_log('[CRM] no se pudo registrar contacto captado: ' . $error->getMessage());
         }
         $conv = Repository::getConversation($ids['conversationId']);
         Http::jsonOk([
@@ -384,6 +413,20 @@ try {
         ]);
     }
 
+    // PATCH /conversations/{id}/sale/paid — cobro verificado por un asesor.
+    if (preg_match('#^/conversations/(\d+)/sale/paid$#', $path, $m) && $method === 'PATCH') {
+        $user = Auth::user();
+        if (!$user) {
+            Http::jsonError('Unauthorized', 401);
+        }
+        try {
+            $sale = Repository::markSalePaid((int) $m[1], (int) $user['id']);
+        } catch (RuntimeException $error) {
+            Http::jsonError($error->getMessage(), 404);
+        }
+        Http::jsonOk(['ok' => true, 'sale' => $sale]);
+    }
+
     // PATCH /conversations/{id}/sale/delivered — acción manual del asesor.
     if (preg_match('#^/conversations/(\d+)/sale/delivered$#', $path, $m) && $method === 'PATCH') {
         $user = Auth::user();
@@ -392,6 +435,8 @@ try {
         }
         try {
             $sale = Repository::markSaleDelivered((int) $m[1], (int) $user['id']);
+        } catch (DomainException $error) {
+            Http::jsonError($error->getMessage(), 422);
         } catch (RuntimeException $error) {
             Http::jsonError($error->getMessage(), 404);
         }
@@ -644,6 +689,8 @@ try {
         }
         try {
             $sale = Repository::setSaleStatus((int) $m[1], $status, (int) $user['id']);
+        } catch (DomainException $error) {
+            Http::jsonError($error->getMessage(), 422);
         } catch (RuntimeException $error) {
             Http::jsonError($error->getMessage(), 404);
         }
@@ -672,6 +719,13 @@ try {
         $user = Auth::user();
         if (!$user) {
             Http::jsonError('Unauthorized', 401);
+        }
+        return $user;
+    };
+    $manager = static function () use ($panelUser): array {
+        $user = $panelUser();
+        if (!Auth::canManage()) {
+            Http::jsonError('No tienes permiso para administrar esta sección.', 403);
         }
         return $user;
     };
@@ -720,7 +774,7 @@ try {
         Http::jsonOk(['data' => Repository::listTags(($_GET['all'] ?? '') === '1')]);
     }
     if ($path === '/tags' && $method === 'POST') {
-        $user = $panelUser();
+        $user = $manager();
         $body = Http::readJson();
         $id = $panelAction(static function () use ($body, $user) {
             return Repository::createTag(
@@ -733,7 +787,7 @@ try {
         Http::jsonOk(['ok' => true, 'id' => $id], 201);
     }
     if (preg_match('#^/tags/(\d+)$#', $path, $m) && $method === 'PATCH') {
-        $user = $panelUser();
+        $user = $manager();
         $body = Http::readJson();
         $panelAction(static function () use ($m, $body, $user) {
             Repository::updateTag((int) $m[1], $body, (int) $user['id'], (string) ($user['name'] ?? ''));
@@ -746,7 +800,7 @@ try {
         Http::jsonOk(['data' => Repository::listQuickReplies(($_GET['all'] ?? '') === '1')]);
     }
     if ($path === '/quick-replies' && $method === 'POST') {
-        $user = $panelUser();
+        $user = $manager();
         $body = Http::readJson();
         $id = $panelAction(static function () use ($body, $user) {
             return Repository::createQuickReply($body, (int) $user['id'], (string) ($user['name'] ?? ''));
@@ -754,7 +808,7 @@ try {
         Http::jsonOk(['ok' => true, 'id' => $id], 201);
     }
     if (preg_match('#^/quick-replies/(\d+)$#', $path, $m) && $method === 'PATCH') {
-        $user = $panelUser();
+        $user = $manager();
         $body = Http::readJson();
         $panelAction(static function () use ($m, $body, $user) {
             Repository::updateQuickReply((int) $m[1], $body, (int) $user['id'], (string) ($user['name'] ?? ''));
@@ -1223,6 +1277,9 @@ try {
         ]);
     }
     if ($path === '/operations' && $method === 'GET') {
+        if (!Auth::hasValidInternalToken()) {
+            $manager();
+        }
         Http::jsonOk([
             'ok' => true,
             'crm' => Repository::operationalOverview(),

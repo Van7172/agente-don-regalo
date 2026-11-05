@@ -98,6 +98,10 @@
 
   Ver [`docs/INTELIGENCIA_COMERCIAL.md`](docs/INTELIGENCIA_COMERCIAL.md).
 
+  La vista de Campañas también puede mostrar gasto, clics y nombres del MCP de
+  Meta Ads mediante una lectura guardada. Migración `020` e instrucciones de
+  importación: [`docs/META_ADS_CAMPAIGNS.md`](docs/META_ADS_CAMPAIGNS.md).
+
   ## El nombre del adjunto (migración `015`)
 
   `crm_outbox` no guardaba el nombre del archivo: viajaba solo en el payload del

@@ -32,6 +32,16 @@
     // devolver el select a donde estaba, o la pantalla miente sobre la venta.
     const previous = select.dataset.current || "";
     if (!saleId) return;
+    if (status === "pendiente" && previous === "pendiente_pago" &&
+        !window.confirm("¿Verificaste que el pago fue recibido?")) {
+      select.value = previous;
+      return;
+    }
+    if (status === "pendiente_pago" && previous !== "pendiente_pago" &&
+        !window.confirm("¿Revertir la confirmación de pago de este pedido?")) {
+      select.value = previous;
+      return;
+    }
 
     select.disabled = true;
     try {
@@ -47,18 +57,28 @@
       }
 
       select.dataset.current = status;
-      select.classList.remove("is-pendiente", "is-entregado");
+      select.classList.remove("is-pendiente_pago", "is-pendiente", "is-entregado");
       select.classList.add(`is-${status}`);
 
       // La columna de confirmación se repinta aquí mismo: obligar a recargar
       // para ver el resultado de tu propio clic es lo que hace que la gente
       // dude de si el cambio se guardó y lo vuelva a pulsar.
       const cell = row.querySelector("[data-confirmation]");
+      const payment = row.querySelector("[data-payment]");
+      if (payment) {
+        if (status === "pendiente_pago") {
+          payment.querySelector("strong").textContent = "—";
+          payment.querySelector("small").textContent = "—";
+        } else if (previous === "pendiente_pago") {
+          payment.querySelector("strong").textContent = formatNow();
+          payment.querySelector("small").textContent = table.dataset.userName || "—";
+        }
+      }
       if (cell) {
         const when = cell.querySelector("strong");
         const who = cell.querySelector("small");
         if (when) when.textContent = status === "entregado" ? formatNow() : "—";
-        if (who) who.textContent = table.dataset.userName || "—";
+        if (who) who.textContent = status === "entregado" ? (table.dataset.userName || "—") : "—";
       }
     } catch (err) {
       select.value = previous;

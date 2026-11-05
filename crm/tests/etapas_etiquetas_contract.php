@@ -73,12 +73,16 @@ requiresText($api, '$panelUser = static function', 'Falta la exigencia de sesió
 foreach ([
     "'#^/conversations/(\\d+)/stage$#'",
     "'#^/conversations/(\\d+)/tags$#'",
-    "'#^/tags/(\\d+)$#'",
-    "'#^/quick-replies/(\\d+)$#'",
 ] as $route) {
     $at = strpos($api, $route);
     if ($at === false || strpos(substr($api, $at, 150), '$panelUser()') === false) {
         throw new RuntimeException("La ruta {$route} debe exigir sesión");
+    }
+}
+foreach (["'#^/tags/(\\d+)$#'", "'#^/quick-replies/(\\d+)$#'"] as $route) {
+    $at = strpos($api, $route);
+    if ($at === false || strpos(substr($api, $at, 150), '$manager()') === false) {
+        throw new RuntimeException("La ruta {$route} debe exigir rol administrador");
     }
 }
 
@@ -90,7 +94,7 @@ forbidsText(
 );
 
 // 7. CSV: sesión obligatoria, BOM y celdas neutralizadas.
-requiresText($export, 'Auth::requireLogin()', 'Exportar exige sesión');
+requiresText($export, 'Auth::requireManager()', 'Exportar exige rol administrador');
 requiresText($export, '"\xEF\xBB\xBF"', 'Sin BOM, Excel rompe tildes y emojis');
 requiresText($export, "array_map('csv_cell'", 'Toda celda pasa por csv_cell');
 

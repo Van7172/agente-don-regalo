@@ -24,9 +24,11 @@ $gaps = array_map(static function (array $row): array {
 
 $totalHuecos = 0;
 $totalActivos = 0;
+$totalSinEvaluar = 0;
 foreach ($stats as $s) {
     $totalHuecos += (int) ($s['huecos'] ?? 0);
     $totalActivos += (int) ($s['activos'] ?? 0);
+    $totalSinEvaluar += (int) ($s['sin_evaluar'] ?? 0);
 }
 
 view('competition', [
@@ -35,6 +37,7 @@ view('competition', [
     'totals' => [
         'activos' => $totalActivos,
         'huecos' => $totalHuecos,
+        'sin_evaluar' => $totalSinEvaluar,
         'competidores' => count($stats),
     ],
 ]);

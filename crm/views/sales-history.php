@@ -9,9 +9,9 @@
   <header class="sales-history-head">
     <div>
       <h2>Historial de ventas</h2>
-      <p class="lead">Ventas cerradas por Don Regalo y confirmaciones de entrega del CRM.</p>
+      <p class="lead">Pedidos confirmados, pagos verificados y entregas del CRM.</p>
     </div>
-    <span class="history-count"><?= e((string) count($rows)) ?> registros</span>
+    <span class="history-count"><?= count($rows) >= 500 ? 'Primeros 500 registros' : e((string) count($rows)) . ' registros' ?></span>
   </header>
 
   <form class="history-filters" method="get" action="<?= e(url_to('sales-history.php')) ?>">
@@ -27,7 +27,8 @@
       <span>Estado</span>
       <select class="input" name="status">
         <option value=""<?= $status === '' ? ' selected' : '' ?>>Todos</option>
-        <option value="pendiente"<?= $status === 'pendiente' ? ' selected' : '' ?>>Pendiente</option>
+        <option value="pendiente_pago"<?= $status === 'pendiente_pago' ? ' selected' : '' ?>>Pendiente de pago</option>
+        <option value="pendiente"<?= $status === 'pendiente' ? ' selected' : '' ?>>Pagado, pendiente de entrega</option>
         <option value="entregado"<?= $status === 'entregado' ? ' selected' : '' ?>>Entregado</option>
       </select>
     </label>
@@ -42,7 +43,7 @@
       />
     </label>
     <button class="btn btn-primary" type="submit">Filtrar</button>
-    <a class="btn btn-secondary" href="<?= e(url_to('export.php') . '?' . http_build_query(['tipo' => 'ventas', 'from' => $from, 'to' => $to, 'status' => $status, 'q' => $query])) ?>">Exportar CSV</a>
+    <?php if (Auth::canManage()): ?><a class="btn btn-secondary" href="<?= e(url_to('export.php') . '?' . http_build_query(['tipo' => 'ventas', 'from' => $from, 'to' => $to, 'status' => $status, 'q' => $query])) ?>">Exportar CSV</a><?php endif; ?>
   </form>
 
   <div class="history-table-wrap">
@@ -56,18 +57,19 @@
         <tr>
           <th>Estado</th>
           <th>Cliente</th>
-          <th>Venta</th>
+          <th>Pedido</th>
           <th>Cerró</th>
           <th>Entrega</th>
           <th>Pedido</th>
           <th>Cierre</th>
-          <th>Confirmación</th>
+          <th>Pago</th>
+          <th>Entrega confirmada</th>
         </tr>
       </thead>
       <tbody>
       <?php if (!$rows): ?>
         <tr>
-          <td class="history-empty" colspan="8">No hay ventas para estos filtros.</td>
+          <td class="history-empty" colspan="9">No hay pedidos para estos filtros.</td>
         </tr>
       <?php endif; ?>
       <?php foreach ($rows as $row): ?>
@@ -79,8 +81,11 @@
               data-current="<?= e($row['status']) ?>"
               aria-label="Estado de la venta de <?= e($row['contact_name'] ?: $row['wa_id']) ?>"
             >
+              <option value="pendiente_pago"<?= $row['status'] === 'pendiente_pago' ? ' selected' : '' ?>>
+                Pendiente de pago
+              </option>
               <option value="pendiente"<?= $row['status'] === 'pendiente' ? ' selected' : '' ?>>
-                Pendiente de entrega
+                Pagado, pendiente de entrega
               </option>
               <option value="entregado"<?= $row['status'] === 'entregado' ? ' selected' : '' ?>>
                 Entregado
@@ -116,6 +121,7 @@
               : '—' ?>
           </td>
           <td><?= e($row['closed_at']) ?></td>
+          <td data-payment><strong><?= e($row['paid_at']) ?></strong><small><?= e($row['paid_by'] ?: '—') ?></small></td>
           <td data-confirmation>
             <strong><?= e($row['delivered_at']) ?></strong>
             <small><?= e($row['advisor'] ?: '—') ?></small>

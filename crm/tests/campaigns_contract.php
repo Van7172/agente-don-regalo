@@ -63,6 +63,14 @@ requiresText(
 );
 requiresText(
     $repo,
+    'THEN c.id_conversation END) AS buyers',
+    'La conversión debe contar chats compradores, no filas de venta'
+);
+if (strpos(substr($repo, strpos($repo, 'function campaignPerformance'), 2200), 'LIMIT 100') !== false) {
+    throw new RuntimeException('El límite de anuncios recorta los totales del panel');
+}
+requiresText(
+    $repo,
     'GROUP BY c.ad_source_id',
     'La agrupación es por anuncio'
 );

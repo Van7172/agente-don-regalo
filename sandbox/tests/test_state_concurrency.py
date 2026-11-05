@@ -31,6 +31,33 @@ async def _cargar():
 
 
 @pytest.mark.asyncio
+async def test_fallo_de_escritura_no_confirma_el_turno(monkeypatch):
+    """Un fallo de CAS no puede parecer un guardado correcto al orquestador."""
+    async def broken(*_args, **_kwargs):
+        raise OSError("CRM no disponible")
+
+    monkeypatch.setattr(state_mod.crm_http, "crm_enabled", lambda: True)
+    monkeypatch.setattr(state_mod.crm_http, "put_setting_cas", broken)
+    with pytest.raises(RuntimeError, match="No se pudo guardar"):
+        await save_state(CONV, ConversationState(checkout_step="date"))
+
+
+@pytest.mark.asyncio
+async def test_agotar_reintentos_cas_tambien_falla(monkeypatch):
+    async def conflict(*_args, **_kwargs):
+        return False
+
+    async def fresh(*_args, **_kwargs):
+        return ConversationState(version=1)
+
+    monkeypatch.setattr(state_mod.crm_http, "crm_enabled", lambda: True)
+    monkeypatch.setattr(state_mod.crm_http, "put_setting_cas", conflict)
+    monkeypatch.setattr(state_mod, "load_state", fresh)
+    with pytest.raises(RuntimeError, match="reintentos"):
+        await save_state(CONV, ConversationState(checkout_step="date"))
+
+
+@pytest.mark.asyncio
 async def test_load_state_devuelve_copias_independientes():
     """El caché local no puede ser memoria compartida entre escritores.
 

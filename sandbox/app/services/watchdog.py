@@ -35,7 +35,7 @@ REALERT_SEC = 30 * 60
 DAILY_EVERY_SEC = 20 * 60 * 60
 FALLBACK_WINDOW_SEC = 15 * 60
 FALLBACK_THRESHOLD = 3
-# Una venta cerrada que nadie atiende en 15 min es un lead enfriándose.
+# Un pedido confirmado que nadie atiende en 15 min es un lead enfriándose.
 SALE_IDLE_SEC = 15 * 60
 EMERGENCY_MARKERS = (
     "un asesor de nuestro equipo continúa contigo",
@@ -298,7 +298,7 @@ async def check_unattended_sales() -> None:
         except Exception:
             continue
         if not raw:
-            continue  # no hay venta cerrada en este chat
+            continue  # no hay pedido confirmado en este chat
 
         # Un aviso por venta. Si el asesor no entra, el recordatorio vuelve a los
         # REALERT_SEC, no cada tick.

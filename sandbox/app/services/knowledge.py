@@ -1,21 +1,16 @@
-"""
-Aprendizaje del equipo de ventas (Nivel B) — sandbox CRM.
-
-Captura pares pregunta/respuesta cuando un asesor humano atiende en el CRM,
-los indexa en Qdrant (`respuestas_equipo`) y el agente los consulta con
-`buscar_conocimiento_equipo`.
-"""
+"""Propuestas de conocimiento del equipo, con revisión humana y caducidad."""
 import re
 import json
 import uuid
 import asyncio
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 from sqlalchemy import select
 
 from app.config import settings
+from app.crm import http_client as crm_http
 from app.crm.models import Message
 from app.db import SessionLocal
 from app.tools.search import get_qdrant, embed
@@ -43,6 +38,16 @@ def _classify(m: dict) -> str | None:
 
 async def _fetch_messages(conversation_id: int) -> list[dict]:
     """Trae mensajes del CRM, ordenados cronológicamente."""
+    if crm_http.crm_enabled():
+        detail = await crm_http.get_conversation(conversation_id)
+        return [
+            {
+                "content": m.get("content") or "",
+                "direction": m.get("direction"),
+                "sender_type": m.get("sender_type"),
+            }
+            for m in detail.get("messages") or []
+        ]
     async with SessionLocal() as session:
         result = await session.execute(
             select(Message)
@@ -85,7 +90,7 @@ Tu tarea: extraer SOLO el conocimiento valioso que aportó el VENDEDOR y que ser
 para responder mejor a futuros clientes. Enfócate en:
 - Respuestas a preguntas que el bot no supo o no cubría (políticas, dudas, casos especiales)
 - Manejo de objeciones (precio, tiempos, desconfianza) que funcionó
-- Datos operativos concretos (plazos, excepciones, coordinaciones, promociones puntuales)
+- Explicaciones generales de políticas y objeciones que no dependan de un precio o fecha
 - Frases de cierre o aclaraciones útiles
 
 NO extraigas:
@@ -93,6 +98,8 @@ NO extraigas:
 - Datos personales del cliente puntual (eso va a otro sistema)
 - Cosas que el bot ya respondía bien por sí mismo
 - Información sensible (números de cuenta completos, datos privados)
+- Precios, promociones, stock, cobertura, métodos de pago y plazos concretos:
+  pueden cambiar; el agente debe consultarlos con las herramientas oficiales
 
 REGLA DE PRIVACIDAD (obligatoria): la pregunta y la respuesta deben ser GENÉRICAS.
 - Reemplaza nombres propios de personas por "el cliente" o "un cliente".
@@ -210,17 +217,27 @@ def ensure_kb_collection(qc) -> None:
         )
 
 
-async def _index_items(items: list[dict], conversation_id: int | None) -> int:
-    """Embebe las preguntas y hace upsert en Qdrant. Devuelve cuántos indexó."""
+async def _index_items(items: list[dict], conversation_id: int | None, *, reviewer: str) -> int:
+    """Indexa solo items aprobados expresamente por una persona identificada."""
     from qdrant_client.models import PointStruct
 
+    reviewer = reviewer.strip()
+    if not reviewer:
+        raise ValueError("Se requiere el nombre de quien aprobó el conocimiento")
+    items = _scrub_items([
+        {
+            "pregunta": str(it.get("pregunta") or "").strip()[:300],
+            "respuesta": str(it.get("respuesta") or "").strip()[:1200],
+            "categoria": str(it.get("categoria") or "").strip()[:60],
+        }
+        for it in items if isinstance(it, dict) and it.get("pregunta") and it.get("respuesta")
+    ])
+    if not items:
+        return 0
     qc = get_qdrant()
     if qc is None:
-        log.warning("[KB] Qdrant no configurado; no se indexa conocimiento.")
-        return 0
-
+        raise RuntimeError("Qdrant no está configurado; no se aprobó ningún item")
     await asyncio.to_thread(ensure_kb_collection, qc)
-
     textos  = [f"{it['pregunta']}\n{it['respuesta']}" for it in items]
     vectors = await embed(textos)
 
@@ -235,6 +252,9 @@ async def _index_items(items: list[dict], conversation_id: int | None) -> int:
                 "categoria":       it.get("categoria", ""),
                 "conversation_id": conversation_id,
                 "fecha":           date.today().isoformat(),
+                "approved":        True,
+                "approved_by":     reviewer,
+                "expires_at":      (date.today() + timedelta(days=90)).isoformat(),
             },
         ))
 
@@ -247,25 +267,27 @@ async def _index_items(items: list[dict], conversation_id: int | None) -> int:
 
 # ─── Orquestador ──────────────────────────────────────────────────────────────
 
-async def capturar_de_conversacion(conversation_id: int) -> int:
-    """Captura conocimiento del vendedor de una conversación. Devuelve cuántos
-    items se indexaron (0 si no hubo intervención humana o nada reutilizable)."""
+async def proponer_de_conversacion(conversation_id: int) -> list[dict]:
+    """Extrae candidatos del CRM real; aún no son consultables por el agente."""
     try:
         messages = await _fetch_messages(conversation_id)
     except Exception as e:
         log.error("[KB] no se pudo leer la conversación %s: %s", conversation_id, e)
-        return 0
+        return []
 
     transcript, hay_vendedor = _build_transcript(messages)
     if not hay_vendedor:
         log.info("[KB] conversación %s sin intervención humana; se omite.", conversation_id)
-        return 0
+        return []
 
     items = await _extract_qa(transcript)
     if not items:
         log.info("[KB] conversación %s: nada reutilizable.", conversation_id)
-        return 0
+        return []
 
-    n = await _index_items(items, conversation_id)
-    log.info("[KB] conversación %s: %d items de conocimiento indexados.", conversation_id, n)
-    return n
+    return items
+
+
+async def aprobar_items(items: list[dict], conversation_id: int, reviewer: str) -> int:
+    """Publica una selección revisada; toda entrada vence a los 90 días."""
+    return await _index_items(items, conversation_id, reviewer=reviewer)

@@ -74,9 +74,9 @@
       },
       {
         label: "Handoffs",
-        value: number(crm?.handoffs?.pending),
-        meta: `más antiguo: ${minutes(crm?.handoffs?.oldest_minutes)}`,
-        state: number(crm?.handoffs?.pending) > 0 ? "warn" : "ok",
+        value: number(crm?.handoffs?.recent7),
+        meta: `${number(crm?.handoffs?.pending)} en total · ${number(crm?.handoffs?.stale30)} sin actividad en 30 días`,
+        state: number(crm?.handoffs?.recent7) > 0 ? "warn" : "ok",
       },
       {
         label: "Outbox pendiente",
@@ -85,10 +85,10 @@
         state: number(crm?.outbox?.pending) > 0 ? "warn" : "ok",
       },
       {
-        label: "Outbox fallido",
-        value: number(crm?.outbox?.failed),
-        meta: "entregas no completadas",
-        state: number(crm?.outbox?.failed) > 0 ? "danger" : "ok",
+        label: "Fallidos últimos 7 días",
+        value: number(crm?.outbox?.failed_recent7),
+        meta: `${number(crm?.outbox?.failed)} históricos en total`,
+        state: number(crm?.outbox?.failed_recent7) > 0 ? "danger" : "ok",
       },
     ];
 
