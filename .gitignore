@@ -35,3 +35,4 @@ test_sandbox.db
 
 # Paquetes locales de despliegue (se regeneran y pueden contener código de otro repo)
 artifacts/
+tmp/meta_ads_snapshot.json

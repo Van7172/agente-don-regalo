@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 $config = require dirname(__DIR__) . '/bootstrap.php';
 require_once dirname(__DIR__) . '/src/helpers.php';
-Auth::requireLogin();
+Auth::requireManager();
 
 // Excel en español abre un CSV con ";" en columnas. Si en el equipo sale todo en
 // una columna, este es el único valor que hay que cambiar.
@@ -27,7 +27,7 @@ $to = $validDate($_GET['to'] ?? '', date('Y-m-d'));
 $tipo = (string) ($_GET['tipo'] ?? '');
 
 if ($tipo === 'ventas') {
-    $status = in_array($_GET['status'] ?? '', ['pendiente', 'entregado'], true)
+    $status = in_array($_GET['status'] ?? '', Repository::SALE_STATUSES, true)
         ? (string) $_GET['status']
         : '';
     $search = trim(substr((string) ($_GET['q'] ?? ''), 0, 100));
@@ -35,11 +35,12 @@ if ($tipo === 'ventas') {
     $header = [
         'Estado', 'Cliente', 'WhatsApp', 'Producto', 'Distrito', 'Monto (S/)', 'Envío (S/)',
         'Cerró', 'Vendedor', 'Fecha de entrega', 'Horario', 'Pedido', 'Cierre',
-        'Confirmación', 'Confirmó',
+        'Pago confirmado', 'Confirmó pago', 'Entrega confirmada', 'Confirmó entrega',
     ];
     $toRow = static function (array $row): array {
         return [
-            ($row['estado_venta_historial'] ?? '') === 'entregado' ? 'Entregado' : 'Pendiente de entrega',
+            ($row['estado_venta_historial'] ?? '') === 'entregado' ? 'Entregado'
+                : (!empty($row['fecha_confirmacion_pago']) ? 'Pagado, pendiente de entrega' : 'Pendiente de pago'),
             $row['nombre_contacto_venta_historial'] ?? '',
             $row['wa_id_venta_historial'] ?? '',
             $row['producto_venta_historial'] ?? '',
@@ -52,6 +53,8 @@ if ($tipo === 'ventas') {
             $row['horario_venta_historial'] ?? '',
             $row['id_pedido_temporal'] ?? '',
             $row['fecha_cierre_venta_historial'] ?? '',
+            $row['fecha_confirmacion_pago'] ?? '',
+            $row['nombre_usuario_pago'] ?? '',
             $row['fecha_confirmacion_entrega'] ?? '',
             $row['nombre_usuario_confirmacion'] ?? '',
         ];

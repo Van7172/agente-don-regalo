@@ -1,78 +1,53 @@
+"""Revisión explícita del conocimiento del equipo desde el CRM activo.
+
+Uso en el servidor del agente:
+  python sync_conocimiento.py proponer 123 --salida propuestas.json
+  # Revisar y editar el JSON; quitar respuestas no vigentes.
+  python sync_conocimiento.py aprobar propuestas.json --revisor "Nombre del responsable"
+
+Las propuestas no son visibles para el bot. La aprobación indexa los items
+revisados con vencimiento a 90 días; se deben revalidar al caducar.
 """
-Backfill de la base de conocimiento del equipo (Nivel B).
+from __future__ import annotations
 
-Recorre las conversaciones RESUELTAS de Chatwoot y captura el conocimiento que
-aportaron los vendedores humanos, indexándolo en Qdrant (`respuestas_equipo`).
-
-Úsalo una vez para arrancar con el histórico; las nuevas conversaciones se
-capturan solas al resolverse (ver _handle_conversation_event en main.py).
-
-Uso:
-  python sync_conocimiento.py            # procesa hasta MAX_CONV conversaciones
-  python sync_conocimiento.py 500        # procesa hasta 500
-"""
-import os
-import sys
+import argparse
 import asyncio
+import json
+from pathlib import Path
 
-import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.services import knowledge  # usa la misma lógica de captura que el webhook
-
-CHATWOOT_URL        = os.getenv("CHATWOOT_URL", "").rstrip("/")
-CHATWOOT_API_TOKEN  = os.getenv("CHATWOOT_API_TOKEN", "")
-CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "")
+from app.services import knowledge
 
 
-async def _listar_resueltas(max_conv: int) -> list[int]:
-    """Devuelve ids de conversaciones con estado 'resolved' (paginado)."""
-    ids: list[int] = []
-    page = 1
-    base = f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations"
-    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-        while len(ids) < max_conv:
-            r = await client.get(
-                base,
-                headers={"api_access_token": CHATWOOT_API_TOKEN},
-                params={"status": "resolved", "page": page},
-            )
-            r.raise_for_status()
-            data = r.json().get("data", {})
-            convs = data.get("payload", []) if isinstance(data, dict) else []
-            if not convs:
-                break
-            ids.extend(c["id"] for c in convs if c.get("id"))
-            print(f"  página {page}: {len(convs)} conversaciones")
-            page += 1
-    return ids[:max_conv]
+async def main() -> None:
+    parser = argparse.ArgumentParser(description="Curar conocimiento del equipo")
+    commands = parser.add_subparsers(dest="command", required=True)
+    propose = commands.add_parser("proponer")
+    propose.add_argument("conversation_id", type=int)
+    propose.add_argument("--salida", required=True, type=Path)
+    approve = commands.add_parser("aprobar")
+    approve.add_argument("archivo", type=Path)
+    approve.add_argument("--revisor", required=True)
+    args = parser.parse_args()
 
+    if args.command == "proponer":
+        items = await knowledge.proponer_de_conversacion(args.conversation_id)
+        payload = {"conversation_id": args.conversation_id, "items": items}
+        args.salida.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"{len(items)} propuestas guardadas en {args.salida}. Revisar antes de aprobar.")
+        return
 
-async def main(max_conv: int) -> int:
-    if not CHATWOOT_URL or not CHATWOOT_API_TOKEN:
-        print("ERROR: faltan CHATWOOT_URL o CHATWOOT_API_TOKEN.")
-        return 1
-
-    print("Listando conversaciones resueltas...")
-    ids = await _listar_resueltas(max_conv)
-    print(f"Total a procesar: {len(ids)}")
-
-    total_items = 0
-    for i, cid in enumerate(ids, 1):
-        try:
-            n = await knowledge.capturar_de_conversacion(cid)
-            total_items += n
-            estado = f"{n} items" if n else "—"
-            print(f"  [{i}/{len(ids)}] conversación {cid}: {estado}")
-        except Exception as e:
-            print(f"  [{i}/{len(ids)}] conversación {cid}: ERROR {e}")
-
-    print(f"[OK] Backfill completo. {total_items} items de conocimiento indexados.")
-    return 0
+    payload = json.loads(args.archivo.read_text(encoding="utf-8"))
+    conversation_id = int(payload["conversation_id"])
+    items = payload["items"]
+    if not isinstance(items, list):
+        raise ValueError("El archivo debe contener una lista de items")
+    count = await knowledge.aprobar_items(items, conversation_id, args.revisor)
+    print(f"{count} respuestas aprobadas; caducan en 90 días.")
 
 
 if __name__ == "__main__":
-    limite = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("MAX_CONV", "300"))
-    sys.exit(asyncio.run(main(limite)))
+    asyncio.run(main())

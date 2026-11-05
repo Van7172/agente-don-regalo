@@ -51,6 +51,26 @@ final class Auth
         }
     }
 
+    /** Los roles del comercio son compartidos; el panel solo reconoce cargos de administración. */
+    public static function canManage(): bool
+    {
+        $user = self::user();
+        if (!$user) {
+            return false;
+        }
+        $role = mb_strtolower(trim((string) ($user['role'] ?? '')), 'UTF-8');
+        return in_array($role, ['admin', 'administrador', 'administradora', 'gerente', 'propietario', 'propietaria'], true);
+    }
+
+    public static function requireManager(): void
+    {
+        self::requireLogin();
+        if (!self::canManage()) {
+            http_response_code(403);
+            exit('No tienes permiso para administrar esta sección.');
+        }
+    }
+
     /**
      * Login con login_usuario + password_usuario (tabla usuarios).
      *
@@ -80,9 +100,15 @@ final class Auth
         }
 
         $stored = (string) (isset($row['password_usuario']) ? $row['password_usuario'] : '');
-        if (!hash_equals($stored, (string) $password)) {
+        // Acepta hashes cuando el comercio los migre. El valor legado sigue
+        // vigente aquí porque la tabla usuarios también autentica la tienda.
+        $isHash = (password_get_info($stored)['algoName'] ?? 'unknown') !== 'unknown';
+        if ($isHash ? !password_verify((string) $password, $stored)
+                    : !hash_equals($stored, (string) $password)) {
             return false;
         }
+
+        session_regenerate_id(true);
 
         $roleName = 'rol_' . (isset($row['id_rol']) ? $row['id_rol'] : '0');
         try {

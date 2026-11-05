@@ -41,33 +41,18 @@ compRequires($api, '/competition/products', 'Falta el endpoint de upsert');
 $layout = compSource('views/layout.php');
 compRequires($layout, 'competition.php', 'La nav debe enlazar Competencia');
 
-// La pantalla vacía es la que más se lee de este módulo: mientras no haya crawl,
-// es lo ÚNICO que se ve. Y engaña por partida doble — parece que no falta nada en
-// el catálogo, y no distingue un crawl que nunca corrió de uno que falló. Lo que
-// diga aquí es el runbook de quien está atascado, así que se vigila.
+// La pantalla vacía debe explicar que todavía no hay datos y llevar al lugar
+// donde un administrador puede revisar la captura.
 $vista = compSource('views/competition.php');
 compRequires(
     $vista,
-    'WATCHDOG_ENABLED',
-    'El crawl cuelga del tick del watchdog: con el watchdog apagado, '
-        . 'COMPETITION_CRAWL_ENABLED=1 no hace nada y la pantalla vacía tiene que decirlo'
+    'Aún no hay productos de competidores',
+    'El vacío no puede parecer ausencia de huecos en el catálogo'
 );
 compRequires(
     $vista,
-    '/internal/competition/crawl',
-    'El disparador manual es el camino corto: devuelve el resumen CON los errores, '
-        . 'que es lo único que distingue "no corrió" de "corrió y falló"'
-);
-compRequires(
-    $vista,
-    'exactamente igual que uno que nunca corrió',
-    'Un crawl fallido no marca cooldown y no deja rastro en el panel: si la pantalla '
-        . 'no lo advierte, se busca el fallo donde no está'
-);
-compRequires(
-    $vista,
-    'no se ha redesplegado',
-    'Poner la variable en EasyPanel no despliega el código; es el fallo más fácil de cometer'
+    'revisar la captura en Operaciones',
+    'El administrador debe encontrar dónde diagnosticar la captura'
 );
 
 $agent = compSource('../app/services/competition_adapters.py');

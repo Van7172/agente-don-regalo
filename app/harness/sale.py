@@ -1,4 +1,4 @@
-"""Venta cerrada: la señal que el agente le deja al vendedor.
+"""Pedido confirmado: la señal que el agente le deja al vendedor.
 
 Cuando el cliente confirma el resumen del pedido, el bot ya tiene TODO: qué
 producto, a qué distrito, qué día, en qué horario y cuánto cuesta el envío. Hasta
@@ -114,7 +114,7 @@ def summary(sale: dict[str, Any], conversation_id: int) -> str:
         else "· ⚠️ No se creó el pedido temporal: hay que armarlo a mano en el panel\n"
     )
     return (
-        "💚 *VENTA CERRADA POR DON REGALO* — solo falta cobrar\n"
+        "🟠 *PEDIDO CONFIRMADO POR DON REGALO* — falta verificar el pago\n"
         f"Conversación #{conversation_id}\n"
         f"· Producto: {sale.get('producto') or '—'}\n"
         f"· Distrito: {sale.get('distrito') or '—'} (envío {envio})\n"
@@ -122,5 +122,5 @@ def summary(sale: dict[str, Any], conversation_id: int) -> str:
         f"· Horario: {sale.get('horario') or '—'}\n"
         f"{total}"
         f"{pedido}\n"
-        "Entra al chat en el CRM (está en verde) y coordina el pago."
+        "Entra al chat en el CRM y coordina el pago."
     )

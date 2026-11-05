@@ -38,7 +38,8 @@
         <line x1="12" y1="8" x2="12" y2="12"></line>
         <line x1="12" y1="16" x2="12.01" y2="16"></line>
       </svg>
-      <span>Cola de atención — necesitan ayuda ahora</span>
+      <span>Atención reciente — necesitan ayuda ahora</span>
+      <span id="help-stale-count" class="help-stale-count"></span>
     </div>
     <div class="help-rail-chips" id="help-rail-chips"></div>
   </section>
@@ -65,7 +66,7 @@
             <circle cx="11" cy="11" r="7"></circle>
             <line x1="21" y1="21" x2="16.5" y2="16.5"></line>
           </svg>
-          <input class="input" id="conv-search" type="search" placeholder="Buscar conversación…" aria-label="Buscar conversación" />
+          <input class="input" id="conv-search" type="search" placeholder="Buscar nombre o WhatsApp…" aria-label="Buscar por nombre o WhatsApp" />
         </div>
         <!-- Sin esto, "quién atiende qué" no se puede consultar: la bandeja
              ordena por recencia y los chats de uno quedan repartidos entre los
@@ -140,12 +141,12 @@
           <div class="chat-actions" id="chat-actions" role="group" aria-label="Acciones de la conversación">
             <!-- La mayoría de las ventas del CRM las cierra un asesor, no el bot,
                  y hasta ahora no quedaban registradas en ninguna parte. -->
-            <button type="button" class="btn btn-secondary" id="btn-sale" title="Registrar una venta cerrada por ti">
+            <button type="button" class="btn btn-secondary" id="btn-sale" title="Registrar un pedido confirmado por el cliente">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <line x1="12" y1="1" x2="12" y2="23"></line>
                 <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
               </svg>
-              Registrar venta
+              Registrar pedido
             </button>
             <button type="button" class="btn btn-primary" id="btn-human" hidden>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -388,7 +389,7 @@
 <dialog class="sale-dialog" id="sale-dialog" aria-labelledby="sale-dialog-title">
   <form method="dialog" class="sale-dialog-form" id="sale-form">
     <div class="sale-dialog-head">
-      <h4 id="sale-dialog-title">Registrar venta</h4>
+      <h4 id="sale-dialog-title">Registrar pedido</h4>
       <button type="button" class="icon-btn" id="sale-dialog-close" aria-label="Cerrar">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -450,6 +451,7 @@
       <textarea class="input" id="sale-motivo" name="motivo" rows="3" maxlength="255"
                 placeholder="Pago, dirección, referencia, destinatario, dedicatoria y otras indicaciones"></textarea>
     </div>
+    <label class="field"><input type="checkbox" name="pago_confirmado" value="1" /> Ya verifiqué que el pago fue recibido</label>
 
     <div class="sale-dialog-error" id="sale-dialog-error" role="alert" hidden></div>
 

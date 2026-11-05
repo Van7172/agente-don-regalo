@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -557,6 +558,36 @@ def _profile_from_memory(memory: dict) -> dict:
     return profile
 
 
+def _recent_external_history(history: list[dict]) -> list[dict]:
+    """Aplica al CRM externo la misma ventana y límite del historial local."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.memory_window_hours)
+    recent = []
+    for message in history:
+        raw = message.get("created_at")
+        try:
+            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                continue
+            if stamp.astimezone(timezone.utc) < cutoff:
+                continue
+        except (TypeError, ValueError):
+            continue
+        recent.append({"role": message["role"], "content": message["content"]})
+    return recent[-settings.memory_max_messages:]
+
+
+def _ad_origin(ad: dict | None) -> str:
+    """El anuncio es una pista del interés, nunca una fuente de precios o stock."""
+    if not isinstance(ad, dict):
+        return ""
+    pieces = []
+    for key, label, length in (("source_id", "ID", 80), ("headline", "Título", 180), ("body", "Texto", 300)):
+        value = str(ad.get(key) or "").strip()
+        if value:
+            pieces.append(f"{label}: {value[:length]}")
+    return " | ".join(pieces)
+
+
 async def _flush_external(
     conversation_id: int,
     contact_id: int,
@@ -567,6 +598,12 @@ async def _flush_external(
     detail = await crm_http.get_conversation(conversation_id)
     memory = await crm_http.get_memory(wa_id) or {}
     profile = _profile_from_memory(memory)
+    ad = _ad_origin((detail.get("conversation") or {}).get("ad"))
+    if ad:
+        profile["anuncio_origen"] = (
+            "Referencia de interés del anuncio: " + ad +
+            ". Verifica producto, precio y disponibilidad con las herramientas actuales."
+        )
 
     history = []
     for m in detail.get("messages") or []:
@@ -579,6 +616,7 @@ async def _flush_external(
                 # El id viaja hasta el recorte y no más allá: `drop_current_turn`
                 # lo quita antes de que esto llegue al modelo.
                 WA_ID_KEY: m.get("wa_message_id"),
+                "created_at": m.get("created_at"),
             })
     # Los mensajes de este turno ya están en el CRM (se persisten al entrar por
     # el webhook, antes de agruparlos), así que sin este recorte el modelo los ve
@@ -586,6 +624,7 @@ async def _flush_external(
     # caminos: aquí había una copia que descartaba un mensaje y en el camino
     # local otra que los descartaba todos.
     history = drop_current_turn(history, turn_wa_ids=turn_wa_ids or ())
+    history = _recent_external_history(history)
 
     messages = await _build_messages(profile, history, user_content)
 

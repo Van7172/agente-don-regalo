@@ -18,6 +18,8 @@ return [
     // Ruta pública hasta /public (sin barra final). Vacío si el docroot es public/
     'base_path' => '/crm/public',
     'tenant_slug' => 'don-regalo',
+    // Cuenta verificada con el MCP de Meta Ads. La importación exige este ID.
+    'meta_ads_account_id' => '1149788199387012',
     // Mismo valor que CRM_INTERNAL_TOKEN del agente (sandbox VPS)
     'crm_internal_token' => 'cambia-este-token-seguro',
     // URL pública del agente en EasyPanel (outbox push)

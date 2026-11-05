@@ -314,6 +314,12 @@ html.sidebar-ready .sidebar { transition: width 0.18s ease; }
   flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column; gap: 3px;
 }
+.sidebar-group {
+  display: block; margin: 12px 11px 4px;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+}
+.sidebar-group:first-child { margin-top: 4px; }
 .sidebar-link {
   display: flex; align-items: center; gap: 12px; flex: none; min-height: 40px; padding: 8px 11px;
   border-radius: 12px; text-decoration: none; color: var(--color-text);
@@ -351,6 +357,11 @@ html[data-sidebar="simple"] .sidebar-gift { display: flex; }
 html[data-sidebar="simple"] .sidebar-head { flex-direction: column; }
 html[data-sidebar="simple"] .sidebar-toggle svg { transform: rotate(180deg); }
 html[data-sidebar="simple"] .sidebar-link { justify-content: center; padding: 8px 0; }
+html[data-sidebar="simple"] .sidebar-group {
+  height: 1px; overflow: hidden; padding: 0; margin: 10px 8px 7px;
+  font-size: 0; background: var(--color-divider);
+}
+html[data-sidebar="simple"] .sidebar-group:first-child { display: none; }
 html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 
 /* El logo es un wordmark centrado en un cuadrado con mucho margen muerto: la
@@ -1038,6 +1049,73 @@ a.media-location:hover { filter: brightness(0.98); }
   padding: 1px 6px; border-radius: 6px;
 }
 
+/* Campañas: los gráficos usan las cifras filtradas que ya mostró el servidor. */
+.campaigns-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.campaigns-sync { border-radius: 999px; padding: 6px 12px; white-space: nowrap; font-size: 12px; background: var(--color-neutral-200); color: var(--color-neutral-700); }
+.campaigns-sync.is-ready { background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.campaigns-campaign-field { flex: 1; min-width: 220px; max-width: 440px; }
+.campaigns-campaign-field select { width: 100%; }
+.campaigns-notice { padding: 12px 16px; border-radius: var(--radius-sm); background: var(--color-accent-100); color: var(--color-accent-900); font-size: 13px; }
+.campaigns-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.campaigns-kpis .kpi-value { font-size: clamp(24px, 2.4vw, 32px); }
+.campaigns-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.campaigns-chart { min-width: 0; }
+.campaigns-chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
+.campaigns-chart-head h4 { margin-bottom: 4px; }
+.campaigns-chart-head p, .campaigns-chart-note, .campaigns-table-intro { color: var(--color-neutral-700); font-size: 12px; margin: 0; }
+.campaigns-chart-head label { display: grid; gap: 4px; color: var(--color-neutral-700); font-size: 12px; white-space: nowrap; }
+.campaigns-chart-head select { min-width: 140px; max-width: 190px; padding: 7px 8px; }
+.campaigns-bars { min-height: 275px; }
+.campaigns-trend-summary { display: flex; flex-wrap: wrap; gap: 5px 18px; margin-bottom: 14px; font-size: 12px; color: var(--color-neutral-700); }
+.campaigns-trend-summary strong { color: var(--color-text); font-variant-numeric: tabular-nums; }
+.campaigns-plot-shell { display: flex; gap: 8px; margin-right: 4px; }
+.campaigns-plot-scale { flex: 0 0 46px; height: 190px; position: relative; font-size: 10px; color: var(--color-neutral-700); font-variant-numeric: tabular-nums; }
+.campaigns-plot-scale span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
+.campaigns-plot-area { flex: 1; min-width: 0; height: 190px; position: relative; }
+.campaigns-plot-grid { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--color-divider); }
+.campaigns-plot-grid:last-of-type { border-top-style: solid; }
+.campaigns-plot { display: flex; align-items: flex-end; gap: 4px; position: relative; z-index: 1; height: 100%; }
+.campaigns-plot-item { flex: 1 1 0; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; display: flex; align-items: center; justify-content: flex-end; flex-direction: column; position: relative; cursor: pointer; font: inherit; }
+.campaigns-plot-item:focus-visible { outline: 2px solid var(--color-accent-2-700); outline-offset: 3px; }
+.campaigns-plot-stack { width: min(100%, 28px); position: relative; min-height: 0; display: block; }
+.campaigns-plot-bar { position: absolute; inset: 0; display: block; border-radius: 5px 5px 0 0; background: var(--color-accent-600); }
+.campaigns-plot-item:hover .campaigns-plot-bar, .campaigns-plot-item.is-selected .campaigns-plot-bar { background: var(--color-accent-2-600); }
+.campaigns-plot-value { position: absolute; bottom: calc(100% + 3px); left: 50%; transform: translateX(-50%); z-index: 2; font-size: 10px; line-height: 1; white-space: nowrap; color: var(--color-text); font-variant-numeric: tabular-nums; }
+.campaigns-plot-value.is-quiet { display: none; }
+.campaigns-plot-item.is-selected .campaigns-plot-value.is-quiet { display: block; }
+.campaigns-plot-item small { position: absolute; top: 100%; margin-top: 5px; font-size: 10px; color: var(--color-neutral-700); white-space: nowrap; }
+.campaigns-trend-detail { margin: 29px 0 2px; padding: 8px 11px; border-radius: var(--radius-sm); background: var(--color-neutral-100); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.campaigns-chart-note { margin-top: 5px; }
+.campaigns-ranking { display: grid; gap: 11px; min-height: 210px; align-content: start; }
+.campaigns-rank-head { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.campaigns-rank-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.campaigns-rank-head strong { flex: none; font-variant-numeric: tabular-nums; }
+.campaigns-rank-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--color-neutral-200); }
+.campaigns-rank-track span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent-2-600); }
+.campaigns-detail { margin-bottom: 20px; }
+.campaigns-detail .table { min-width: 920px; }
+.campaigns-detail small { display: block; color: var(--color-neutral-700); font-size: 11px; }
+.campaigns-detail td { font-variant-numeric: tabular-nums; }
+.campaigns-table-intro { margin-bottom: 12px; }
+.campaigns-help { padding: 18px 24px; }
+.campaigns-help summary { cursor: pointer; font-weight: 700; }
+.campaigns-help ul { margin-top: 16px; }
+@media (max-width: 1100px) {
+  .campaigns-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .campaigns-charts { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .campaigns-header { display: block; }
+  .campaigns-sync { display: inline-block; margin-bottom: 16px; }
+  .campaigns-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .campaigns-chart-head { display: block; }
+  .campaigns-chart-head label { margin-top: 12px; }
+  .campaigns-campaign-field { max-width: none; }
+  .campaigns-plot-scale { flex-basis: 38px; font-size: 9px; }
+  .campaigns-plot-item small { font-size: 9px; }
+  .campaigns-plot-value { font-size: 9px; }
+}
+
 /* Panel operacional */
 .operations {
   flex: 1;
@@ -1206,6 +1284,10 @@ a.media-location:hover { filter: brightness(0.98); }
   html[data-sidebar] .sidebar-gift { display: none; }
   html[data-sidebar] .sidebar-head, html[data-sidebar] .sidebar-foot { flex-direction: row; }
   html[data-sidebar] .sidebar-link { justify-content: flex-start; padding: 8px 11px; min-height: 44px; }
+  html[data-sidebar] .sidebar-group {
+    display: block; height: auto; overflow: visible; padding: 0; margin: 12px 11px 4px;
+    font-size: 10px; background: none;
+  }
   html[data-sidebar] .sidebar-toggle svg { transform: none; }
   .sidebar-toggle { width: 44px; height: 44px; }
 
@@ -1331,6 +1413,8 @@ a.media-location:hover { filter: brightness(0.98); }
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+.list-item.is-order { border-left: 4px solid #bd7c24; background: rgba(189, 124, 36, 0.08); }
+.tag-order { background: #a76b1e; color: #fff; font-weight: 700; }
 
 /* Lead que acaba de escribir por primera vez. Caduca solo (LEAD_NUEVO_MIN en el
    CRM), así que no hace falta limpiarlo a mano. */
@@ -1352,6 +1436,9 @@ a.media-location:hover { filter: brightness(0.98); }
   background: rgba(34, 160, 90, 0.08);
   font-size: 14px;
 }
+.sale-card.is-awaiting-payment { border-color: #bd7c24; background: rgba(189, 124, 36, 0.08); }
+.sale-card.is-awaiting-payment .sale-head { color: #79480e; }
+.sale-card.is-awaiting-payment .sale-delivered { border-color: #a76b1e; background: #a76b1e; }
 
 /* Cabecera plegable: es un botón, así que va con teclado y lector de pantalla. */
 .sale-head {

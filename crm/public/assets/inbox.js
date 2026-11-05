@@ -33,6 +33,7 @@
   const el = {
     rail: document.getElementById("help-rail"),
     railChips: document.getElementById("help-rail-chips"),
+    railStaleCount: document.getElementById("help-stale-count"),
     followupRail: document.getElementById("followup-rail"),
     followupRailChips: document.getElementById("followup-rail-chips"),
     inboxEmpty: document.getElementById("inbox-empty"),
@@ -145,8 +146,11 @@
   const MAX_ATTACH = 10;
 
   let conversations = [];
+  let attentionQueue = [];
+  let attentionCounts = {};
   let selectedId = null;
   let query = "";
+  let searchTimer = null;
   // Filtro de la bandeja: todas / mías / sin asignar.
   let scope = "all";
   // Etapas y motivos salen del servidor: una sola lista, en Repository.
@@ -444,8 +448,9 @@
     btn.type = "button";
     // Venta cerrada por el agente: el chat va en verde. El vendedor solo tiene que
     // entrar a cobrar; el pedido ya está cerrado y se muestra en la cabecera.
-    const sold = !!c.sale;
-    btn.className = `list-item${c.id === selectedId ? " active" : ""}${sold ? " is-sold" : ""}`;
+    const sold = !!c.sale && c.stage === "vendido";
+    const orderPending = !!c.sale && !sold;
+    btn.className = `list-item${c.id === selectedId ? " active" : ""}${sold ? " is-sold" : ""}${orderPending ? " is-order" : ""}`;
 
     const wait = status === "help" ? waitLabel(c.last_message_at) : "";
     // Quién lo tiene. "Tú" y otro asesor se distinguen a simple vista: lo que
@@ -459,9 +464,9 @@
       ? `<span class="tag tag-followup">⏰ SEGUIMIENTO</span>`
       : "";
     // Nuevo no se pinta: se confundiría con "✨ NUEVO", que es lead de hace minutos.
-    // Vendido tampoco si ya está "💚 VENTA CERRADA": dirían lo mismo dos veces.
+    // El badge de cobro o pedido ya explica la etapa sin duplicarla.
     const stageTag =
-      c.stage && c.stage !== "nuevo" && !(c.stage === "vendido" && sold)
+      c.stage && c.stage !== "nuevo" && !(c.stage === "vendido" && sold) && !(c.stage === "pendiente_pago" && orderPending)
         ? `<span class="tag tag-stage is-${esc(c.stage)}">${esc(
             String(STAGES[c.stage] || c.stage).toUpperCase()
           )}</span>`
@@ -480,7 +485,8 @@
         <div class="item-phone">${esc(c.contact?.wa_id || "")}</div>
         <div class="item-preview">${esc(c.last_message || "Sin mensajes")}</div>
         <div class="item-foot">
-          ${sold ? `<span class="tag tag-sold">💚 VENTA CERRADA</span>` : ""}
+          ${sold ? `<span class="tag tag-sold">Pago confirmado</span>` : ""}
+          ${orderPending ? `<span class="tag tag-order">Pedido · falta cobrar</span>` : ""}
           ${c.is_new ? `<span class="tag tag-new">✨ NUEVO</span>` : ""}
           ${followTag}
           ${stageTag}
@@ -555,9 +561,14 @@
     el.inboxEmpty.hidden = hasAny;
     el.panes.hidden = !hasAny;
 
-    const helpQueue = conversations.filter((c) => statusOf(c) === "help");
-    el.rail.hidden = helpQueue.length === 0;
+    const helpQueue = attentionQueue.filter((c) => statusOf(c) === "help");
+    el.rail.hidden = helpQueue.length === 0 && !Number(attentionCounts.older7);
     el.railChips.replaceChildren(...helpQueue.map(railChip));
+    if (el.railStaleCount) {
+      el.railStaleCount.textContent = Number(attentionCounts.older7)
+        ? `${Number(attentionCounts.older7)} casos antiguos pendientes`
+        : "";
+    }
 
     const rows = visibleConversations();
     const pool = filteredList ?? conversations;
@@ -840,7 +851,7 @@
    * —deja el producto a la vista—, porque el verde existe justo para que el asesor
    * sepa que entra a cobrar algo ya cerrado.
    */
-  function saleCard(sale) {
+  function saleCard(sale, stage) {
     if (!sale) return "";
     const fila = (etiqueta, valor) =>
       valor ? `<div class="sale-row"><span>${etiqueta}</span><b>${esc(String(valor))}</b></div>` : "";
@@ -851,9 +862,10 @@
     // Quién la cerró. Una venta registrada a mano y una que cerró el bot valen
     // lo mismo para cobrar, pero no para saber a quién preguntarle por ella.
     const porAsesor = sale.origen === "asesor";
-    const titulo = porAsesor
-      ? `💚 Venta registrada${sale.registrado_por ? ` por ${esc(String(sale.registrado_por))}` : ""} — falta entregar`
-      : "💚 Venta cerrada por Don Regalo — solo falta cobrar";
+    const paid = stage === "vendido";
+    const titulo = paid
+      ? `Pago confirmado${porAsesor && sale.registrado_por ? ` · ${esc(String(sale.registrado_por))}` : ""} — falta entregar`
+      : `Pedido confirmado${porAsesor && sale.registrado_por ? ` · ${esc(String(sale.registrado_por))}` : ""} — falta cobrar`;
     // El pedido ya está creado en el panel: el asesor solo lo convierte, sin
     // recapturar nada. Sin este número tiene que buscarlo a mano.
     const pedido = sale.pedido_temporal_id
@@ -861,7 +873,7 @@
       : "";
 
     return `
-      <div class="sale-card${saleCollapsed ? " is-collapsed" : ""}">
+      <div class="sale-card${paid ? "" : " is-awaiting-payment"}${saleCollapsed ? " is-collapsed" : ""}">
         <button type="button" class="sale-head" id="sale-toggle"
                 aria-expanded="${saleCollapsed ? "false" : "true"}"
                 title="${saleCollapsed ? "Ver el pedido" : "Plegar el pedido"}">
@@ -885,9 +897,9 @@
           ${fila("Horario", sale.horario)}
           ${pedido}
           <div class="sale-actions">
-            <button type="button" class="sale-delivered" id="sale-delivered">
-              ✓ Marcar como entregado
-            </button>
+            ${paid
+              ? `<button type="button" class="sale-delivered" id="sale-delivered">✓ Marcar como entregado</button>`
+              : `<button type="button" class="sale-delivered" id="sale-paid">✓ Confirmar pago recibido</button>`}
           </div>
         </div>
       </div>`;
@@ -905,7 +917,7 @@
 
   function repaintSaleCard() {
     if (lastThread) {
-      el.saleCard.innerHTML = saleCard(lastThread.conv.sale);
+      el.saleCard.innerHTML = saleCard(lastThread.conv.sale, lastThread.conv.stage);
       el.saleCard.hidden = !lastThread.conv.sale;
     }
   }
@@ -970,6 +982,24 @@
     }
   }
 
+  async function markSalePaid() {
+    if (selectedId == null || !lastThread?.conv?.sale) return;
+    if (!window.confirm("¿Verificaste que el pago fue recibido?")) return;
+    const button = el.saleCard.querySelector("#sale-paid");
+    if (button) button.disabled = true;
+    try {
+      await api(`/conversations/${selectedId}/sale/paid`, {
+        method: "PATCH", body: JSON.stringify({}),
+      });
+      listSig = "";
+      await Promise.all([loadThread(), loadList()]);
+      showError("");
+    } catch (error) {
+      showError(error.message || String(error));
+      if (button) button.disabled = false;
+    }
+  }
+
   /**
    * Burbuja de un mensaje que aún viaja: se pinta al instante con el relojito, como
    * WhatsApp. El asesor no espera al round trip para seguir escribiendo.
@@ -1005,11 +1035,11 @@
     const name = displayName(conv);
 
     if (el.saleCard) {
-      el.saleCard.innerHTML = saleCard(conv.sale);
+      el.saleCard.innerHTML = saleCard(conv.sale, conv.stage);
       el.saleCard.hidden = !conv.sale;
     }
     repaintAdCard(conv.ad);
-    el.chatBody.classList.toggle("is-sold", !!conv.sale);
+    el.chatBody.classList.toggle("is-sold", !!conv.sale && conv.stage === "vendido");
 
     el.chatAvatar.className = `avatar ${avatarClass(conv.contact?.wa_id || conv.id)}`;
     el.chatAvatar.textContent = initials(name);
@@ -1075,7 +1105,7 @@
   function renderStage(conv) {
     if (!el.stageSelect) return;
     const current = conv.stage || "";
-    const locked = current === "vendido";
+    const locked = current === "vendido" || current === "pendiente_pago";
     const sig = JSON.stringify([conv.id, current, conv.stage_reason || "", locked]);
     if (sig === stageSig) return;
     // Repintar mientras el asesor tiene el desplegable abierto se lo cerraría.
@@ -1086,9 +1116,13 @@
     if (!current) options.push(new Option("Sin etapa", ""));
     Object.entries(STAGES).forEach(([code, label]) => {
       const reason = code === "perdido" && current === "perdido" ? LOST_REASONS[conv.stage_reason] : "";
-      const option = new Option(reason ? `${label} · ${reason}` : label, code);
+      const option = new Option(
+        code === "vendido" && current !== "vendido" ? "Registrar pedido…"
+          : (reason ? `${label} · ${reason}` : label), code
+      );
       // Entregado solo lo pone la confirmación de entrega.
-      if (code === "entregado" && current !== "entregado") option.disabled = true;
+      if ((code === "entregado" && current !== "entregado") ||
+          (code === "pendiente_pago" && current !== "pendiente_pago")) option.disabled = true;
       options.push(option);
     });
     el.stageSelect.replaceChildren(...options);
@@ -1096,7 +1130,7 @@
     el.stageSelect.disabled = locked;
     el.stageSelect.className = `stage-select input is-${current || STAGE_NONE}`;
     el.stageSelect.title = locked
-      ? "Tiene una venta pendiente de entrega. Se actualiza desde el Historial de ventas."
+      ? "El pedido se actualiza al confirmar el pago o la entrega."
       : "Etapa de venta";
   }
 
@@ -1124,7 +1158,7 @@
     // Hasta que el servidor confirme, el selector dice la verdad: lo que hay guardado.
     el.stageSelect.value = conv.stage || "";
     el.stageSelect.blur();
-    if (next === "vendido") {
+    if (next === "vendido" || next === "pendiente_pago") {
       openSaleDialog();
     } else if (next === "perdido") {
       el.lostReason.value = "";
@@ -2108,6 +2142,7 @@
     const params = new URLSearchParams();
     if (filters.stage) params.set("etapa", filters.stage);
     if (filters.tag) params.set("etiqueta", filters.tag);
+    if (query.length >= 2) params.set("q", query);
     if (filters.from && filters.to) {
       params.set("from", filters.from);
       params.set("to", filters.to);
@@ -2149,7 +2184,7 @@
       // tenga que llegar otro mensaje.
       const sig = `${localDayKey(new Date())}|${JSON.stringify(next)}|${filterQuery}|${JSON.stringify(
         filtered?.data ?? null
-      )}`;
+      )}|${JSON.stringify(json.attention)}|${JSON.stringify(json.meta?.attention)}`;
       if (sig !== listSig) {
         beepGastado = false;
         alertOnHandoff(conversations, next);
@@ -2157,6 +2192,8 @@
         alertOnInbound(next);
         listSig = sig;
         conversations = next;
+        attentionQueue = Array.isArray(json.attention) ? json.attention : [];
+        attentionCounts = json.meta?.attention || {};
         filteredList = filtered && Array.isArray(filtered.data) ? filtered.data : null;
         filteredTotal = Number(filtered?.meta?.matching || 0);
         renderList();
@@ -2653,6 +2690,10 @@
       markSaleDelivered();
       return;
     }
+    if (e.target.closest("#sale-paid")) {
+      markSalePaid();
+      return;
+    }
     if (e.target.closest("#sale-toggle")) toggleSaleCard();
   });
 
@@ -2724,6 +2765,8 @@
   el.search.addEventListener("input", () => {
     query = el.search.value.trim();
     renderList();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(applyFilters, 300);
   });
 
   // ── enlaces de los módulos del asesor ───────────────────────
