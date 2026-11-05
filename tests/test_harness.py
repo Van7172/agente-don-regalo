@@ -103,7 +103,7 @@ def test_checkout_fsm_happy_path():
     st, reply, _ = advance_checkout(st, "Luis Gómez luis@mail.com")
     assert st.checkout_step == "summary"
     assert st.email_cliente == "luis@mail.com"
-    st, reply, meta = advance_checkout(st, "sí")
+    st, reply, meta = advance_checkout(st, "sí", today=hoy)
     assert meta.get("escalate")
     assert meta.get("create_order")
     assert st.checkout_step == "payment"

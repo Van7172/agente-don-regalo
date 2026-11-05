@@ -528,15 +528,13 @@ async def _send_reply_segments(
             await persist(content=segment["text"], wa_message_id=wa_mid, media_url=None)
 
 
-async def _flush_external(
-    conversation_id: int,
-    contact_id: int,
-    wa_id: str,
-    user_content,
-    turn_wa_ids: list[str] | None = None,
-) -> None:
-    detail = await crm_http.get_conversation(conversation_id)
-    memory = await crm_http.get_memory(wa_id) or {}
+def _profile_from_memory(memory: dict) -> dict:
+    """Lo que sabemos del cliente, tal como lo lee el modelo.
+
+    `resumen_memory` puede traer el respaldo del estado (`HARNESS:{...}`, ver
+    `save_state`): es un JSON con datos del pedido, no memoria del cliente, y no
+    tiene nada que hacer en el prompt.
+    """
     profile = {
         k: memory.get(k)
         for k in (
@@ -549,11 +547,26 @@ async def _flush_external(
         )
         if memory.get(k)
     }
+    if str(profile.get("resumen_memory") or "").startswith("HARNESS:"):
+        profile.pop("resumen_memory")
     # Alias legibles para el prompt
     if memory.get("nombre_memory"):
         profile["nombre"] = memory["nombre_memory"]
     if memory.get("email_memory"):
         profile["email"] = memory["email_memory"]
+    return profile
+
+
+async def _flush_external(
+    conversation_id: int,
+    contact_id: int,
+    wa_id: str,
+    user_content,
+    turn_wa_ids: list[str] | None = None,
+) -> None:
+    detail = await crm_http.get_conversation(conversation_id)
+    memory = await crm_http.get_memory(wa_id) or {}
+    profile = _profile_from_memory(memory)
 
     history = []
     for m in detail.get("messages") or []:

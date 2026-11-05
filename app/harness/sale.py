@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from app.crm import http_client as crm_http
+from app.harness.checkout import order_total
 from app.harness.state import ConversationState
 from app.harness.orders import display_fecha
 
@@ -32,7 +33,9 @@ def build_sale(state: ConversationState) -> dict[str, Any]:
         "producto": state.chosen_product_name or "",
         "id_producto": state.chosen_product_id,
         "distrito": state.district or "",
+        "precio_sol": state.chosen_product_price_sol,
         "envio_sol": state.shipping_fee_sol,
+        "total_sol": order_total(state),
         "fecha": display_fecha(state.date),
         "horario": state.time_slot or "",
         # id del pedido ya creado en el panel (si se pudo): el asesor lo abre y
@@ -69,9 +72,9 @@ async def announce(conversation_id: int, state: ConversationState) -> dict[str, 
                 sale_key(conversation_id), json.dumps(sale, ensure_ascii=False)
             )
         except Exception as err:
-            # Que falle el aviso no puede tumbar el handoff: el cliente espera.
+            # Que falle el verde no puede tumbar el handoff ni dejar al equipo sin
+            # enterarse: el cliente está esperando para pagar, y el aviso va igual.
             log.warning("[venta] no se pudo anunciar conversation=%s: %s", conversation_id, err)
-            return sale
 
     log.info(
         "[venta] CERRADA conversation=%s producto=%r distrito=%r fecha=%r",
@@ -97,19 +100,27 @@ def summary(sale: dict[str, Any], conversation_id: int) -> str:
     envio = (
         f"S/{float(sale['envio_sol']):.2f}" if sale.get("envio_sol") is not None else "—"
     )
-    pedido = ""
-    if sale.get("pedido_temporal_id"):
-        pedido = (
-            f"· Pedido temporal #{sale['pedido_temporal_id']} ya en el panel "
-            "(solo conviértelo)\n"
-        )
+    total = (
+        f"· Total: S/{float(sale['total_sol']):.2f}\n"
+        if sale.get("total_sol") is not None
+        else "· Total: sin confirmar, revisa precio y envío\n"
+    )
+    # Sin esto, un chat en verde parecía tener el pedido armado aunque la API lo
+    # hubiera rechazado: el asesor lo buscaba en el panel y no estaba.
+    pedido = (
+        f"· Pedido temporal #{sale['pedido_temporal_id']} ya en el panel "
+        "(solo conviértelo)\n"
+        if sale.get("pedido_temporal_id")
+        else "· ⚠️ No se creó el pedido temporal: hay que armarlo a mano en el panel\n"
+    )
     return (
-        "💚 *VENTA CERRADA POR REGALITO* — solo falta cobrar\n"
+        "💚 *VENTA CERRADA POR DON REGALO* — solo falta cobrar\n"
         f"Conversación #{conversation_id}\n"
         f"· Producto: {sale.get('producto') or '—'}\n"
         f"· Distrito: {sale.get('distrito') or '—'} (envío {envio})\n"
         f"· Fecha: {sale.get('fecha') or '—'}\n"
         f"· Horario: {sale.get('horario') or '—'}\n"
+        f"{total}"
         f"{pedido}\n"
         "Entra al chat en el CRM (está en verde) y coordina el pago."
     )

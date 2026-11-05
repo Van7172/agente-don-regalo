@@ -48,9 +48,69 @@ _SMALL_TALK_WORDS = frozenset(
     """.split()
 )
 
+# Pedir una persona, no mencionarla. Era la palabra "persona" a secas, sin límites
+# de palabra: "regalo personalizado", "es para una persona especial" y una
+# dedicatoria que dijera "la persona que más quiero" cedían el chat a un asesor.
+PERSON_REQUEST_PATTERN = (
+    r"(?:hablar|hablo|comunic\w*|atienda|atender\w*|p[aá]same|conect\w*|deriv\w*)\b"
+    r"[^.?!\n]{0,25}\bpersona\b|"
+    r"\b(?:necesito|quiero|prefiero)\s+(?:a\s+)?(?:una|alguna)\s+persona\b"
+    r"(?!\s+(?:que|para|de|muy))|"
+    r"\bpersona\s+real\b|"
+    r"^\W*(?:una\s+)?persona(?:\s+por\s+favor)?\W*$"
+)
+
+# Cambiar algo de un producto. La API no modela personalización (no hay componentes,
+# ni sustituciones, ni precios por item), así que solo puede decidirlo una persona.
+# Son verbos concretos, no raíces: "Jr. Quito" o "¿hay cambios y devoluciones?" no
+# piden nada, y "¿aumentó el precio?" tampoco.
+_CUSTOM_VERB_RE = re.compile(
+    r"\b(?:cambi(?:ar\w*|a|an|en|e|o)|reemplaz\w+|reemplac\w+|sustitu\w+|"
+    r"quit(?:ar\w*|a|an|en|ale|enle)|sac(?:ar\w*|a|an|en|ale|enle)|"
+    r"agreg(?:ar\w*|a|an|ue|uen|ale|uenle)|anad\w+|aument(?:ar\w*|a|an|en|ale))\b"
+)
+_CUSTOM_WITHOUT_RE = re.compile(r"\bsin\s+(?:el|la|los|las)\s+\w+")
+_CAN_RE = re.compile(r"\b(?:se\s+puede|se\s+podria|pueden|puedes|puedo|podrian|podria|es\s+posible)\b")
+_CUSTOM_PERSONALIZE_RE = re.compile(r"\bpersonaliz\w+")
+_CUSTOM_PUT_RE = re.compile(r"\bpon(?:er\w*|gan\w*)\b")
+# Datos del pedido: cambiarlos es corregir el formulario, no el producto.
+_ORDER_DATA_WORDS = (
+    r"fecha|dia|hora|horario|franja|distrito|direccion|referencias?|tarjeta|dedicatoria|"
+    r"mensaje|nota|telefono|celular|correo|email|pago|precio|tarifa|envio|delivery|"
+    r"destinatario|datos"
+)
+_ORDER_DATA_RE = re.compile(rf"\b(?:{_ORDER_DATA_WORDS}|nombre)\b")
+_ORDER_DATA_NO_NAME_RE = re.compile(rf"\b(?:{_ORDER_DATA_WORDS})\b")
+# "Cambiar el producto" es elegir otro; "cambiar el color del producto" es personalizar.
+# Lo distingue que el producto sea justo lo que se cambia.
+_CHANGE_OF_MIND_RE = re.compile(
+    rf"(?:{_CUSTOM_VERB_RE.pattern})\s+"
+    r"(?:(?:de|el|la|mi|este|ese|esta|esa|otro|otra|un|una)\s+)*"
+    r"(?:producto|regalo|opcion|modelo|pedido|orden|compra)\b"
+    r"|\bcambi\w+\s+de\b"
+)
+
+
+def _plain_text(text: str) -> str:
+    nfd = unicodedata.normalize("NFD", (text or "").casefold())
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+
+def asks_customization(text: str) -> bool:
+    """¿Pide cambiarle algo a un producto? Ante la duda, no: ceder de más corta ventas."""
+    plain = _plain_text(text)
+    if _CUSTOM_PERSONALIZE_RE.search(plain) and _CAN_RE.search(plain):
+        return True
+    if _CUSTOM_PUT_RE.search(plain) and _CAN_RE.search(plain):
+        return not _ORDER_DATA_NO_NAME_RE.search(plain)
+    if _ORDER_DATA_RE.search(plain) or _CHANGE_OF_MIND_RE.search(plain):
+        return False
+    return bool(_CUSTOM_VERB_RE.search(plain) or _CUSTOM_WITHOUT_RE.search(plain))
+
+
 # Si el cliente pide esto, el handoff SÍ procede aunque también diga "corporativo".
 _HANDOFF_FORCE_RE = re.compile(
-    r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
+    rf"asesor|\bhuman[oa]\b|{PERSON_REQUEST_PATTERN}|atenci[oó]n\s+humana|p[aá]same\s+con|"
     r"comprobante|ya\s+pagu|transfer[ií]|"
     # Con raíz: el cliente escribe "Cancelo el pedido", no "cancelar".
     r"descuento|\bcancel\w*|\banul\w*|modificar\s+(el\s+)?pedido|"
@@ -241,7 +301,7 @@ def handoff_policy(messages: list) -> Decision:
         )
 
     # Pedido explícito de humano o de pago: manda por encima de todo lo demás.
-    if _HANDOFF_FORCE_RE.search(raw):
+    if _HANDOFF_FORCE_RE.search(raw) or asks_customization(raw):
         return Decision(allow=True)
 
     if _SALES_CONTINUE_RE.search(raw):

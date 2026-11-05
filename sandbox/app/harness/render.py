@@ -64,6 +64,7 @@ def render_coverage(
     ask: str = "",
     suggest_maps: bool = False,
     place_query: str = "",
+    note: str = "",
 ) -> str:
     """Una sola burbuja de cobertura (nunca confirmar + preguntar + reconfirmar)."""
     if suggest_maps or covered is None:
@@ -97,9 +98,23 @@ def render_coverage(
 
     dist = district or "tu distrito"
     base = f"¡Sí llegamos a {dist}!{fee}"
+    if note:
+        base = f"{base} {note}"
     if ask:
         return f"{base} {ask}".strip()
     return f"{base} ¿Qué regalo quieres enviar? 🎁"
+
+
+def render_zones(district: str, zones: list[dict[str, Any]]) -> str:
+    """El distrito tiene zonas con tarifa distinta: que el cliente diga la suya."""
+    lineas = [
+        f"{index}. {zone.get('informacion')} — S/{_fmt_money(zone.get('tarifa_sol'))}"
+        for index, zone in enumerate(zones, start=1)
+    ]
+    return (
+        f"¡Sí llegamos a {district}! 🚚 La tarifa depende de la zona. ¿En cuál es la "
+        "entrega? Responde con el número:\n" + "\n".join(lineas)
+    )
 
 
 def _fmt_money(value: Any) -> str:

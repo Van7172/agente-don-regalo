@@ -15,11 +15,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.business import asks_for_business_data, business_data_reply
 from app.config import settings
+from app.guardrails.conversation import asks_customization
 from app.guardrails import (
     HANDOFF_RULES,
     SAFE_INJECTION_REPLY,
@@ -33,16 +35,27 @@ from app.guardrails import (
     sanitize_reply,
 )
 from app.harness.checkout import (
+    accept_district,
     advance_checkout,
+    asks_order_price,
+    checkout_active,
+    clear_checkout,
+    district_needs_lookup,
+    forget_stale_turns,
+    leaves_product,
+    order_total,
+    payment_handoff_message,
+    pending_question,
+    reject_district,
+    release_product,
     resolve_chosen_product,
+    revalidate_delivery,
     start_checkout,
+    summary_prompt,
     wants_checkout,
 )
-from app.harness.campaigns import (
-    YELLOW_FLOWERS_SLUG,
-    is_yellow_flowers_query,
-    yellow_flowers_catalog_reply,
-)
+from app.harness.aliases import resolve_alias
+from app.harness.budget import budget_label, extract_budget, fit_budget
 from app.harness.product_links import (
     extract_product_url_slug,
     pick_by_url_slug,
@@ -56,6 +69,7 @@ from app.harness.contracts import (
 from app.harness.coverage import resolve_coverage
 from app.harness.orders import create_from_state as create_temporal_order
 from app.harness.quoting import split_quote
+from app.harness.replies import YES, short_reply
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
@@ -78,6 +92,7 @@ from app.observability import (
     agent_context,
     audit_event,
     collect_turn_usage,
+    current_turn_api,
     current_turn_usage,
     record_operation,
 )
@@ -90,6 +105,7 @@ from app.prompts.compose import build_system, prompt_version
 from app.prompts.facts import render_facts
 from app.prompts.playbooks import WELCOME
 from app.services import demand, preempt
+from app.services.messenger import notify_team
 from app.services.agent import (
     HANDOFF_DONE,
     HANDOFF_FAILED_MSG,
@@ -183,7 +199,7 @@ def _already_has_product_in_sight(turn: Turn, state: ConversationState) -> bool:
     """
     if state.chosen_product_id:
         return True
-    if state.checkout_step and state.checkout_step not in ("idle", ""):
+    if checkout_active(state):
         return True
     if turn.has_media:
         return True
@@ -275,6 +291,7 @@ async def _run_master(
 
     turn = perceive(messages)
     attr_token = product_attrs.set_turn_text(turn.text)
+    budget_token = product_attrs.set_turn_budget(None)
     try:
         return await _run_master_body(
             turn,
@@ -287,6 +304,7 @@ async def _run_master(
             persist=persist,
         )
     finally:
+        product_attrs.reset_turn_budget(budget_token)
         product_attrs.reset_turn_text(attr_token)
 
 
@@ -325,7 +343,7 @@ async def _run_master_body(
                 f"prompt_injection:{rule}" for rule in input_guard.rules
             ],
         )
-        trace.with_usage(current_turn_usage()).done().emit()
+        trace.with_usage(current_turn_usage()).with_api(current_turn_api()).done().emit()
         return SAFE_INJECTION_REPLY
 
     # Un ataque bloqueado ya quedó persistido en el CRM como mensaje de usuario.
@@ -362,6 +380,14 @@ async def _run_master_body(
     # entero. Sin esto, `perform_handoff` guardaba `handoff_at` a mitad del turno
     # y el guardado final lo borraba con el valor viejo.
     state_base = state.to_dict()
+    forget_stale_turns(state)
+    # Con el formulario abierto un número es un dato del pedido, no un presupuesto.
+    if not checkout_active(state):
+        presupuesto = extract_budget(turn.text)
+        if presupuesto is not None:
+            state.budget_amount, state.budget_currency = presupuesto
+    if state.budget_amount:
+        product_attrs.set_turn_budget((state.budget_amount, state.budget_currency))
 
     classification = await classify(
         turn.text, state, has_media=turn.has_media, quoted=turn.quoted
@@ -436,6 +462,17 @@ async def _run_master_body(
     if result.user_facing and asks_for_payment_methods(turn.text):
         result.user_facing = append_payment_methods_image(result.user_facing)
 
+    # Contestó una duda con el formulario abierto: retoma lo que estaba pendiente. Si
+    # no, el cliente se queda sin saber que le falta algo y el siguiente "ok" cae
+    # sobre una pregunta que ya no ve en pantalla.
+    if (
+        intent != "checkout"
+        and checkout_active(state)
+        and result.escalate is None
+        and (result.user_facing or "").strip()
+    ):
+        result.user_facing = f"{result.user_facing}\n\n{pending_question(state)}"
+
     # La barrera de salida corre ANTES de reducir y antes de enviar al cliente.
     # `user_text` son las palabras del cliente en ESTE turno (no la cita, que es
     # contexto del sistema). La barrera lo necesita para saber que el teléfono
@@ -444,7 +481,9 @@ async def _run_master_body(
     # Un menú es "nuestro" si el turno dejó opciones en el estado: eso solo lo
     # hacen `_answer_menu` y `_own_the_menu`. Si la respuesta trae una lista
     # numerada y nadie registró sus opciones, la escribió el modelo y nadie la
-    # reescribió — que es como salieron los nueve submenús inventados.
+    # reescribió — que es como salieron los nueve submenús inventados. Los horarios
+    # del cierre también son nuestros: contarlos aquí marcaba cada pregunta de
+    # horario como `guardrail_blocked` y ensuciaba esa métrica.
     guarded = guard_reply(
         result.user_facing,
         state=state,
@@ -452,7 +491,9 @@ async def _run_master_body(
         user_text=turn.text,
         tools_used=result.tools_used,
         agent=spec_for(intent).name,
-        menu_owned=bool(result.state_patch.get("recent_options")),
+        menu_owned=bool(result.state_patch.get("recent_options"))
+        or spec_for(intent).deterministic
+        or checkout_active(state),
         # La tarifa de envío salió de `distritos_cobertura`, no del modelo: sin
         # declararla, un turno que contesta cobertura Y catálogo a la vez marca
         # el envío como precio inventado y la barrera tira la prosa entera.
@@ -517,7 +558,7 @@ async def _run_master_body(
     trace.handoff_reason = result.escalate.motivo if result.escalate else ""
     trace.violations = [str(v) for v in violations]
     trace.state_patch = result.state_patch
-    trace.with_usage(current_turn_usage()).done().emit()
+    trace.with_usage(current_turn_usage()).with_api(current_turn_api()).done().emit()
 
     if conversation_id is not None:
         # Último punto donde este turno puede desaparecer sin dejar rastro: el
@@ -526,6 +567,7 @@ async def _run_master_body(
         # respuesta que nunca se envió es exactamente el descuadre que hace que
         # el paso siguiente del cierre no le cuadre a nadie.
         preempt.commit()
+        state.last_turn_at = time.time()
         await save_state(conversation_id, state, wa_id=wa_id, base=state_base)
 
     if result.escalate is not None:
@@ -559,20 +601,6 @@ async def _handle(
     intent: str, turn: Turn, state: ConversationState, *, prev_intent: str = "", **ctx
 ) -> AgentResult:
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
-
-    # ── Flores Amarillas: corte de capacidad same-day ────────────
-    # La campaña ya no admite entrega para hoy. Va antes del saludo y del
-    # cierre: "Hola, ¿tienen flores amarillas?" recibe el aviso en el primer
-    # turno, sin mezclar el PDF de preventa ni el catálogo permanente.
-    if intent != "escalate" and is_yellow_flowers_query(turn.text):
-        return AgentResult(
-            user_facing=yellow_flowers_catalog_reply(),
-            state_patch={
-                "campaign_slug": YELLOW_FLOWERS_SLUG,
-                "recent_options": [],
-                "menu_depth": 0,
-            },
-        )
 
     # ── RUC, factura y recojo: datos oficiales, sin LLM ──────────
     # Son datos exactos y estables: no vale la pena arriesgar que un modelo
@@ -608,8 +636,14 @@ async def _handle(
         return await _handle_coverage(turn, state, **ctx)
 
     # ── Cierre: máquina de estados, sin LLM ───────────────────────
+    # Sin nada elegido ni a la vista no hay qué cerrar: el formulario se abriría sin
+    # producto. Las reglas ya lo evitan; esto cubre lo que decida el router LLM.
+    hay_producto = bool(state.chosen_product_id or state.recent_products)
+    if intent == "checkout" and not checkout_active(state) and not hay_producto:
+        intent = "catalog_search"
+        state.intent_last = intent
     if intent == "checkout" or (
-        wants_checkout(turn.text) and state.checkout_step in ("idle", "")
+        wants_checkout(turn.text) and state.checkout_step in ("idle", "") and hay_producto
     ):
         return await _handle_checkout(turn, state, **ctx)
 
@@ -621,7 +655,11 @@ async def _handle(
     # dato del otro. Misma regla que en cobertura: la voz es de lo comercial,
     # porque una política cabe en dos frases y un producto necesita ficha.
     if intent == "policy_faq":
-        comercial = await _commercial_intent(turn.text, state)
+        # Con el cierre abierto hay un producto en marcha: "¿aceptan yape para el
+        # desayuno?" no pide ver desayunos.
+        comercial = (
+            None if checkout_active(state) else await _commercial_intent(turn.text, state)
+        )
         if comercial is not None:
             log.info("[turno-mixto] política + %s; la voz se la queda %s", comercial, comercial)
             record_operation("turn.multi_intent", "policy_commercial")
@@ -641,6 +679,11 @@ async def _handle(
     # ── Detalle: el contenido se trae en código, no se le pide al modelo ──
     if intent == "product_detail":
         return await _handle_detail(turn, state, extra_system=politica, **ctx)
+
+    # Pidió ver otras opciones a mitad del cierre: suelta el producto y busca, pero
+    # lo que ya dijo (distrito, fecha…) sigue valiendo para el que elija.
+    if intent == "catalog_search" and checkout_active(state) and leaves_product(turn.text):
+        release_product(state)
 
     # ── ¿Responde a un menú NUESTRO? Se resuelve en código, venga el intent que
     #    venga. Esto colgaba de `intent == "catalog_search"`, y ahí estaba el
@@ -703,12 +746,8 @@ async def _deterministic_products(
                 categoria["slug"],
             )
             record_operation("specialist.rescue", "categoria")
-            return AgentResult(
-                user_facing=compose_product_reply(
-                    f"Te muestro nuestros *{categoria['nombre']}* 🎁", productos
-                ),
-                artifacts=productos,
-                state_patch={"recent_options": [], "menu_depth": 0},
+            return _product_listing(
+                state, f"Te muestro nuestros *{categoria['nombre']}* 🎁", productos
             )
 
     if intent in ("catalog_search", "greet") and not _already_has_product_in_sight(
@@ -718,13 +757,7 @@ async def _deterministic_products(
         if productos:
             log.info("[rescate] sin modelo; respondo con los destacados")
             record_operation("specialist.rescue", "destacados")
-            return AgentResult(
-                user_facing=compose_product_reply(
-                    "Esto es lo que más nos piden 🎁", productos
-                ),
-                artifacts=productos,
-                state_patch={"recent_options": [], "menu_depth": 0},
-            )
+            return _product_listing(state, "Esto es lo que más nos piden 🎁", productos)
 
     return None
 
@@ -903,10 +936,18 @@ async def _handle_coverage(turn: Turn, state: ConversationState, **ctx) -> Agent
     cobertura sin resolver (necesita PREGUNTAR, y una pregunta no cabe como dato
     subordinado) y el especialista mudo (mejor la tarifa que nada).
     """
-    raw = await resolve_coverage(turn.text, state)
+    try:
+        raw = await resolve_coverage(turn.text, state)
+    except Exception as err:
+        return await _coverage_unavailable(turn, state, err, **ctx)
     structured = raw.get("structured") or {}
     patch = raw.get("state_patch") or {}
     fee = structured.get("fee_sol")
+    # `patch()` ignora los `None`, y aquí un `None` significa "tarifa sin confirmar":
+    # la del distrito anterior no puede quedarse como si fuera de este.
+    if structured.get("resolved_district") and fee is None:
+        state.shipping_fee_sol = None
+        state.shipping_fee_usd = None
 
     solo_cobertura = AgentResult(
         user_facing=raw.get("user_facing") or structured.get("ask"),
@@ -915,7 +956,7 @@ async def _handle_coverage(turn: Turn, state: ConversationState, **ctx) -> Agent
         sourced_prices=[float(fee)] if fee is not None else [],
     )
 
-    if state.checkout_step not in ("idle", ""):
+    if checkout_active(state):
         return solo_cobertura
     if not structured.get("resolved_district") or not structured.get("covered"):
         return solo_cobertura
@@ -950,6 +991,30 @@ async def _handle_coverage(turn: Turn, state: ConversationState, **ctx) -> Agent
     return result
 
 
+async def _coverage_unavailable(
+    turn: Turn, state: ConversationState, err: Exception, **ctx
+) -> AgentResult:
+    """La lista de distritos no responde. El cliente no tiene por qué notarlo.
+
+    Antes la excepción tumbaba el turno entero. Sin lista no se confirma ningún
+    distrito ni tarifa, pero se puede seguir vendiendo: si además pidió un producto,
+    se lo enseñamos.
+    """
+    log.warning("[cobertura] no disponible: %s", err)
+    record_operation("coverage", "unavailable")
+    if not checkout_active(state) and await _commercial_intent(turn.text, state) is not None:
+        result = await _run_specialty("catalog_search", turn, state, **ctx)
+        if (result.user_facing or "").strip():
+            return result
+    return AgentResult(
+        user_facing=(
+            "Hacemos delivery en Lima Metropolitana 🚚 Ahora mismo no puedo confirmarte "
+            "la tarifa exacta: te la decimos al coordinar tu pedido. ¿Qué regalo te "
+            "gustaría enviar? 🎁"
+        )
+    )
+
+
 async def _show_something(state: ConversationState, **ctx) -> AgentResult | None:
     """Deja de preguntar y enseña algo. El `step_retries` de la venta.
 
@@ -967,19 +1032,13 @@ async def _show_something(state: ConversationState, **ctx) -> AgentResult | None
     Quien llama ya filtró con `_already_has_product_in_sight`. Cinturón: si
     igual hay producto elegido o cierre activo, no volcamos destacados.
     """
-    if state.chosen_product_id or (
-        state.checkout_step and state.checkout_step not in ("idle", "")
-    ):
+    if state.chosen_product_id or checkout_active(state):
         return None
 
     productos = await _destacados()
     if productos:
-        return AgentResult(
-            user_facing=compose_product_reply(
-                "Mejor te enseño 🎁 Esto es lo que más nos piden:", productos
-            ),
-            artifacts=productos,
-            state_patch={"recent_options": [], "menu_depth": 0},
+        return _product_listing(
+            state, "Mejor te enseño 🎁 Esto es lo que más nos piden:", productos
         )
 
     conversation_id = ctx.get("conversation_id")
@@ -1026,7 +1085,7 @@ async def _answer_menu(turn: Turn, state: ConversationState) -> AgentResult | No
     """
     # Dentro del cierre un "2" es un horario, no una categoría. El menú no
     # debería seguir vivo a esas alturas, pero no se adivina sobre el pedido.
-    if state.checkout_step not in ("idle", ""):
+    if checkout_active(state):
         return None
 
     options = state.recent_options or []
@@ -1078,12 +1137,41 @@ async def _answer_menu(turn: Turn, state: ConversationState) -> AgentResult | No
         log.info("[catalog] %s (%s) no devolvió productos", nombre, chosen["slug"])
         return None
 
+    return _product_listing(state, f"¡Genial! Te muestro nuestros *{nombre}* 🎁", productos)
+
+
+def _apply_budget(
+    state: ConversationState, productos: list[Product], intro: str | None
+) -> tuple[list[Product], str | None, list[float]]:
+    """Productos que caben, su intro y los importes que esa intro menciona."""
+    if not state.budget_amount:
+        return productos, intro, []
+    en_usd = state.budget_currency == "USD"
+    envio = state.shipping_fee_usd if en_usd else state.shipping_fee_sol
+    elegidos, excedido = fit_budget(
+        productos, state.budget_amount, state.budget_currency, shipping=envio
+    )
+    if not excedido:
+        return elegidos, intro, []
+    con_envio = " con envío incluido" if envio else ""
+    return (
+        elegidos,
+        f"Con {budget_label(state.budget_amount, state.budget_currency)}{con_envio} no "
+        "encontré opciones para esto 😕 Te muestro las más cercanas:",
+        [] if en_usd else [float(state.budget_amount)],
+    )
+
+
+def _product_listing(
+    state: ConversationState, intro: str, productos: list[Product]
+) -> AgentResult:
+    """Un listado de productos armado por el código, ajustado al presupuesto."""
+    elegidos, intro_final, importes = _apply_budget(state, productos, intro)
     return AgentResult(
-        user_facing=compose_product_reply(
-            f"¡Genial! Te muestro nuestros *{nombre}* 🎁", productos
-        ),
-        artifacts=productos,
+        user_facing=compose_product_reply(intro_final, elegidos),
+        artifacts=elegidos,
         state_patch={"recent_options": [], "menu_depth": 0},
+        sourced_prices=importes,
     )
 
 
@@ -1129,6 +1217,12 @@ async def _taxonomia() -> list[dict]:
         return []
 
 
+_CUSTOMIZE_REPLY = (
+    "Esos cambios los coordina directamente nuestro equipo, que te confirma si se "
+    "pueden hacer y si varía el precio 🙏 Te paso con un asesor."
+)
+
+
 async def _handle_escalate(
     turn: Turn, state: ConversationState, *, prev_intent: str = "", **ctx
 ) -> AgentResult:
@@ -1152,11 +1246,18 @@ async def _handle_escalate(
         if not decision.allow:
             return await _run_specialty("small_talk", turn, state, **ctx)
 
-    motivo = (
-        state.handoff_reason
-        or (turn.text or "").strip()
-        or "cliente solicitó atención humana"
-    )
+    personaliza = asks_customization(turn.text)
+    if personaliza:
+        # Con el producto y lo que pide: el asesor entra sabiendo qué cotizar, sin leer
+        # el hilo. Un motivo anterior no sirve: esto es lo que pide ahora.
+        producto = (state.chosen_product_name or turn.quoted or "").strip()[:80]
+        motivo = f"Personalización{f' de {producto}' if producto else ''}: {turn.text.strip()[:200]}"
+    else:
+        motivo = (
+            state.handoff_reason
+            or (turn.text or "").strip()
+            or "cliente solicitó atención humana"
+        )
     escalate = await perform_handoff(
         wa_id=ctx.get("wa_id"),
         conversation_id=ctx.get("conversation_id"),
@@ -1164,6 +1265,10 @@ async def _handle_escalate(
         use_external_crm=ctx.get("use_external_crm", False),
         session=ctx.get("session"),
         persist=ctx.get("persist"),
+        message=_CUSTOMIZE_REPLY if personaliza else None,
+        # El motivo lleva el nombre del producto y la frase del cliente: "Box con
+        # tarjeta" no convierte esto en un cobro.
+        is_payment=False if personaliza else None,
     )
     return AgentResult(user_facing=None, escalate=escalate)
 
@@ -1255,7 +1360,136 @@ async def _buscar_por_slug_url(slug: str) -> dict | None:
     return None
 
 
+async def _checkout_coverage(text: str, state: ConversationState) -> dict:
+    """Cobertura del paso de distrito. Función aparte para aislarla en los tests."""
+    return await resolve_coverage(text, state)
+
+
+async def _load_product_facts(state: ConversationState) -> None:
+    """Precio vigente y categoría del producto elegido, de su ficha en la API.
+
+    La categoría es lo único que dice de verdad si algo es un desayuno: en la API
+    hay desayunos como "1era Sorpresa del día", sin la palabra en el nombre.
+    Si falla, el precio queda sin confirmar y no se calcula ningún total; la venta
+    sigue, porque el asesor puede cotizar.
+    """
+    state.chosen_product_price_sol = None
+    pid = state.chosen_product_id
+    if not pid:
+        return
+    # Se apunta antes de consultar: con la API caída, reintentar en cada paso le
+    # sumaría un timeout a cada turno. Al llegar al resumen se vuelve a leer igual.
+    state.product_facts_for = pid
+    try:
+        payload = json.loads(await execute_tool("detalle_producto", {"id_producto": pid}))
+    except Exception as err:
+        log.warning("[checkout] no pude leer la ficha de %s: %s", pid, err)
+        return
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or not data.get("id_producto"):
+        return
+    product = Product.from_raw(data)
+    state.chosen_product_price_sol = product.precio_sol if product else None
+    categoria = f"{data.get('categoria') or ''} {data.get('categoria_slug') or ''}".strip()
+    if categoria:
+        state.chosen_is_breakfast = bool(re.search(r"desayun|brunch", categoria, re.I))
+
+
+async def _district_step(
+    text: str, state: ConversationState
+) -> tuple[ConversationState, str, dict, list[float]] | None:
+    """El paso de distrito contra la lista de cobertura real. `None`: lo lleva el FSM.
+
+    El FSM guardaba cualquier texto como distrito —"Arequipa", "cuánto es el
+    delivery?"— y el pedido llegaba al resumen sin tarifa ni `id_distrito`. Consultar
+    la API exige un `await`, por eso vive aquí y no en el FSM, que es puro. Si la API
+    falla, el FSM sigue como antes: no se bloquea una venta por un timeout.
+    """
+    if not district_needs_lookup(state, text):
+        return None
+    try:
+        raw = await _checkout_coverage(text, state)
+    except Exception as err:
+        log.warning("[checkout] cobertura no disponible: %s", err)
+        record_operation("coverage", "unavailable")
+        # Sin lista, solo se da por bueno un lugar que sabemos que es de Lima, y sigue
+        # sin tarifa ni total. Otro se repregunta y, al tercero, lo ve una persona.
+        if resolve_alias(text):
+            return None
+        state, reply, meta = reject_district(
+            state,
+            "Ahora mismo no puedo validar ese lugar 😕 ¿En qué *distrito* de Lima es la entrega?",
+        )
+        return state, reply, meta, []
+    structured = raw.get("structured") or {}
+    if structured.get("ambiguity") == "zone":
+        state.patch(raw.get("state_patch") or {})
+        return (
+            state,
+            raw.get("user_facing") or "",
+            {"specialty": "checkout"},
+            [float(v) for v in structured.get("zone_fees") or []],
+        )
+    if structured.get("resolved_district") and structured.get("covered"):
+        fee = structured.get("fee_sol")
+        state, reply, meta = accept_district(
+            state, raw.get("state_patch") or {}, raw.get("user_facing") or ""
+        )
+        return state, reply, meta, [float(fee)] if fee is not None else []
+    state, reply, meta = reject_district(
+        state, raw.get("user_facing") or structured.get("ask") or ""
+    )
+    return state, reply, meta, []
+
+
+async def _order_price_reply(state: ConversationState) -> AgentResult:
+    """"¿Cuánto es?" a mitad del cierre: con los datos del pedido, sin modelo.
+
+    Un importe es lo último que debe redactar un modelo, y aquí están todos.
+    """
+    if state.chosen_product_price_sol is None:
+        await _load_product_facts(state)
+    precio = state.chosen_product_price_sol
+    envio = state.shipping_fee_sol
+    total = order_total(state)
+
+    lineas = [
+        f"*{state.chosen_product_name or 'Tu regalo'}*: S/{float(precio):.2f}"
+        if precio is not None
+        else "El precio del producto te lo confirmamos al coordinar el pago."
+    ]
+    lineas.append(
+        f"Envío a {state.district}: S/{float(envio):.2f}"
+        if envio is not None
+        else "El envío depende del distrito de entrega."
+    )
+    if total is not None:
+        lineas.append(f"*Total: S/{total:.2f}*")
+    return AgentResult(
+        user_facing="\n".join(lineas) + f"\n\n{pending_question(state)}",
+        sourced_prices=[float(v) for v in (precio, envio, total) if v is not None],
+    )
+
+
+def _summary_prices(state: ConversationState) -> list[float]:
+    """Los importes del resumen, para que la barrera de precios los reconozca."""
+    return [
+        float(v)
+        for v in (state.chosen_product_price_sol, state.shipping_fee_sol, order_total(state))
+        if v is not None
+    ]
+
+
 async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
+    if checkout_active(state) and asks_order_price(turn.text):
+        return await _order_price_reply(state)
+
+    # Ya compró y, el mismo día, señala OTRO producto: eso es un pedido nuevo.
+    if state.checkout_step in ("payment", "done"):
+        otro = resolve_chosen_product(state, turn.text_with_quote, allow_implicit=False)
+        if otro is not None and otro[0] != state.chosen_product_id:
+            clear_checkout(state)
+
     if state.checkout_step in ("idle", ""):
         # Con la cita: responder a la foto de un producto ES nombrarlo. Lo que
         # NO se consume aquí es el texto del cierre — eso va limpio, más abajo.
@@ -1298,7 +1532,63 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
                 )
             )
 
-    state, reply, meta = advance_checkout(state, turn.text)
+    # Una sola consulta de la ficha por turno, aunque aquí abajo la pidan dos pasos.
+    ficha_al_dia = False
+    if state.chosen_product_id and state.product_facts_for != state.chosen_product_id:
+        resumen_sin_total = (
+            state.checkout_step == "summary" and state.chosen_product_price_sol is None
+        )
+        await _load_product_facts(state)
+        ficha_al_dia = True
+        # Este resumen se le mostró antes de que llevara el total. Su "sí" no puede
+        # valer para una cifra que aún no ha visto: se la enseñamos y que confirme.
+        if (
+            resumen_sin_total
+            and state.chosen_product_price_sol is not None
+            and short_reply(turn.text) == YES
+        ):
+            return AgentResult(
+                user_facing=f"Antes de confirmar, aquí va con el total 👇\n{summary_prompt(state)}",
+                sourced_prices=_summary_prices(state),
+            )
+
+    paso_previo = state.checkout_step
+    distrito = await _district_step(turn.text, state) if paso_previo == "district" else None
+    if distrito is not None:
+        state, reply, meta, sourced = distrito
+    else:
+        state, reply, meta = advance_checkout(state, turn.text)
+        sourced = []
+        # "el distrito es Miraflores": también hay que validarlo con la cobertura.
+        if meta.get("district_value"):
+            distrito = await _district_step(meta["district_value"], state)
+            if distrito is not None:
+                state, reply, meta, sourced = distrito
+
+    # Volvió otro día y dijo que sigue: nada de lo guardado es seguro todavía.
+    if paso_previo == "resume_confirm" and state.checkout_step != paso_previo and checkout_active(state):
+        pid = state.chosen_product_id
+        if await is_available(pid) is False:
+            nombre = state.chosen_product_name
+            release_product(state)
+            state.recent_products = [
+                p for p in state.recent_products if p.get("id_producto") != pid
+            ]
+            return AgentResult(user_facing=unavailable_message(nombre))
+        if not ficha_al_dia:
+            await _load_product_facts(state)
+            ficha_al_dia = True
+        reply = revalidate_delivery(state) or reply
+
+    # El precio se relee al llegar al resumen: entre que eligió y que termina el
+    # formulario pueden pasar horas, y aquí es donde se le dice cuánto paga. La ficha
+    # puede revelar además que era un desayuno, si la primera consulta falló.
+    if state.checkout_step == "summary" and paso_previo != "summary":
+        if not ficha_al_dia:
+            await _load_product_facts(state)
+        reply = revalidate_delivery(state) or summary_prompt(state)
+    if state.checkout_step == "summary":
+        sourced = _summary_prices(state)
 
     # El cierre se atascó (no lo entendimos tres veces) o el cliente se está
     # yendo. Se cede el chat de verdad, en código — pero NO es una venta: no se
@@ -1312,11 +1602,14 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
             use_external_crm=ctx.get("use_external_crm", False),
             session=ctx.get("session"),
             persist=ctx.get("persist"),
+            # Lo dice el cierre, que sabe por qué cede: a quien acaba de escribir "ya
+            # no lo quiero" no se le contesta "¡Claro! Te conecto con un asesor".
+            message=reply,
         )
-        return AgentResult(user_facing=reply, escalate=escalate)
+        return AgentResult(user_facing=None, escalate=escalate)
 
     if not meta.get("escalate"):
-        return AgentResult(user_facing=reply)
+        return AgentResult(user_facing=reply, sourced_prices=sourced)
 
     # Resumen confirmado: el bot cerró la venta. Antes de escalar dejamos dos
     # rastros del pedido:
@@ -1329,15 +1622,16 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
     # deshacen: dejar un pedido huérfano de un turno abortado obliga a ventas a
     # limpiarlo a mano.
     preempt.commit()
-    if meta.get("create_order") and settings.pedido_temporal_enabled:
+    confirma = bool(meta.get("create_order"))
+    # Sin pedido previo: si la cesión falló la primera vez, el "sí" de reintento no
+    # puede dejar dos pedidos en el panel.
+    if confirma and settings.pedido_temporal_enabled and not state.pedido_temporal_id:
         data = await create_temporal_order(state, ctx.get("wa_id") or "")
         if data and data.get("id_pedido_temporal"):
             try:
                 state.pedido_temporal_id = int(data["id_pedido_temporal"])
             except (TypeError, ValueError):
                 pass
-    if conversation_id is not None:
-        await announce_sale(conversation_id, state)
 
     # El pago lo coordina un humano. La derivación es una transición de estado,
     # no una decisión generativa: se ejecuta directamente y nunca invoca OpenAI.
@@ -1349,7 +1643,33 @@ async def _handle_checkout(turn: Turn, state: ConversationState, **ctx) -> Agent
         use_external_crm=ctx.get("use_external_crm", False),
         session=ctx.get("session"),
         persist=ctx.get("persist"),
+        message=payment_handoff_message(state) if confirma else None,
+        # Al confirmar, el aviso al equipo es el de la venta, con todos sus datos: uno
+        # genérico además solo le hacía leer dos veces la misma conversación.
+        notify=not confirma,
     )
+    if confirma and not escalate.ceded:
+        # Nadie va a entrar a cobrar. Pintar el chat de verde mandaría al equipo a
+        # una venta "cerrada" que sigue en manos del bot, y `perform_handoff` ya
+        # avisó del fallo. Se vuelve al resumen para poder reintentar.
+        state.checkout_step = "summary"
+        return AgentResult(
+            user_facing=(
+                "Tu pedido está listo, pero tuve un problema para pasárselo al equipo 🙏 "
+                "¿Me confirmas otra vez con un *sí*?"
+            )
+        )
+    # Una venta se anuncia una vez, al confirmarla y con el chat ya cedido. Quien ya
+    # está en `payment` y escribe otra vez solo vuelve con el asesor: anunciarla de
+    # nuevo le decía al equipo que había otra venta, con los datos de la anterior.
+    if confirma:
+        venta = await announce_sale(conversation_id, state) if conversation_id is not None else None
+        # Sin los datos para anunciarla, el equipo tiene que enterarse igual: hay un
+        # cliente esperando para pagar.
+        if venta is None:
+            await notify_team(
+                f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
+            )
     return AgentResult(user_facing=None, escalate=escalate)
 
 
@@ -1373,7 +1693,7 @@ async def _handle_detail(
     especialista como antes y él pregunta cuál.
     """
     detalle = await _prefetch_detalle(turn, state)
-    return await _run_specialty(
+    result = await _run_specialty(
         "product_detail",
         turn,
         state,
@@ -1386,6 +1706,16 @@ async def _handle_detail(
         fallback_artifacts=_artifacts_from(detalle),
         **ctx,
     )
+    # Vio la ficha de uno solo: es el momento de proponerle llevárselo. Un buen
+    # vendedor no se queda callado aquí, y sin pregunta la venta no avanza.
+    if (
+        not checkout_active(state)
+        and len(result.artifacts) == 1
+        and (result.user_facing or "").strip()
+        and result.escalate is None
+    ):
+        result.user_facing = f"{result.user_facing}\n\n¿Te lo llevas? 🎁"
+    return result
 
 
 def _detalle_target(turn: Turn, state: ConversationState) -> int | None:
@@ -1514,6 +1844,11 @@ async def _run_specialty(
     # hicimos caso ("otras, no esas").
     if output_policy == "catalog":
         result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
+        if result.artifacts:
+            result.artifacts, result.user_facing, importes = _apply_budget(
+                state, result.artifacts, result.user_facing
+            )
+            result.sourced_prices = [*result.sourced_prices, *importes]
 
     # El cliente pegó el link de UN producto y el modelo igual buscó a lo ancho:
     # nos quedamos solo con el del slug. Sin esto, compose_product_reply volcaba
@@ -1575,6 +1910,7 @@ async def _run_specialty(
             result.user_facing = rescate.user_facing
             result.artifacts = rescate.artifacts
             result.state_patch = {**result.state_patch, **(rescate.state_patch or {})}
+            result.sourced_prices = [*result.sourced_prices, *rescate.sourced_prices]
 
     _capture_choice(output_policy, turn, state, result)
 
@@ -1613,13 +1949,13 @@ async def _own_the_menu(
         # Cestas, Peluches, Regalos para Bebé: sin hijas, un menú sobra.
         productos = await _productos_de(padre["slug"], turn.text)
         if productos:
-            result.artifacts = productos
-            result.user_facing = compose_product_reply(
-                f"¡Genial! Te muestro nuestros *{padre['nombre']}* 🎁", productos
+            listado = _product_listing(
+                state, f"¡Genial! Te muestro nuestros *{padre['nombre']}* 🎁", productos
             )
-            result.state_patch = {
-                **result.state_patch, "recent_options": [], "menu_depth": 0,
-            }
+            result.artifacts = listado.artifacts
+            result.user_facing = listado.user_facing
+            result.sourced_prices = [*result.sourced_prices, *listado.sourced_prices]
+            result.state_patch = {**result.state_patch, **listado.state_patch}
             return
 
     nivel = padre["hijos"] if padre is not None and padre["hijos"] else options
@@ -1682,7 +2018,7 @@ def _capture_choice(
         return
     # Dentro del cierre el producto ya está fijo y un "2" es un horario, no una
     # elección de producto: no lo tocamos.
-    if state.checkout_step not in ("idle", ""):
+    if checkout_active(state):
         return
 
     chosen: tuple[int, str] | None = None

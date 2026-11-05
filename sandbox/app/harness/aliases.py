@@ -71,6 +71,28 @@ def normalize_place(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def pick_zone(text: str, options: list[dict]) -> dict | None:
+    """¿A cuál de las zonas ofrecidas se refiere? `None` si a ninguna, o si es ambiguo.
+
+    Por número ("2", "la 2", "opción 1") o por una palabra propia de su descripción
+    ("Puruchuco"). Se ignoran las palabras cortas: "de", "hasta", "la" salen en todas.
+    """
+    norm = normalize_place(text)
+    if not norm or not options:
+        return None
+    numero = re.fullmatch(r"(?:(?:la|el|opcion|zona|numero)\s+)?(\d)", norm)
+    if numero:
+        index = int(numero.group(1)) - 1
+        return options[index] if 0 <= index < len(options) else None
+    words = {w for w in norm.split() if len(w) >= 5}
+    hits = [
+        option
+        for option in options
+        if words & {w for w in normalize_place(option.get("informacion") or "").split() if len(w) >= 5}
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def resolve_alias(text: str) -> str | None:
     """Devuelve distrito canónico si el texto (o un fragmento) matchea un alias."""
     norm = normalize_place(text)

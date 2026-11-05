@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from app.guardrails.input import sanitize_untrusted_text
 from app.guardrails.privacy import protect_profile
+from app.harness.budget import budget_label
 from app.prompts.core import core_system
 from app.prompts.capabilities import (
     CAPABILITY_CONTRACT_MATERIAL,
@@ -55,17 +56,19 @@ def render_current_time(now: datetime | None = None) -> str:
 
 def render_state(state: "ConversationState") -> str:
     """El estado del harness es la fuente de verdad, por encima del historial."""
-    blob = json.dumps(
-        {
-            "checkout_step": state.checkout_step,
-            "district": state.district,
-            "shipping_fee_sol": state.shipping_fee_sol,
-            "shown_product_ids": state.shown_product_ids[-30:],
-            "chosen_product_id": state.chosen_product_id,
-            "chosen_product_name": state.chosen_product_name,
-        },
-        ensure_ascii=False,
-    )
+    datos = {
+        "checkout_step": state.checkout_step,
+        "district": state.district,
+        "shipping_fee_sol": state.shipping_fee_sol,
+        "shown_product_ids": state.shown_product_ids[-30:],
+        "chosen_product_id": state.chosen_product_id,
+        "chosen_product_name": state.chosen_product_name,
+    }
+    if state.budget_amount:
+        datos["presupuesto_del_cliente"] = budget_label(
+            state.budget_amount, state.budget_currency
+        )
+    blob = json.dumps(datos, ensure_ascii=False)
     return (
         "## ESTADO (fuente de verdad — por encima del historial)\n"
         f"{blob}\n"

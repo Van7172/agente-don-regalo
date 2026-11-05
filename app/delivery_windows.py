@@ -7,7 +7,7 @@ depender de `harness` sin crear un ciclo de importación.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -15,15 +15,20 @@ class DeliveryWindow:
     label: str
     display: str
     api_hour: str
+    start_hour: int
 
 
 _WINDOWS = (
-    DeliveryWindow("Mañana temprano", "07:00 AM a 09:00 AM", "07:00"),
-    DeliveryWindow("Mañana", "09:00 AM a 11:00 AM", "10:00"),
-    DeliveryWindow("Mediodía", "11:00 AM a 02:00 PM", "13:00"),
-    DeliveryWindow("Tarde", "02:00 PM a 05:00 PM", "16:00"),
-    DeliveryWindow("Tarde-noche", "04:00 PM a 07:00 PM", "16:00"),
+    DeliveryWindow("Mañana temprano", "07:00 AM a 09:00 AM", "07:00", 7),
+    DeliveryWindow("Mañana", "09:00 AM a 11:00 AM", "10:00", 9),
+    DeliveryWindow("Mediodía", "11:00 AM a 02:00 PM", "13:00", 11),
+    DeliveryWindow("Tarde", "02:00 PM a 05:00 PM", "16:00", 14),
+    DeliveryWindow("Tarde-noche", "04:00 PM a 07:00 PM", "16:00", 16),
 )
+
+# Los desayunos solo salen en los rangos 1 y 2. Se fijan por franja y no por número:
+# el viernes se renumera la lista, y "el rango 2" pasaría a ser el de mediodía.
+_BREAKFAST_WINDOWS = _WINDOWS[:2]
 
 
 def _as_date(value: date | str | None) -> date | None:
@@ -35,22 +40,51 @@ def _as_date(value: date | str | None) -> date | None:
         return None
 
 
-def windows_for(delivery_date: date | str | None = None) -> tuple[DeliveryWindow, ...]:
+def windows_for(
+    delivery_date: date | str | None = None,
+    *,
+    breakfast: bool = False,
+    now: datetime | None = None,
+) -> tuple[DeliveryWindow, ...]:
+    """Franjas que se pueden ofrecer para esa fecha.
+
+    Con `now`, las de hoy que ya empezaron no salen: a las 6 PM se dejaba elegir la
+    entrega de 7 a 9 AM de ese mismo día.
+    """
     parsed = _as_date(delivery_date)
-    return _WINDOWS[1:] if parsed and parsed.weekday() == 4 else _WINDOWS
+    out = _WINDOWS[1:] if parsed and parsed.weekday() == 4 else _WINDOWS
+    if breakfast:
+        out = tuple(window for window in out if window in _BREAKFAST_WINDOWS)
+    if now is not None and parsed == now.date():
+        out = tuple(window for window in out if window.start_hour > now.hour)
+    return out
 
 
-def schedule_map_for(delivery_date: date | str | None = None) -> dict[str, str]:
+def schedule_map_for(
+    delivery_date: date | str | None = None,
+    *,
+    breakfast: bool = False,
+    now: datetime | None = None,
+) -> dict[str, str]:
     return {
         str(index): window.display
-        for index, window in enumerate(windows_for(delivery_date), start=1)
+        for index, window in enumerate(
+            windows_for(delivery_date, breakfast=breakfast, now=now), start=1
+        )
     }
 
 
-def schedule_options_for(delivery_date: date | str | None = None) -> str:
+def schedule_options_for(
+    delivery_date: date | str | None = None,
+    *,
+    breakfast: bool = False,
+    now: datetime | None = None,
+) -> str:
     return "\n".join(
         f"{index}. {window.label} — {window.display}"
-        for index, window in enumerate(windows_for(delivery_date), start=1)
+        for index, window in enumerate(
+            windows_for(delivery_date, breakfast=breakfast, now=now), start=1
+        )
     )
 
 

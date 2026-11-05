@@ -28,12 +28,38 @@ _PAYMENT_METHODS_RE = re.compile(
 )
 
 
+# En Perú "cancelar" es también PAGAR: "¿cómo cancelo con yape?" es la pregunta de
+# alguien que quiere pagar, y la regla de derivación la leía como quien anula el
+# pedido. Si habla del pedido sin nombrar un medio de pago, es una anulación de
+# verdad y este patrón no la toca.
+_CANCEL_AS_PAYMENT_RE = re.compile(
+    r"\bcancel\w*\b[^.?!\n]{0,30}\b(?:yape|plin|tarjeta|transferencia|dep[oó]sito|"
+    r"cuenta|efectivo|paypal|payu)\b|"
+    r"\b(?:c[oó]mo|d[oó]nde|cu[aá]nto)\s+(?:puedo\s+|se\s+|le\s+|debo\s+|tengo\s+que\s+)?"
+    r"cancel\w*\b",
+    re.I,
+)
+# Si habla de su pedido, ceder el chat es lo seguro: "quiero cancelar mi pedido con
+# yape" puede ser pagarlo o anularlo, y equivocarse en lo segundo es dejar un pedido
+# vivo que el cliente cree anulado.
+_ABOUT_THE_ORDER_RE = re.compile(r"\b(?:pedido|orden|compra)\b", re.I)
+_CARD_QUESTION_RE = re.compile(
+    r"\btarjetas?\b|\bvisa\b|\bmastercard\b|\bamex\b|\bcr[eé]dito\b|\bd[eé]bito\b", re.I
+)
+
+
+def cancel_means_payment(text: str) -> bool:
+    raw = text or ""
+    return bool(_CANCEL_AS_PAYMENT_RE.search(raw)) and not _ABOUT_THE_ORDER_RE.search(raw)
+
+
 def asks_for_payment_methods(text: str) -> bool:
     """Distingue una consulta/selección de medio de pago de un pago ya hecho."""
-    return bool(_PAYMENT_METHODS_RE.search(text or ""))
+    return bool(_PAYMENT_METHODS_RE.search(text or "")) or cancel_means_payment(text)
 
 
-def _image_block() -> str:
+def payment_instructions() -> str:
+    """Imagen oficial con QR y cuentas, y qué hacer con el comprobante."""
     return (
         f"{PAYMENT_METHODS_IMAGE_URL}\n\n"
         "Escanea el QR de Yape o Plin que prefieras, o utiliza una de las "
@@ -49,12 +75,20 @@ def payment_methods_reply(text: str = "") -> str:
             "Trabajamos únicamente con pago anticipado. Te comparto nuestros "
             "medios de pago oficiales 💳"
         )
+    elif _CARD_QUESTION_RE.search(text or ""):
+        # La imagen solo trae QR y cuentas: a quien preguntó por tarjeta hay que
+        # contestarle eso primero, o tendrá que volver a preguntarlo.
+        intro = (
+            "¡Sí! 💳 Aceptamos tarjeta de crédito y débito (Visa, Mastercard, Amex "
+            "y Discover) por PayPal o Payu; el enlace de pago lo recibes al "
+            "confirmar tu pedido. También puedes pagar con QR o cuentas bancarias:"
+        )
     else:
         intro = (
             "¡Claro! 💳 Te comparto nuestros medios de pago oficiales con QR "
             "y cuentas bancarias:"
         )
-    return f"{intro}\n\n{_image_block()}"
+    return f"{intro}\n\n{payment_instructions()}"
 
 
 def append_payment_methods_image(reply: str) -> str:
@@ -62,4 +96,4 @@ def append_payment_methods_image(reply: str) -> str:
     clean = (reply or "").strip()
     if PAYMENT_METHODS_IMAGE_URL in clean:
         return clean
-    return f"{clean}\n\n{_image_block()}" if clean else payment_methods_reply()
+    return f"{clean}\n\n{payment_instructions()}" if clean else payment_methods_reply()

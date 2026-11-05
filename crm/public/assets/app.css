@@ -258,7 +258,7 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 .brand-mark-lg.is-fallback svg { width: 56px; height: 56px; }
 .brand-mark-lg.is-fallback .brand-mark-label { display: block; }
 
-/* La marca pequeña (topbar) nunca muestra el wordmark: ya está al lado. */
+/* La marca pequeña nunca muestra el wordmark: ya está al lado. */
 .brand-mark.is-fallback .brand-mark-label { display: none; }
 
 .login-form-pane { flex: 1 1 54%; display: flex; align-items: center; justify-content: center; padding: 40px; }
@@ -279,29 +279,82 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
 }
 
 /* ============================================================
-   Shell de la app (topbar + páginas)
+   Shell de la app (menú lateral + páginas)
    ============================================================ */
 
-.app-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.app-shell { display: flex; height: 100vh; height: 100dvh; }
+/* El scroll va aquí: si lo llevara la página entera, se llevaría el menú con ella. */
+.app-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
-.topbar {
-  display: flex; align-items: center; gap: 18px;
-  padding: 12px 24px; flex: none;
-  border-bottom: 1px solid var(--color-divider);
+.sidebar {
+  flex: none; width: 240px; min-height: 0;
+  display: flex; flex-direction: column; gap: 12px; padding: 14px 12px;
+  border-right: 1px solid var(--color-divider);
   background: color-mix(in srgb, var(--color-bg) 60%, transparent);
-  backdrop-filter: blur(6px);
 }
-.topbar-brand { display: flex; align-items: center; gap: 10px; margin-right: 8px; }
-.topbar-brand .brand-mark {
-  width: 40px; height: 40px; object-fit: cover; flex: none;
-  border-radius: 12px; box-shadow: var(--shadow-sm);
+html.sidebar-ready .sidebar { transition: width 0.18s ease; }
+
+.sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sidebar-brand { min-width: 0; }
+.sidebar-logo .brand-kicker { margin-top: 5px; white-space: nowrap; }
+.sidebar-gift {
+  display: none; width: 40px; height: 40px; border-radius: 12px;
+  align-items: center; justify-content: center;
+  background: var(--color-accent-200); color: var(--color-accent-800);
+}
+.sidebar-toggle {
+  flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  background: transparent; color: color-mix(in srgb, var(--color-text) 60%, transparent);
+}
+.sidebar-toggle:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); color: var(--color-text); }
+.sidebar-toggle svg { transition: transform 0.18s ease; }
+
+.sidebar-nav {
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.sidebar-link {
+  display: flex; align-items: center; gap: 12px; flex: none; min-height: 40px; padding: 8px 11px;
+  border-radius: 12px; text-decoration: none; color: var(--color-text);
+  font-family: var(--font-heading); font-size: 13.5px; line-height: 1.2;
+}
+.sidebar-link svg { flex: none; }
+.sidebar-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-link:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+.sidebar-link[aria-current="page"] {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-800);
+}
+.sidebar-link:focus-visible, .sidebar-toggle:focus-visible, .sidebar-open:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 1px;
 }
 
-/*
- * El logo es un wordmark centrado en un cuadrado con mucho margen muerto.
- * Recortarlo a un cuadrado dejaría un trozo de letras sin sentido, así que
- * la ventana enmarca solo la banda central donde vive el lettering.
- */
+.sidebar-foot {
+  display: flex; align-items: center; gap: 10px; padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+.sidebar-foot .avatar-sm {
+  width: 32px; height: 32px; border-radius: 50%; flex: none;
+  background: var(--color-accent-2-200); color: var(--color-accent-2-800);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+}
+.sidebar-foot .who { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Modo simple: solo iconos. Cada enlace conserva su nombre en title y aria-label. */
+html[data-sidebar="simple"] .sidebar { width: 68px; }
+html[data-sidebar="simple"] .sidebar-label,
+html[data-sidebar="simple"] .sidebar-logo,
+html[data-sidebar="simple"] .sidebar-foot .who { display: none; }
+html[data-sidebar="simple"] .sidebar-gift { display: flex; }
+html[data-sidebar="simple"] .sidebar-head { flex-direction: column; }
+html[data-sidebar="simple"] .sidebar-toggle svg { transform: rotate(180deg); }
+html[data-sidebar="simple"] .sidebar-link { justify-content: center; padding: 8px 0; }
+html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
+
+/* El logo es un wordmark centrado en un cuadrado con mucho margen muerto: la
+   ventana enmarca solo la banda central donde vive el lettering. */
 .brand-logo {
   display: block; position: relative; flex: none;
   width: 132px; height: 34px; overflow: hidden;
@@ -311,36 +364,43 @@ textarea.input { border-radius: var(--radius-md); resize: vertical; }
   position: absolute; left: 0; top: 50%;
   width: 100%; height: auto; transform: translateY(-50%);
 }
-.topbar-brand .brand-mark.is-fallback {
+.brand-mark {
+  width: 40px; height: 40px; flex: none; border-radius: 12px; box-shadow: var(--shadow-sm);
+}
+.brand-mark.is-fallback {
   display: flex; align-items: center; justify-content: center;
   background: var(--color-accent-200); color: var(--color-accent-800);
 }
-.topbar-brand .brand-name { font-family: var(--font-heading); font-size: 18px; line-height: 1; }
-.topbar-brand .brand-kicker {
+.brand-kicker {
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
 }
 
-.topbar-nav { display: flex; gap: 6px; margin-right: auto; }
-.topbar-nav a {
-  background: transparent; color: var(--color-text); text-decoration: none;
-  font-family: var(--font-heading); font-size: 13.5px;
-  padding: 8px 16px; border-radius: 999px;
-}
-.topbar-nav a:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
-.topbar-nav a[aria-current="page"] {
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-  color: var(--color-accent-800);
+/* Barra y fondo del panel: solo existen en móvil. */
+.topbar, .sidebar-backdrop { display: none; }
+
+/* Pantalla mediana: el menú reserva solo el ancho de los iconos, y ampliado va
+   encima del contenido. Empujarlo dejaría el chat en unos 160 px con el resumen
+   del lead abierto. */
+@media (min-width: 901px) and (max-width: 1199px) {
+  .sidebar {
+    position: fixed; z-index: 60; inset: 0 auto 0 0;
+    background: var(--color-bg);
+  }
+  html[data-sidebar="full"] .sidebar { box-shadow: 0 8px 28px rgb(0 0 0 / 22%); }
+  .app-main { margin-left: 68px; }
 }
 
-.topbar-user { display: flex; align-items: center; gap: 10px; }
-.topbar-user .avatar-sm {
-  width: 32px; height: 32px; border-radius: 50%;
-  background: var(--color-accent-2-200); color: var(--color-accent-2-800);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 700; flex: none;
+/* Con poco ancho, las acciones del chat bajan a otra fila en vez de salirse. */
+@media (min-width: 901px) {
+  .chat-head, .chat-actions { flex-wrap: wrap; }
+  .chat-head .who { flex: 1 1 150px; }
 }
-.topbar-user .who { font-size: 13px; white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  html.sidebar-ready .sidebar, .sidebar-toggle svg { transition: none; }
+}
+
 .icon-btn {
   background: none; border: none; cursor: pointer; padding: 6px; display: flex;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
@@ -1071,19 +1131,44 @@ a.media-location:hover { filter: brightness(0.98); }
     overflow: hidden;
   }
 
-  /* La navegación global ocupa dos filas en la bandeja y se desplaza en
-     horizontal. Dentro de un chat desaparece: la cabecera del contacto pasa a
-     ser la barra principal, igual que en WhatsApp. */
-  .topbar { flex-wrap: wrap; padding: 8px 12px; gap: 6px 10px; }
-  .topbar-brand { flex: 1; min-width: 0; }
-  .topbar-nav {
-    order: 3; width: 100%; margin: 0; gap: 4px;
-    overflow-x: auto; overscroll-behavior-x: contain;
-    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  /* El lateral pasa a ser un panel: en el teléfono no hay ancho para tenerlo fijo.
+     Va siempre ampliado, sea cual sea el modo elegido en escritorio. visibility
+     saca sus enlaces del tabulador mientras está cerrado. Dentro de un chat la
+     barra desaparece: la cabecera del contacto es la principal, como en WhatsApp. */
+  .app-shell { display: block; }
+  .app-main { height: 100%; }
+  .topbar {
+    display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px 6px 6px;
+    border-bottom: 1px solid var(--color-divider);
   }
-  .topbar-nav::-webkit-scrollbar { display: none; }
-  .topbar-nav a { flex: none; padding: 7px 12px; }
+  .topbar .sidebar-open { width: 44px; height: 44px; padding: 0; align-items: center; justify-content: center; color: var(--color-text); }
+  .topbar-title { flex: 1; min-width: 0; font-family: var(--font-heading); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .brand-logo { width: 104px; height: 28px; }
   body.mobile-chat-open .topbar { display: none; }
+
+  html[data-sidebar] .sidebar {
+    position: fixed; z-index: 60; inset: 0 auto 0 0;
+    width: min(280px, 84vw); padding-bottom: max(14px, env(safe-area-inset-bottom));
+    background: var(--color-bg); box-shadow: var(--shadow-sm);
+    transform: translateX(-100%); visibility: hidden;
+  }
+  /* visibility solo espera al cerrar; al abrir cambia ya, para poder recibir el foco. */
+  html.sidebar-ready[data-sidebar] .sidebar { transition: transform 0.2s ease, visibility 0s linear 0.2s; }
+  html.sidebar-ready[data-sidebar] body.sidebar-open .sidebar { transition: transform 0.2s ease, visibility 0s; }
+  html[data-sidebar] body.sidebar-open .sidebar { transform: none; visibility: visible; }
+  .sidebar-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 55;
+    background: rgb(0 0 0 / 40%); opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  body.sidebar-open .sidebar-backdrop { opacity: 1; pointer-events: auto; }
+
+  html[data-sidebar] .sidebar-label, html[data-sidebar] .sidebar-logo { display: revert; }
+  html[data-sidebar] .sidebar-foot .who { display: block; }
+  html[data-sidebar] .sidebar-gift { display: none; }
+  html[data-sidebar] .sidebar-head, html[data-sidebar] .sidebar-foot { flex-direction: row; }
+  html[data-sidebar] .sidebar-link { justify-content: flex-start; padding: 8px 11px; min-height: 44px; }
+  html[data-sidebar] .sidebar-toggle svg { transform: none; }
+  .sidebar-toggle { width: 44px; height: 44px; }
 
   .mobile-back { display: inline-flex; }
 
@@ -1175,8 +1260,6 @@ a.media-location:hover { filter: brightness(0.98); }
 
   .help-rail { padding-left: 16px; padding-right: 16px; }
   .followup-rail { padding-left: 16px; padding-right: 16px; }
-  .topbar-user .who { display: none; }
-  .topbar-brand .brand-name, .topbar-brand .brand-kicker { white-space: nowrap; }
   .reports { padding: 24px 16px 48px; }
   .operations { padding: 24px 16px 48px; }
   .ops-kpis { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
@@ -1184,13 +1267,6 @@ a.media-location:hover { filter: brightness(0.98); }
 }
 
 @media (max-width: 560px) {
-  /* Sin el kicker y con el logo más corto, la topbar entra sin cortar "Salir". */
-  .topbar-brand > div { display: none; }
-  .topbar { gap: 8px; }
-  .topbar-brand { margin-right: 0; }
-  .brand-logo { width: 104px; height: 28px; }
-  .topbar-nav { gap: 2px; }
-  .topbar-nav a { padding: 8px 12px; }
   .operations-head { flex-direction: column; }
   .operations-refresh { width: 100%; justify-content: space-between; }
   .ops-kpis { grid-template-columns: 1fr; }

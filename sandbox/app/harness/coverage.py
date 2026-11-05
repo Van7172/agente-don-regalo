@@ -10,8 +10,8 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.harness.aliases import PLACE_ALIASES, normalize_place, resolve_alias
-from app.harness.render import render_coverage
+from app.harness.aliases import PLACE_ALIASES, normalize_place, pick_zone, resolve_alias
+from app.harness.render import render_coverage, render_zones
 from app.harness.registry import assert_tool_allowed
 from app.harness.state import ConversationState
 from app.tools import catalog
@@ -247,9 +247,15 @@ async def resolve_coverage(
     Resuelve cobertura en un solo paso.
     Retorna dict structured + user_facing + state_patch.
     """
+    # Contesta a la zona que se le acaba de preguntar: ya tenemos sus datos.
+    if state.district_options:
+        zona = pick_zone(user_text, state.district_options)
+        if zona is not None:
+            return _covered(zona, user_text, state, fee_known=True, with_note=False)
+
     own_client = client is None
     if own_client:
-        client = httpx.AsyncClient(timeout=30.0)
+        client = httpx.AsyncClient(timeout=12.0)
     assert client is not None
 
     try:
@@ -347,17 +353,80 @@ async def resolve_coverage(
             "state_patch": {},
         }
 
+    # La API repite distritos con tarifa distinta (ATE a $7 y a $15). Quedarse con el
+    # primero es adivinar lo que paga el cliente. Si cada zona está descrita, se le
+    # pregunta; si no hay con qué distinguirlas, no se da ninguna cifra.
+    rivales = _same_name_other_fee(matched, districts)
+    if rivales:
+        zonas = [matched, *rivales]
+        if all(str(zona.get("informacion") or "").strip() for zona in zonas):
+            return _ask_zone(str(matched.get("nombre") or used_query), zonas)
+    return _covered(matched, used_query, state, fee_known=not rivales, with_note=True)
+
+
+def _same_name_other_fee(
+    matched: dict[str, Any], districts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    nombre = _district_name(matched)
+    tarifa = _as_float(matched.get("tarifa_usd") or matched.get("precio_usd"))
+    return [
+        d
+        for d in districts
+        if d is not matched
+        and _district_name(d) == nombre
+        and _as_float(d.get("tarifa_usd") or d.get("precio_usd")) != tarifa
+    ]
+
+
+def _ask_zone(name: str, zonas: list[dict[str, Any]]) -> dict[str, Any]:
+    text = render_zones(name, zonas)
+    return {
+        "ok": True,
+        "user_facing": text,
+        "structured": {
+            "resolved_district": None,
+            "covered": True,
+            "ambiguity": "zone",
+            "suggest_maps": False,
+            "ask": text,
+            "zone_fees": [
+                fee for fee in (_as_float(z.get("tarifa_sol")) for z in zonas) if fee is not None
+            ],
+        },
+        "state_patch": {"district_options": zonas},
+    }
+
+
+def _covered(
+    matched: dict[str, Any],
+    used_query: str,
+    state: ConversationState,
+    *,
+    fee_known: bool,
+    with_note: bool,
+) -> dict[str, Any]:
+    """Distrito confirmado: su tarifa, si es segura, y lo que la API avisa de él."""
     # `distritos_cobertura` ya devuelve la forma canónica (`adapters.district`):
     # nombre, tarifa_usd y tarifa_sol. La API cruda usa `nombre_distrito` y
     # `tarifa_envio_distrito` en USD, y leerla directamente era el bug que hacía
     # que NINGÚN distrito hiciera match.
     name = str(matched.get("nombre") or used_query)
-    fee_sol_f = _as_float(matched.get("tarifa_sol") or matched.get("precio_sol"))
-    fee_usd_f = _as_float(matched.get("tarifa_usd") or matched.get("precio_usd"))
+    fee_sol_f = _as_float(matched.get("tarifa_sol") or matched.get("precio_sol")) if fee_known else None
+    fee_usd_f = _as_float(matched.get("tarifa_usd") or matched.get("precio_usd")) if fee_known else None
 
     ask = "¿Qué regalo quieres enviar? 🎁"
     if state.chosen_product_name or state.checkout_step not in ("idle", ""):
         ask = "¿Para qué fecha lo necesitas? 📅"
+
+    notas: list[str] = []
+    if not fee_known:
+        notas.append("La tarifa exacta depende de la zona: te la confirmamos al coordinar el pago.")
+    informacion = str(matched.get("informacion") or "").strip()
+    if with_note and informacion:
+        # "No cubre Santa Rosa": mejor saberlo antes de llenar todo el formulario. La
+        # API no siempre le pone punto, y detrás va la pregunta.
+        cierre = "" if informacion[-1] in ".!?" else "."
+        notas.append(f"Ten en cuenta: {informacion}{cierre}")
 
     text = render_coverage(
         district=name,
@@ -365,6 +434,7 @@ async def resolve_coverage(
         fee_sol=fee_sol_f,
         fee_usd=fee_usd_f,
         ask=ask,
+        note=" ".join(notas),
     )
     patch = {
         "district": name,
@@ -372,6 +442,8 @@ async def resolve_coverage(
         "shipping_fee_usd": fee_usd_f,
         "intent_last": "coverage",
     }
+    if state.district_options:
+        patch["district_options"] = []
     # `id_distrito` lo exige `POST /pedidos/temporales`; lo guardamos aquí para no
     # tener que resolver el nombre otra vez al cerrar.
     if matched.get("id_distrito") is not None:

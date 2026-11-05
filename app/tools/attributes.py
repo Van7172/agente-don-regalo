@@ -32,6 +32,25 @@ def turn_text() -> str:
     return _TURN_TEXT.get()
 
 
+# Mismo motivo: el presupuesto es un límite y el modelo no convierte monedas, así que
+# las tools lo leen de aquí en vez de esperar que se lo pasen bien.
+_TURN_BUDGET: ContextVar[tuple[float, str] | None] = ContextVar(
+    "donregalo_attr_budget", default=None
+)
+
+
+def set_turn_budget(budget: tuple[float, str] | None):
+    return _TURN_BUDGET.set(budget)
+
+
+def reset_turn_budget(token) -> None:
+    _TURN_BUDGET.reset(token)
+
+
+def turn_budget() -> tuple[float, str] | None:
+    return _TURN_BUDGET.get()
+
+
 def colors_from(*texts: str) -> list[ColorAttribute]:
     """Une varias fuentes (args de la tool + turno) sin duplicar colores."""
     merged: list[ColorAttribute] = []

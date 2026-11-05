@@ -40,9 +40,24 @@ class ConversationState:
     checkout_updated_at: Optional[float] = None
     # Paso real a retomar tras `resume_confirm` (p. ej. "date").
     checkout_resume_step: str = ""
+    # Paso al que volver tras rehacer un dato suelto: el resumen, si corrige algo, o
+    # donde iba, si al reanudar hubo que pedir otra fecha. Sin esto, corregir la
+    # dirección obligaba a pasar otra vez por todo lo que venía después.
+    checkout_return_step: str = ""
     chosen_product_id: Optional[int] = None
     chosen_product_name: str = ""
+    # Lo que se sabe del elegido por su ficha en la API (ver `master._load_product_facts`).
+    # El precio es el que se le enseña al cliente en el resumen; `None` = no se pudo
+    # confirmar, y entonces no se calcula ningún total.
+    chosen_product_price_sol: Optional[float] = None
+    # Decide por categoría, no por nombre: "1era Sorpresa del día" es un desayuno.
+    # `None` = la API no respondió, y el nombre hace de respaldo.
+    chosen_is_breakfast: Optional[bool] = None
+    product_facts_for: Optional[int] = None
     district: str = ""
+    # Zonas por las que se le acaba de preguntar: la API trae distritos repetidos con
+    # tarifa distinta (ATE a $7 y a $15). Son lo que da sentido a un "2" del cliente.
+    district_options: list[dict] = field(default_factory=list)
     # id del distrito en la API de donregalo. Lo exige `POST /pedidos/temporales`;
     # `coverage` lo resuelve al confirmar el distrito y aquí lo conservamos.
     id_distrito: Optional[int] = None
@@ -91,7 +106,10 @@ class ConversationState:
     # la ventana de historial se recorta y el bot volvía a saludar en genérico en
     # vez de presentarse.
     presented: bool = False
-    campaign_slug: str = ""
+    # Presupuesto que dio el cliente. Se recuerda mientras dure la charla: quien dijo
+    # "tengo 100 soles" no lo repite en cada búsqueda.
+    budget_amount: Optional[float] = None
+    budget_currency: str = ""
     # ¿El turno anterior el bot OFRECIÓ un asesor ("¿quieres que consulte con un
     # asesor?")? Entonces un "sí" del cliente es aceptar la derivación, no charla.
     # El router solo ve el texto del cliente, no lo que ofreció el bot.
@@ -104,6 +122,9 @@ class ConversationState:
     keep_human: bool = False
     last_human_outbound_at: Optional[float] = None  # epoch seconds
     assignee_user_id: Optional[int] = None
+    # Último turno atendido (epoch). Es lo que separa "sigue la misma charla" de
+    # "volvió otro día": el documento no caduca y las conversaciones no se cierran.
+    last_turn_at: Optional[float] = None
     # Versión del documento, para escribir sin pisar a nadie (ver `save_state`).
     # No es un dato de la conversación: es lo que permite detectar que otro
     # escritor tocó el estado mientras este turno pensaba.
@@ -197,6 +218,16 @@ async def load_state(conversation_id: int, *, wa_id: str = "") -> ConversationSt
 # lectura fresca, así que la probabilidad de perder tres seguidas es despreciable.
 _SAVE_RETRIES = 3
 
+# Listas que se unen al fusionar, y la marca de las que este escritor recortó.
+_ACCUMULATIVE = frozenset({"shown_product_ids", "recent_products"})
+_REPLACED_KEY = "__reemplazadas__"
+
+
+def _item_ids(items: Any) -> set:
+    return {
+        item.get("id_producto") if isinstance(item, dict) else item for item in items or []
+    }
+
 
 def apply_delta(state: ConversationState, delta: dict[str, Any]) -> ConversationState:
     """Aplica sobre `state` los campos que otro escritor cambió.
@@ -209,13 +240,15 @@ def apply_delta(state: ConversationState, delta: dict[str, Any]) -> Conversation
 
     Las dos listas acumulativas sí van por `patch`: `shown_product_ids` y
     `recent_products` se unen en vez de reemplazarse, que es justo lo que se
-    quiere cuando dos escritores mostraron productos distintos.
+    quiere cuando dos escritores mostraron productos distintos. Salvo si este escritor
+    QUITÓ algo: unir devolvería el producto agotado a la lista o desharía el olvido
+    diario, así que entonces manda su versión (ver `state_delta`).
     """
-    acumulativas = {"shown_product_ids", "recent_products"}
+    reemplazadas = set(delta.get(_REPLACED_KEY) or ())
     for key, value in delta.items():
         if key == "version" or not hasattr(state, key):
             continue
-        if key in acumulativas:
+        if key in _ACCUMULATIVE and key not in reemplazadas:
             state.patch({key: value})
         else:
             setattr(state, key, value)
@@ -233,7 +266,15 @@ def state_delta(base: dict[str, Any] | None, state: ConversationState) -> dict[s
     current.pop("version", None)
     if base is None:
         return current
-    return {k: v for k, v in current.items() if base.get(k) != v}
+    delta = {k: v for k, v in current.items() if base.get(k) != v}
+    quitadas = [
+        key
+        for key in _ACCUMULATIVE & delta.keys()
+        if _item_ids(base.get(key)) - _item_ids(delta[key])
+    ]
+    if quitadas:
+        delta[_REPLACED_KEY] = quitadas
+    return delta
 
 
 async def save_state(

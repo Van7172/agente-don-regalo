@@ -13,6 +13,8 @@ import json
 import logging
 import random
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +42,14 @@ from app.observability import (
 from app.resilience import circuit_breaker
 from app.services import preempt
 from app.services.conversation_control import bot_controls_external
-from app.services.messenger import notify_team, send_message, set_typing
+from app.harness.team_hours import TEAM_HOURS_TEXT, next_opening, team_is_open
+from app.services.messenger import (
+    notify_team,
+    send_image,
+    send_message,
+    set_typing,
+    split_reply,
+)
 from app.tools import HUMAN_HANDOFF_TOOL, MEMORY_TOOL, TOOLS, execute_tool
 
 log = logging.getLogger(__name__)
@@ -288,6 +297,10 @@ _FILLER_BY_TOOL: dict[str, list[str]] = {
 
 _filler_conversations: set[int] = set()
 
+_LIMA = ZoneInfo("America/Lima")
+# Tope del resumen del cliente: cada carácter se paga en todos los turnos.
+_MEMORY_SUMMARY_MAX = 2000
+
 
 def _filler_for_tools(tool_calls: list) -> str | None:
     for call in tool_calls:
@@ -321,6 +334,88 @@ async def _say(wa_id: str, text: str, persist, *, commits: bool = True) -> str |
         except Exception as err:
             log.warning("[PERSIST] no se pudo guardar en el CRM: %s", err)
     return wa_mid
+
+
+async def _say_parts(wa_id: str, text: str, persist) -> None:
+    """Como `_say`, pero una línea con la URL de una imagen sale como foto.
+
+    Lo que se dice al ceder el chat no pasa por `buffer`, que es quien convierte esas
+    líneas: la conversación ya está en HUMAN y ahí el bot tiene prohibido enviar.
+    """
+    for segment in split_reply(text):
+        if segment.get("type") != "image":
+            await _say(wa_id, segment.get("text") or "", persist)
+            continue
+        caption = segment.get("caption", "")
+        preempt.commit()
+        wa_mid = await send_image(wa_id, segment["url"], caption)
+        if persist is not None:
+            try:
+                await persist(
+                    content=caption or segment["url"],
+                    wa_message_id=wa_mid,
+                    media_url=segment["url"],
+                )
+            except Exception as err:
+                log.warning("[PERSIST] no se pudo guardar en el CRM: %s", err)
+
+
+def _handoff_message(message: str | None) -> str:
+    """Lo que se le dice al ceder el chat, sin prometer lo que no se puede cumplir.
+
+    "En seguida continúan contigo" salía también a las 11 de la noche y en domingo:
+    el cliente se quedaba esperando a alguien que entraba a la mañana siguiente.
+    """
+    if team_is_open():
+        return message or _HANDOFF_WAIT_MSG
+    aviso = (
+        f"Nuestro equipo atiende de {TEAM_HOURS_TEXT}. Ahora estamos fuera de horario, "
+        f"así que te responderán {next_opening()} por este mismo chat 🙏"
+    )
+    return f"{message}\n\n{aviso}" if message else aviso
+
+
+async def _save_external_memory(wa_id: str, args: dict) -> str:
+    """`guardar_datos_cliente` contra el CRM. Devuelve el resultado para el modelo.
+
+    La tool ofrece `nombre`, `distrito` y `nota`, y aquí solo se traducía `nombre`:
+    las otras dos se perdían mientras el modelo recibía `ok`. `crm_lead_memory` no
+    tiene columnas para ellas, así que van a `situacion` y a `resumen`, que el perfil
+    ya lee de vuelta. Las notas se acumulan: `upsertMemory` pisa el campo entero.
+    """
+    from app.crm import http_client as crm_http
+
+    distrito = args.get("distrito")
+    patch = {
+        "name": args.get("nombre") or args.get("name"),
+        "email": args.get("email"),
+        "objetivo": args.get("objetivo") or args.get("preferencias"),
+        "situacion": args.get("situacion")
+        or args.get("ocasion")
+        or (f"Distrito habitual: {distrito}" if distrito else None),
+        "resumen": args.get("resumen") or args.get("notas"),
+    }
+    patch["temperatura"] = args.get("temperatura")
+    try:
+        nota = str(args.get("nota") or "").strip()
+        if nota:
+            current = await crm_http.get_memory(wa_id) or {}
+            previo = str(current.get("resumen_memory") or current.get("resumen") or "")
+            if previo.startswith("HARNESS:"):
+                previo = ""
+            if nota not in previo:
+                fecha = datetime.now(_LIMA).strftime("%d/%m/%y")
+                entrada = f"[{fecha}] {nota}"
+                patch["resumen"] = (f"{previo}\n{entrada}" if previo else entrada)[
+                    -_MEMORY_SUMMARY_MAX:
+                ]
+        limpio = {k: v for k, v in patch.items() if v}
+        if limpio:
+            await crm_http.put_memory(wa_id, limpio)
+    except Exception as err:
+        log.warning("[memoria] no se pudo guardar: %s", err)
+        return json.dumps({"ok": False, "error": "no se pudo guardar"})
+    return json.dumps({"ok": True, "guardado": limpio}, ensure_ascii=False)
 
 
 async def _cede_a_humano(
@@ -366,6 +461,9 @@ async def perform_handoff(
     use_external_crm: bool = False,
     session: AsyncSession | None = None,
     persist=None,
+    message: str | None = None,
+    is_payment: bool | None = None,
+    notify: bool = True,
 ) -> EscalateReason:
     """Cede el control a un humano DE VERDAD, no solo de palabra.
 
@@ -384,7 +482,8 @@ async def perform_handoff(
     # un turno nuevo comportándose como si nada) es peor que responder tarde.
     preempt.commit()
 
-    is_payment = is_payment_reason(motivo)
+    if is_payment is None:
+        is_payment = is_payment_reason(motivo)
 
     # Acceso por módulo (no `from … import fn`): así los tests pueden
     # monkeypatchear `holidays.staff_offline` sin pelearse con el binding.
@@ -440,10 +539,11 @@ async def perform_handoff(
         )
         return EscalateReason(motivo=motivo, is_payment=is_payment, ceded=False)
 
-    await _say(wa_id, _HANDOFF_WAIT_MSG, persist)
-    await notify_team(
-        f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
-    )
+    await _say_parts(wa_id, _handoff_message(message), persist)
+    if notify:
+        await notify_team(
+            f"Atencion humana solicitada (conversacion {conversation_id}). Motivo: {motivo}."
+        )
     # El releaser exime los handoff de pago del retorno HUMAN→AI: un asesor
     # cobrando puede tardar horas en contestar.
     if conversation_id is not None:
@@ -873,18 +973,7 @@ async def run_specialist(
                                 violation_count=removed,
                             )
                         if use_external_crm and wa_id:
-                            from app.crm import http_client as crm_http
-
-                            patch = {
-                                "name": args.get("nombre") or args.get("name"),
-                                "email": args.get("email"),
-                                "objetivo": args.get("objetivo") or args.get("preferencias"),
-                                "situacion": args.get("situacion") or args.get("ocasion"),
-                                "temperatura": args.get("temperatura"),
-                                "resumen": args.get("resumen") or args.get("notas"),
-                            }
-                            await crm_http.put_memory(wa_id, {k: v for k, v in patch.items() if v})
-                            result = json.dumps({"ok": True, "guardado": patch})
+                            result = await _save_external_memory(wa_id, args)
                         elif session and contact_id:
                             result = await repo.save_contact_attributes(session, contact_id, args)
                             await session.commit()

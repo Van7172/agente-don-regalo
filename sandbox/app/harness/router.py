@@ -20,12 +20,26 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.harness.checkout import resolve_chosen_product, wants_checkout
+from app.harness.checkout import (
+    asks_order_price,
+    checkout_active,
+    leaves_product,
+    parse_phone,
+    position_pick,
+    recognized_window,
+    resolve_chosen_product,
+    wants_checkout,
+)
 from app.harness.coverage import explicit_delivery_destination, looks_like_coverage
+from app.harness.orders import normalize_fecha
 from app.guardrails import is_greeting_text, is_small_talk
+from app.guardrails.conversation import PERSON_REQUEST_PATTERN, asks_customization
+from app.harness.aliases import pick_zone
+from app.harness.replies import YES, short_reply
 from app.harness.state import ConversationState
 from app.harness.taxonomy import looks_like_option_pick
 from app.observability import audit_event, record_llm_usage, record_operation
+from app.payments import cancel_means_payment
 from app.resilience import circuit_breaker
 
 log = logging.getLogger(__name__)
@@ -35,11 +49,18 @@ Intent = str  # greet|small_talk|catalog_search|coverage|product_detail|checkout
 _TRACK_RE = re.compile(r"rastre|donde\s+esta\s+mi\s+pedido|estado\s+de\s+mi\s+pedido|seguimiento", re.I)
 _DETAIL_RE = re.compile(
     r"mas\s+detalle|m[aá]s\s+info|qu[eé]\s+contiene|como\s+es|cuanto\s+mide|foto\s+de|"
-    r"de\s+qu[eé]\s+viene|medida|tama[nñ]o",
+    r"de\s+qu[eé]\s+viene|medida|tama[nñ]o|qu[eé]\s+trae|"
+    r"sigue\s+disponible|a[uú]n\s+(?:lo\s+)?tienen|todav[ií]a\s+(?:lo\s+)?tienen|lo\s+que\s+vi\b",
+    re.I,
+)
+# Preguntas sin signos: el cliente rara vez los escribe.
+_INTERROGATIVE_RE = re.compile(
+    r"^\W*(?:que|cual|como|cuando|donde|cuanto|cuanta|hasta\s+que|a\s+que|por\s+que|"
+    r"hacen|tienen|entregan|aceptan|llegan|puedo|se\s+puede)\b",
     re.I,
 )
 _ESCALATE_RE = re.compile(
-    r"asesor|humano|persona|atenci[oó]n\s+humana|p[aá]same\s+con|"
+    rf"asesor|\bhuman[oa]\b|{PERSON_REQUEST_PATTERN}|atenci[oó]n\s+humana|p[aá]same\s+con|"
     r"comprobante|ya\s+pagu|mala\s+atenci|quiero\s+hablar\s+con|"
     # Cancelar/anular un pedido NO lo hace el bot (lo dice el CORE): va a un
     # humano. Va con raíz, no "cancelar" a secas: el cliente escribe "Cancelo el
@@ -87,6 +108,10 @@ _BUY_VERB_RE = re.compile(
     r"me\s+gusta\s+est|me\s+interesa",
     re.I,
 )
+# Quiere ver más, no comprar. "quiero ver más rosas" nombra un producto ya mostrado
+# (por la palabra "rosas") y abría el cierre de ese ramo, de donde solo se sale
+# pasando por el formulario.
+_BROWSE_RE = re.compile(r"\b(?:ver|mostrar|muestra\w*|mas|otr[oa]s?|opciones)\b", re.I)
 _SMALL_RE = re.compile(
     r"^(ok|okay|gracias|gale|dale|jaja|jeje|perfecto|listo|👍|😊|🙏)[\s!.]*$",
     re.I,
@@ -118,6 +143,62 @@ def _strip_accents(text: str) -> str:
     """"¿Dónde está mi pedido?" tiene que enrutar igual que "donde esta"."""
     nfd = unicodedata.normalize("NFD", text)
     return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+
+
+def _answers_step(raw: str, state: ConversationState) -> bool:
+    """¿Este mensaje trae el dato que el paso pide, aunque venga como pregunta?
+
+    "¿puede ser el viernes?" contesta a la fecha; "¿entregan los domingos?" no.
+    """
+    step = state.checkout_step
+    if step == "date":
+        return normalize_fecha(raw) is not None
+    if step == "schedule":
+        return (
+            recognized_window(raw) is not None
+            or normalize_fecha(raw) is not None
+            or raw.lstrip("¿ ")[:1].isdigit()
+        )
+    if step == "recipient":
+        return bool(parse_phone(raw))
+    if step == "address":
+        return any(c.isdigit() for c in raw)
+    if step == "contact":
+        return "@" in raw
+    return False
+
+
+def _checkout_interruption(raw: str, norm: str, state: ConversationState) -> Classification:
+    """Con el cierre abierto, ¿contesta al formulario o pregunta otra cosa?
+
+    Antes todo lo que no fuera una política iba al FSM con confianza 1.0: "¿qué
+    contiene?" recibía "No logré leer una fecha" y gastaba un reintento, y en el
+    paso de distrito se guardaba como distrito. El cierre no se pierde: el paso
+    sigue en el estado y `master` retoma su pregunta al final de la respuesta.
+    """
+    step = state.checkout_step
+    # La dedicatoria es texto para otra persona y la confirmación de retomar la
+    # interpreta el FSM: aquí nada es una pregunta para nosotros.
+    if step in ("card_text", "resume_confirm"):
+        return Classification("checkout", 1.0, "rules")
+    if _POLICY_RE.search(norm):
+        return Classification("policy_faq", 0.8, "rules")
+    if asks_order_price(raw):
+        return Classification("checkout", 1.0, "rules")
+    if leaves_product(raw):
+        return Classification("catalog_search", 0.8, "rules")
+    if _DETAIL_RE.search(norm) and state.chosen_product_id:
+        return Classification("product_detail", 0.8, "rules")
+    # Distrito y tarjeta ya distinguen la pregunta de la respuesta. En los pasos de
+    # texto libre solo cuenta el signo: "Como referencia, frente al parque" es una
+    # dirección que empieza por una palabra interrogativa.
+    if step not in ("district", "card") and not _answers_step(raw, state):
+        pregunta = "?" in raw or "¿" in raw
+        if not pregunta and step in ("date", "schedule"):
+            pregunta = bool(_INTERROGATIVE_RE.match(norm))
+        if pregunta:
+            return Classification("policy_faq", 0.8, "rules")
+    return Classification("checkout", 1.0, "rules")
 
 
 @dataclass(frozen=True)
@@ -171,8 +252,21 @@ def classify_rules(
     # productos en vez de rastrear el pedido.
     norm = _strip_accents(raw)
 
+    # Va antes de derivar: "cancelar" en Perú es también pagar, y esta pregunta se
+    # responde con los medios de pago, sin ceder el chat.
+    if cancel_means_payment(norm):
+        return Classification("policy_faq", 0.85, "rules")
+
     if _ESCALATE_RE.search(norm):
         return Classification("escalate", 0.95, "rules")
+
+    # Cambiarle algo a un producto: solo lo decide una persona. La dedicatoria no se
+    # interpreta, y una dirección solo si lo pregunta: "Calle Cambia el Globo 123".
+    if asks_customization(norm) and (
+        state.checkout_step not in ("card_text", "resume_confirm", "recipient", "address", "contact")
+        or (state.checkout_step in ("recipient", "address", "contact") and ("?" in raw or "¿" in raw))
+    ):
+        return Classification("escalate", 0.9, "rules")
 
     # El cliente acepta un asesor. Dos formas de llegar aquí:
     #  a) una derivación ya iniciada (intent_last=escalate) y confirma;
@@ -188,18 +282,29 @@ def classify_rules(
         return Classification("track_order", 0.95, "rules")
 
     # Cierre en curso: manda el FSM… salvo que el cliente pregunte otra cosa.
-    #
-    # Antes esto devolvía `checkout` con confianza 1.0 pasara lo que pasara, así que
-    # "¿puedo pagar contra entrega?" en mitad del cierre no recibía respuesta:
-    # recibía el siguiente paso del formulario. El cierre no se pierde — el paso
-    # sigue en el estado y el FSM lo retoma en el turno siguiente.
-    if state.checkout_step and state.checkout_step not in ("idle", "done", "payment"):
-        if _POLICY_RE.search(norm):
-            return Classification("policy_faq", 0.8, "rules")
-        return Classification("checkout", 1.0, "rules")
+    if checkout_active(state):
+        return _checkout_interruption(raw, norm, state)
 
     if wants_checkout(norm) or norm.casefold() in ("ese", "esa", "este", "esta"):
+        # "Quiero comprar un regalo" sin haber visto nada todavía no elige ningún
+        # producto: abría el formulario entero y el resumen decía "Producto elegido".
+        if not state.chosen_product_id and not state.recent_products:
+            return Classification("catalog_search", 0.8, "rules")
         return Classification("checkout", 0.9, "rules")
+
+    # El bot acaba de enseñarle la ficha del producto que eligió y le propuso
+    # llevárselo: ese "sí" es la compra, no pedir más fotos.
+    if (
+        state.intent_last == "product_detail"
+        and state.chosen_product_id
+        and short_reply(raw, weak_yes=frozenset({"quiero"})) == YES
+    ):
+        return Classification("checkout", 0.9, "rules")
+
+    # Contesta a la zona de cobertura que se le acaba de preguntar. Va antes que elegir
+    # de la lista: ese "2" es una zona, aunque también haya productos a la vista.
+    if state.district_options and pick_zone(raw, state.district_options):
+        return Classification("coverage", 0.95, "rules")
 
     # Confirmación afirmativa cuando el turno anterior fue de producto: el cliente
     # responde "sí / dale / muéstramelos" a un ofrecimiento de mostrar productos.
@@ -225,12 +330,19 @@ def classify_rules(
     # solo producto a la vista, "quiero flores" sigue siendo una búsqueda.
     if (
         _BUY_VERB_RE.search(norm)
+        and not _BROWSE_RE.search(norm)
         and resolve_chosen_product(
             state, f"{quoted}\n{raw}" if quoted else raw, allow_implicit=False
         )
         is not None
     ):
         return Classification("checkout", 0.95, "rules")
+
+    # "el segundo" o "2" sobre el listado: es la forma más común de elegir y ninguna
+    # regla la reconocía, así que la decidía un clasificador que no ve el listado. La
+    # ficha fija el producto y responde lo que suele querer saber antes de comprar.
+    if state.recent_products and position_pick(state, raw):
+        return Classification("product_detail", 0.9, "rules")
 
     # Un destino explícito gana a la búsqueda de productos. "Deseo hacer un
     # pedido para Cercado de Lima" todavía no elige ningún producto: primero se
@@ -249,7 +361,7 @@ def classify_rules(
     if re.search(r"zonas?\s+cubren|distritos?\s+de\s+lima|llegan\s+a", norm, re.I):
         return Classification("coverage", 0.95, "rules")
 
-    if _DETAIL_RE.search(norm) and state.shown_product_ids:
+    if _DETAIL_RE.search(norm) and (state.shown_product_ids or state.recent_products):
         return Classification("product_detail", 0.9, "rules")
 
     if _POLICY_RE.search(norm):
@@ -324,11 +436,34 @@ async def classify(
     if rules.confidence >= CONFIDENCE_FLOOR:
         return rules
 
-    llm = await classify_with_llm(text)
+    context = _llm_context(state)
+    llm = await (
+        classify_with_llm(text, context=context) if context else classify_with_llm(text)
+    )
     return llm or rules
 
 
-async def classify_with_llm(text: str) -> Classification | None:
+def _llm_context(state: ConversationState | None) -> str:
+    """Dónde está la conversación, en datos nuestros: nada escrito por el cliente.
+
+    El clasificador solo veía el texto del turno. Sin saber que acaba de ver una
+    lista, "me interesa eso" no significa nada.
+    """
+    if state is None:
+        return ""
+    partes: list[str] = []
+    if checkout_active(state):
+        partes.append(f"está completando su pedido (paso: {state.checkout_step})")
+    if state.chosen_product_id:
+        partes.append("ya eligió un producto")
+    if state.recent_products:
+        partes.append(f"ya se le mostraron {len(state.recent_products)} productos")
+    if not partes:
+        return ""
+    return "Contexto de esta conversación: el cliente " + "; ".join(partes) + "."
+
+
+async def classify_with_llm(text: str, *, context: str = "") -> Classification | None:
     """Clasificador barato con salida estructurada. `None` si no se puede."""
     from app.config import settings
 
@@ -349,6 +484,7 @@ async def classify_with_llm(text: str) -> Classification | None:
                         "model": settings.router_model,
                         "messages": [
                             {"role": "system", "content": ORCHESTRATOR},
+                            *([{"role": "system", "content": context}] if context else []),
                             {"role": "user", "content": (text or "")[:500]},
                         ],
                         "response_format": {"type": "json_object"},

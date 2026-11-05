@@ -17,23 +17,41 @@ from app.harness.orders import (
     weekday_name,
 )
 from app.guardrails import is_courtesy_text, is_greeting_text
+from app.harness.aliases import pick_zone
+from app.harness.replies import MIXED, NO, YES, short_reply
 from app.harness.state import ConversationState
+from app.payments import payment_instructions
 
 _LIMA = ZoneInfo("America/Lima")
 
 __all__ = [
     "SCHEDULE_OPTIONS",
+    "accept_district",
     "advance_checkout",
+    "asks_order_price",
+    "checkout_active",
     "checkout_crossed_lima_day",
     "clear_checkout",
+    "district_needs_lookup",
+    "forget_stale_turns",
+    "is_breakfast",
+    "leaves_product",
+    "order_total",
     "parse_address",
     "parse_contact",
     "parse_recipient",
     "parse_schedule",
+    "payment_handoff_message",
+    "pending_question",
+    "position_pick",
     "recognized_window",
+    "reject_district",
+    "release_product",
     "resolve_chosen_product",
+    "revalidate_delivery",
     "split_name",
     "start_checkout",
+    "summary_prompt",
     "wants_checkout",
 ]
 
@@ -153,12 +171,16 @@ def recognized_window(text: str) -> str | None:
 
 
 def parse_schedule(
-    text: str, delivery_date: date | str | None = None
+    text: str,
+    delivery_date: date | str | None = None,
+    *,
+    breakfast: bool = False,
+    now: datetime | None = None,
 ) -> str | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    schedule_map = schedule_map_for(delivery_date)
+    schedule_map = schedule_map_for(delivery_date, breakfast=breakfast, now=now)
     if (
         raw[0] in schedule_map
         and (len(raw) == 1 or not raw[1].isdigit())
@@ -171,7 +193,10 @@ def parse_schedule(
     label = recognized_window(raw)
     if label is None:
         return None
-    available = {window.label: window.display for window in windows_for(delivery_date)}
+    available = {
+        window.label: window.display
+        for window in windows_for(delivery_date, breakfast=breakfast, now=now)
+    }
     return available.get(label)
 
 
@@ -236,6 +261,55 @@ _STUCK_RE = re.compile(
     re.I,
 )
 
+# En estos pasos el cliente escribe texto libre, y el detector amplio de arriba se
+# lo tomaba como una despedida: "Ya no puedo vivir sin ti" en la dedicatoria o
+# "déjalo en portería" en la dirección cedían el chat con la venta casi hecha. Aquí
+# solo cuenta el abandono inequívoco. El resumen va con ellos porque ahí "no quiero
+# cambiar nada" es una respuesta normal.
+_FREE_TEXT_STEPS = frozenset({"card_text", "recipient", "address", "summary"})
+_ABANDON_BARE_RE = re.compile(
+    r"^(?:ya no|mejor no|olvidalo|olvidala|dejalo|dejala|dejemoslo|lo dejamos|"
+    r"mejor otro dia|en otro momento|ya no (?:lo )?(?:quiero|deseo))"
+    r"(?: asi)?(?: gracias)?$"
+)
+_ABANDON_ORDER_RE = re.compile(
+    r"\bno\s+(?:lo\s+)?(?:quiero|deseo)\s+(?:el\s+|mi\s+|este\s+|ese\s+)?"
+    r"(?:pedido|regalo|compra|producto)\b"
+)
+
+
+def _words(text: str) -> str:
+    """Minúsculas, sin tildes ni puntuación: para comparar frases enteras."""
+    return " ".join(re.sub(r"[^\w\s]", " ", _norm(text)).split())
+
+
+def _is_abandon(step: str, text: str) -> bool:
+    plain = _words(text)
+    if step == "card":
+        # "mejor no" aquí contesta a "¿quieres tarjeta?", no abandona el pedido.
+        return bool(_ABANDON_ORDER_RE.search(plain))
+    if step in _FREE_TEXT_STEPS:
+        return bool(_ABANDON_BARE_RE.match(plain) or _ABANDON_ORDER_RE.search(plain))
+    return bool(_ABANDON_RE.search(text))
+
+
+# Paso de la tarjeta. Solo contaba como "sí" lo que empezara por "s", así que
+# "claro", "ok" o "dale" se quedaban sin tarjeta y "sin tarjeta" la pedía. El sí y el
+# no los lee `short_reply`; aquí solo el vocabulario propio de este paso. "No te olvides
+# de mí, amor" empieza por "no" y es la dedicatoria: tiene palabras de más.
+_CARD_WEAK_YES = frozenset("quiero tarjeta agregala incluyela agrega incluye".split())
+_CARD_FILLER = frozenset(
+    "me gustaria la una el dedicatoria mensaje nota deseo necesito hace falta".split()
+)
+_CARD_NONE_RE = re.compile(
+    r"^paso$|^sin\s+(?:la\s+|una\s+|el\s+|un\s+)?(?:tarjeta|dedicatoria|mensaje|nota)\b"
+)
+_CARD_DICTATED_RE = re.compile(r"\bque\s+diga\b\s*[:,\-]?\s*(.+)$", re.I | re.S)
+_ASK_CONFIRM_AGAIN = (
+    "No me quedó claro 😅 ¿Confirmamos el pedido? Responde *sí* o *no*.",
+    "Solo dime *sí* para confirmar o *no* para corregir algo 😊",
+)
+
 
 def _echo(text: str, limit: int = 40) -> str:
     """Lo que escribió el cliente, recortado para citarlo de vuelta."""
@@ -261,6 +335,316 @@ def _touch_checkout(state: ConversationState) -> None:
     state.checkout_updated_at = datetime.now(timezone.utc).timestamp()
 
 
+def checkout_active(state: ConversationState) -> bool:
+    """¿Hay un formulario a medias? `payment` y `done` ya no preguntan nada."""
+    return (state.checkout_step or "idle") not in ("idle", "payment", "done")
+
+
+_BREAKFAST_NAME_RE = re.compile(r"desayun|brunch", re.I)
+
+
+def is_breakfast(state: ConversationState) -> bool:
+    """Manda la categoría de la API; el nombre solo si no se pudo consultar."""
+    if state.chosen_is_breakfast is not None:
+        return state.chosen_is_breakfast
+    return bool(_BREAKFAST_NAME_RE.search(state.chosen_product_name or ""))
+
+
+def _slots(state: ConversationState, now: datetime | None) -> dict[str, Any]:
+    return {"breakfast": is_breakfast(state), "now": now}
+
+
+def _date_problem(
+    state: ConversationState, iso: str, today: date, now: datetime | None
+) -> tuple[str, ...] | None:
+    """Por qué no se puede entregar en esa fecha; `None` si se puede.
+
+    La regla de los desayunos vivía solo en un prompt que el cierre no lee: este
+    paso es determinista y ningún modelo lo ve, así que dejaba pedirlos para hoy.
+    """
+    manana = today + timedelta(days=1)
+    manana_txt = manana.strftime("%d/%m")
+    if is_breakfast(state) and iso <= today.isoformat():
+        return (
+            "Los desayunos se piden con 1 día de anticipación 🌅 Dime *mañana* "
+            f"({manana_txt}) u otra fecha 📅",
+            f"Para un desayuno, lo más pronto es *mañana* ({manana_txt}). "
+            "¿Qué día te sirve? 📅",
+        )
+    if not windows_for(iso, **_slots(state, now)):
+        return (
+            f"Para hoy ya no quedan horarios de entrega 😕 Dime *mañana* ({manana_txt}) "
+            "u otra fecha 📅",
+            f"Hoy no llegamos con la entrega. ¿Te sirve *mañana* ({manana_txt}) u "
+            "otro día? 📅",
+        )
+    return None
+
+
+_PRICE_QUESTION_RE = re.compile(
+    r"\bcu[aá]nt[oa]\b|\b(?:precio|costo|total)\b[^.\n]*\?", re.I
+)
+_NOT_ORDER_PRICE_RE = re.compile(r"tarjeta|demora|tarda|tiempo|d[ií]as?\b|horas?\b", re.I)
+
+
+def asks_order_price(text: str) -> bool:
+    """¿Pregunta cuánto paga? "¿cuánto cuesta la tarjeta?" o "¿cuánto demora?", no."""
+    raw = text or ""
+    return bool(_PRICE_QUESTION_RE.search(raw)) and not _NOT_ORDER_PRICE_RE.search(raw)
+
+
+_LEAVE_PRODUCT_RE = re.compile(
+    r"\botr[oa]s?\s+(?:opci[oó]n\w*|producto\w*|regalo\w*|modelo\w*|cosa\w*)\b|"
+    r"\bm[aá]s\s+opciones\b|\bver\s+(?:otr|m[aá]s\b)",
+    re.I,
+)
+
+
+def leaves_product(text: str) -> bool:
+    """Con el cierre abierto, ¿pide dejar este producto y ver otros?"""
+    return bool(_LEAVE_PRODUCT_RE.search(text or ""))
+
+
+def release_product(state: ConversationState) -> ConversationState:
+    """Suelta el producto sin perder lo que ya dijo: quiere ver otras opciones.
+
+    Distrito, fecha y destinatario siguen valiendo para el regalo que elija.
+    """
+    state.checkout_step = "idle"
+    state.checkout_resume_step = ""
+    state.checkout_return_step = ""
+    state.chosen_product_id = None
+    state.chosen_product_name = ""
+    state.chosen_product_price_sol = None
+    state.chosen_is_breakfast = None
+    state.product_facts_for = None
+    state.step_retries = 0
+    return state
+
+
+def pending_question(state: ConversationState) -> str:
+    """La pregunta del paso en curso, para retomarla tras contestar una duda."""
+    if state.checkout_step == "resume_confirm":
+        return _resume_prompt(state)
+    return _pending_question(state, state.checkout_step, now=datetime.now(_LIMA))
+
+
+def revalidate_delivery(
+    state: ConversationState, *, today: date | None = None, now: datetime | None = None
+) -> str | None:
+    """¿Sigue valiendo la entrega acordada? Si no, vuelve a pedir lo que dejó de valer.
+
+    Cada paso la validó en su momento, pero entre ese momento y el "sí" pasan cosas:
+    el cliente vuelve otro día, una franja de hoy empieza mientras escribe, o la ficha
+    responde tarde y revela que era un desayuno. Se comprueba al reanudar, al llegar
+    al resumen y justo antes de confirmar. Se recuerda dónde iba para no repetirle
+    todo lo demás. Devuelve el mensaje para el cliente, o `None` si todo sigue bien.
+    """
+    if not state.date:
+        return None
+    if today is None:
+        today = lima_today()
+        if now is None:
+            now = datetime.now(_LIMA)
+    volver = state.checkout_step
+    pendiente = _date_problem(state, state.date, today, now)
+    if state.date < today.isoformat() or is_closed_delivery(state.date) or pendiente:
+        if volver not in ("date", "schedule"):
+            state.checkout_return_step = volver
+        state.date = ""
+        state.time_slot = ""
+        state.checkout_step = "date"
+        return (
+            pendiente[0]
+            if pendiente
+            else "La fecha que teníamos ya no está disponible 😕 ¿Para qué fecha lo necesitas? 📅"
+        )
+    conocidas = {w.display for w in windows_for()}
+    vivas = {w.display for w in windows_for(state.date, **_slots(state, now))}
+    if state.time_slot in conocidas and state.time_slot not in vivas:
+        if volver not in ("date", "schedule"):
+            state.checkout_return_step = volver
+        state.time_slot = ""
+        state.checkout_step = "schedule"
+        return f"Ese horario ya no está disponible 😕 {_pending_question(state, 'schedule', now=now)}"
+    return None
+
+
+def _return_after_step(
+    state: ConversationState, before: str, reply: str, now: datetime | None
+) -> str:
+    """Terminado el dato que se estaba rehaciendo, vuelve a donde iba."""
+    target = state.checkout_return_step
+    after = state.checkout_step or "idle"
+    # `before == "summary"` es el turno que ABRE la corrección, no el que la termina.
+    if not target or after == before or before == "summary":
+        return reply
+    if after == target:
+        state.checkout_return_step = ""
+        return reply
+    # Aún falta algo de ese mismo dato: el texto de la tarjeta, o volver a pedir la
+    # fecha porque se quedó sin franjas.
+    if after == "card_text" or (after == "date" and not state.date):
+        return reply
+    # Una fecha nueva solo pide horario si el que tenía no sale ese día.
+    if after == "schedule":
+        disponibles = {w.display for w in windows_for(state.date, **_slots(state, now))}
+        if state.time_slot not in disponibles:
+            return reply
+    state.checkout_return_step = ""
+    state.checkout_step = target
+    if target == "summary":
+        return summary_prompt(state)
+    return _pending_question(state, target, now=now)
+
+
+# Qué dato quiere corregir desde el resumen. El orden importa: "mi nombre" es del
+# comprador, "el nombre" a secas es de quien recibe.
+_CORRECTION_TARGETS: tuple[tuple[str, str], ...] = (
+    ("address", r"\bdireccion\b|\breferencias?\b"),
+    ("district", r"\bdistrito\b"),
+    ("schedule", r"\bhorario\b|\bhora\b|\bfranja\b"),
+    ("date", r"\bfecha\b|\bdia\b"),
+    ("card", r"\btarjeta\b|\bdedicatoria\b|\bmensaje\b"),
+    ("contact", r"\bmi\s+(?:correo|email|nombre)\b|\bcorreo\b|\bemail\b|\bmis\s+datos\b"),
+    ("recipient", r"\bdestinatario\b|\bnombre\b|\btelefono\b|\bcelular\b|\brecibe\b"),
+)
+_CORRECTION_PRODUCT_RE = re.compile(r"\bproducto\b|\bregalo\b")
+# "cambia la dirección a Av. Lima 500": el dato nuevo viene en el mismo mensaje.
+_CORRECTION_FIELD_WORDS = {
+    "address": r"direcci[oó]n|referencias?",
+    "district": r"distrito",
+    "schedule": r"horario|hora|franja",
+    "date": r"fecha|d[ií]a",
+    "card": r"tarjeta|dedicatoria|mensaje",
+    "contact": r"correo|email|nombre",
+    "recipient": r"nombre|tel[eé]fono|celular|destinatario",
+}
+_NOT_A_VALUE_RE = re.compile(r"^(?:incorrect|mal\b|errone|equivocad|otr[oa]\b)", re.I)
+_ASK_WHAT_TO_FIX = (
+    "Sin problema 😊 ¿Qué dato corrijo? Puede ser el *producto*, *distrito*, *fecha*, "
+    "*horario*, *tarjeta*, *quien recibe*, la *dirección* o *tus datos*.",
+    "Dime solo qué cambio: *distrito*, *fecha*, *horario*, *tarjeta*, *quien recibe*, "
+    "*dirección* o *tus datos*. Si está todo bien, escribe *sí* 😊",
+)
+
+
+def _correction_target(text: str) -> str | None:
+    plain = _words(text)
+    for step, pattern in _CORRECTION_TARGETS:
+        if re.search(pattern, plain):
+            return step
+    return None
+
+
+def _correction_value(target: str, text: str) -> str:
+    m = re.search(
+        rf"(?:{_CORRECTION_FIELD_WORDS[target]})\b\s*"
+        r"(?:a|por|es|para|ser[ií]a|debe\s+ser|:)\s*:?\s+(.+)$",
+        text or "",
+        re.I | re.S,
+    )
+    value = m.group(1).strip() if m else ""
+    return "" if _NOT_A_VALUE_RE.match(value) else value
+
+
+def order_total(state: ConversationState) -> float | None:
+    """Precio + envío, solo si los dos están confirmados."""
+    if state.chosen_product_price_sol is None or state.shipping_fee_sol is None:
+        return None
+    return round(float(state.chosen_product_price_sol) + float(state.shipping_fee_sol), 2)
+
+
+def forget_stale_turns(
+    state: ConversationState, *, today: date | None = None
+) -> ConversationState:
+    """Lo que no debe sobrevivir a que el cliente vuelva otro día.
+
+    Las conversaciones no se cierran y el estado no caduca. Quien había comprado se
+    quedaba para siempre en `payment` con su producto elegido: al volver semanas
+    después, un "quiero este" le anunciaba otra vez al equipo la venta vieja. Y
+    `shown_product_ids` escondía para siempre lo que ya vio, porque "no repetir"
+    tiene sentido dentro de una charla, no entre compras. `recent_products` se
+    conserva a propósito: es lo que permite entender "lo que vi el otro día".
+    """
+    seen = state.last_turn_at or state.checkout_updated_at
+    if not seen:
+        return state
+    try:
+        last = datetime.fromtimestamp(float(seen), _LIMA).date()
+    except (TypeError, ValueError, OSError):
+        return state
+    if last >= (today or lima_today()):
+        return state
+
+    state.shown_product_ids = []
+    state.recent_options = []
+    state.menu_depth = 0
+    state.turns_without_products = 0
+    state.budget_amount = None
+    state.budget_currency = ""
+    state.district_options = []
+    if state.checkout_step in ("payment", "done"):
+        clear_checkout(state)
+        state.handoff_reason = ""
+    return state
+
+
+def district_needs_lookup(state: ConversationState, text: str) -> bool:
+    """¿Este texto del paso de distrito se contrasta con la lista de cobertura?
+
+    No si es cortesía, abandono, una queja o algo que no es un lugar: de eso se
+    encarga el FSM, sin gastar una llamada a la API.
+    """
+    raw = (text or "").strip()
+    # Va primero: un "2" aquí elige la zona, aunque también parezca un producto.
+    if state.district_options and pick_zone(raw, state.district_options):
+        return True
+    return bool(
+        raw
+        and len(raw) <= 80
+        and not is_courtesy_text(raw)
+        and not _is_abandon("district", raw)
+        and not _STUCK_RE.search(raw)
+        and not wants_checkout(raw)
+        and resolve_chosen_product(state, raw, allow_implicit=False) is None
+    )
+
+
+def accept_district(
+    state: ConversationState, patch: dict[str, Any], reply: str
+) -> tuple[ConversationState, str, dict[str, Any]]:
+    """Cobertura confirmada: distrito, id y tarifa quedan fijados y se avanza."""
+    state.patch(patch)
+    # `patch` ignora los `None`, y aquí un `None` significa "tarifa sin confirmar": la
+    # del distrito anterior no puede quedarse y entrar en el total.
+    state.shipping_fee_sol = patch.get("shipping_fee_sol")
+    state.shipping_fee_usd = patch.get("shipping_fee_usd")
+    state.checkout_step = "date"
+    state.step_retries = 0
+    _touch_checkout(state)
+    return (
+        state,
+        _return_after_step(state, "district", reply, datetime.now(_LIMA)),
+        {"specialty": "checkout"},
+    )
+
+
+def reject_district(
+    state: ConversationState, ask: str
+) -> tuple[ConversationState, str, dict[str, Any]]:
+    """No se ubicó el lugar: se repregunta con otras palabras, sin guardar nada."""
+    return _again(
+        state,
+        {"specialty": "checkout"},
+        (
+            ask,
+            "Solo entregamos dentro de Lima Metropolitana 🏠 ¿En qué *distrito* de "
+            "Lima sería? (por ejemplo: Miraflores, Surco, San Isidro).",
+        ),
+    )
+
+
 def checkout_crossed_lima_day(
     state: ConversationState, *, today: date | None = None
 ) -> bool:
@@ -281,10 +665,15 @@ def clear_checkout(state: ConversationState) -> ConversationState:
     """Suelta el pedido a medias: el cliente eligió empezar de nuevo."""
     state.checkout_step = "idle"
     state.checkout_resume_step = ""
+    state.checkout_return_step = ""
     state.checkout_updated_at = None
     state.chosen_product_id = None
     state.chosen_product_name = ""
+    state.chosen_product_price_sol = None
+    state.chosen_is_breakfast = None
+    state.product_facts_for = None
     state.district = ""
+    state.district_options = []
     state.id_distrito = None
     state.shipping_fee_sol = None
     state.shipping_fee_usd = None
@@ -301,6 +690,8 @@ def clear_checkout(state: ConversationState) -> ConversationState:
     state.email_cliente = ""
     state.pedido_temporal_id = None
     state.step_retries = 0
+    state.budget_amount = None
+    state.budget_currency = ""
     return state
 
 
@@ -312,7 +703,9 @@ def _resume_prompt(state: ConversationState) -> str:
     )
 
 
-def _pending_question(state: ConversationState, step: str) -> str:
+def _pending_question(
+    state: ConversationState, step: str, *, now: datetime | None = None
+) -> str:
     if step == "district":
         return "¿A qué distrito lo enviamos? 🏠"
     if step == "date":
@@ -320,7 +713,7 @@ def _pending_question(state: ConversationState, step: str) -> str:
     if step == "schedule":
         return (
             f"¿En qué horario prefieres que llegue? 🕐\n"
-            f"{schedule_options_for(state.date)}\n"
+            f"{schedule_options_for(state.date, **_slots(state, now))}\n"
             "Responde con el número que prefieras."
         )
     if step == "card":
@@ -393,6 +786,7 @@ def advance_checkout(
     user_text: str,
     *,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> tuple[ConversationState, str, dict[str, Any]]:
     """
     Avanza un paso del cierre. Devuelve (state, reply, meta).
@@ -403,9 +797,14 @@ def advance_checkout(
     dedicatoria (paso `card`/`card_text`), destinatario, dirección y datos del
     comprador. Recién con todo eso se muestra el resumen y, al confirmarlo, el
     orquestador crea el pedido temporal y escala al pago.
+
+    `now` decide qué franjas de hoy siguen vivas. Quien fija `today` (los tests)
+    no filtra por hora salvo que pase también `now`.
     """
+    if now is None and today is None:
+        now = datetime.now(_LIMA)
     before = state.checkout_step or "idle"
-    state, reply, meta = _advance(state, user_text, today=today)
+    state, reply, meta = _advance(state, user_text, today=today, now=now)
     # Un paso que avanza es un paso que entendimos: la escalera vuelve a cero.
     # Centralizado aquí y no en cada rama para que un `return` nuevo no se olvide
     # de resetearlo y arrastre los reintentos de un paso al siguiente.
@@ -414,6 +813,7 @@ def advance_checkout(
         state.step_retries = 0
         if after not in ("idle", "", "done"):
             _touch_checkout(state)
+        reply = _return_after_step(state, before, reply, now)
     return state, reply, meta
 
 
@@ -422,6 +822,7 @@ def _advance(
     user_text: str,
     *,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> tuple[ConversationState, str, dict[str, Any]]:
     step = state.checkout_step or "idle"
     text = (user_text or "").strip()
@@ -433,11 +834,13 @@ def _advance(
     # contestando la pregunta, y contestarle con la pregunta otra vez es lo que
     # rompió la conversación que originó esto.
     if step not in ("idle", "", "payment", "done"):
-        if step != "card" and _ABANDON_RE.search(text):
+        if _is_abandon(step, text):
             state.handoff_reason = "el cliente abandonó el cierre a medias"
             meta["handoff"] = True
             return state, _ABANDON_REPLY, meta
-        if _STUCK_RE.search(text):
+        # Lo que se escribe en la dedicatoria es para quien la recibe, no para el
+        # bot: "te lo dije siempre" no es una queja.
+        if step != "card_text" and _STUCK_RE.search(text):
             state.handoff_reason = (
                 "el cliente avisó que el bot no lo estaba entendiendo durante el cierre"
             )
@@ -457,11 +860,20 @@ def _advance(
         return state, _resume_prompt(state), meta
 
     if step == "resume_confirm":
+        if short_reply(text) == MIXED:
+            return _again(
+                state,
+                meta,
+                (
+                    "No me quedó claro 😅 ¿*Seguimos* con ese regalo o prefieres *algo nuevo*?",
+                    "Dime *seguimos* o *algo nuevo* 😊",
+                ),
+            )
         if _wants_resume(text, state):
             prev = state.checkout_resume_step or "date"
             state.checkout_resume_step = ""
             state.checkout_step = prev
-            return state, _pending_question(state, prev), meta
+            return state, _pending_question(state, prev, now=now), meta
         if _wants_fresh_start(text):
             clear_checkout(state)
             return (
@@ -503,10 +915,23 @@ def _advance(
             return _courtesy(
                 state, meta, "¿A qué distrito lo enviamos? 🏠", text=text
             )
-        if wants_checkout(text) or len(text) > 80 or looks_like_product:
+        # Lo normal es que el orquestador ya lo haya validado contra la cobertura;
+        # aquí se llega si esa consulta falló. Una pregunta nunca es un distrito.
+        if (
+            wants_checkout(text)
+            or len(text) > 80
+            or looks_like_product
+            or "?" in text
+            or "¿" in text
+        ):
             return _again(state, meta, ask_district)
         if text:
             state.district = text
+            # Sin validar no hay id ni tarifa, y los del distrito anterior no pueden
+            # quedarse: el pedido saldría con la dirección de uno y el id de otro.
+            state.id_distrito = None
+            state.shipping_fee_sol = None
+            state.shipping_fee_usd = None
         if not state.district:
             return _again(state, meta, ask_district)
         state.checkout_step = "date"
@@ -546,23 +971,33 @@ def _advance(
             )
         if is_closed_delivery(normalized):
             return _again(state, meta, (closed_delivery_reply(),))
+        problema = _date_problem(state, normalized, effective_today, now)
+        if problema:
+            return _again(state, meta, problema)
         state.date = normalized
         state.checkout_step = "schedule"
-        return (
-            state,
-            f"¿En qué horario prefieres que llegue? 🕐\n"
-            f"{schedule_options_for(state.date)}\n"
-            "Responde con el número que prefieras.",
-            meta,
-        )
+        return state, _pending_question(state, "schedule", now=now), meta
 
     if step == "schedule":
-        opciones = schedule_options_for(state.date)
+        franjas = _slots(state, now)
+        # El cliente tardó en contestar y se acabaron las franjas de hoy.
+        if not windows_for(state.date, **franjas):
+            state.date = ""
+            state.time_slot = ""
+            state.checkout_step = "date"
+            manana = (effective_today + timedelta(days=1)).strftime("%d/%m")
+            return (
+                state,
+                "Para ese día ya no quedan horarios de entrega 😕 Dime *mañana* "
+                f"({manana}) u otra fecha 📅",
+                meta,
+            )
+        opciones = schedule_options_for(state.date, **franjas)
         if is_courtesy_text(text):
             return _courtesy(
                 state, meta, f"¿En qué horario te llega mejor? 🕐\n{opciones}", text=text
             )
-        slot = parse_schedule(text, state.date)
+        slot = parse_schedule(text, state.date, **franjas)
         if slot is None:
             # ¿Está contestando a la pregunta ANTERIOR? En WhatsApp se escribe a
             # ráfagas: un cliente mandó «06 de agosto 2026» y, un momento
@@ -591,6 +1026,9 @@ def _advance(
                     )
                 if is_closed_delivery(tardia):
                     return _again(state, meta, (closed_delivery_reply(),))
+                problema = _date_problem(state, tardia, efectivo, now)
+                if problema:
+                    return _again(state, meta, problema)
                 etiqueta = f"{weekday_name(tardia)} {display_fecha(tardia)}".strip()
                 if tardia == state.date:
                     # Confirma lo que ya teníamos: se acusa y NO gasta reintento.
@@ -606,7 +1044,7 @@ def _advance(
                     state,
                     f"Listo, lo dejamos para el {etiqueta} 👍\n"
                     f"¿En qué horario prefieres que llegue? 🕐\n"
-                    f"{schedule_options_for(state.date)}",
+                    f"{schedule_options_for(state.date, **franjas)}",
                     meta,
                 )
 
@@ -632,7 +1070,7 @@ def _advance(
                     f"No logré cuadrar «{_echo(text)}» con nuestras franjas 😅 "
                     f"Respóndeme con el *número* de la que te sirva:\n{opciones}",
                     f"Solo necesito un número del 1 al "
-                    f"{len(windows_for(state.date))} 🕐\n{opciones}",
+                    f"{len(windows_for(state.date, **franjas))} 🕐\n{opciones}",
                 ),
             )
         state.time_slot = slot
@@ -640,12 +1078,36 @@ def _advance(
         return state, "¿Quieres incluir una tarjeta con mensaje? 💌", meta
 
     if step == "card":
-        low = text.casefold()
-        if low.startswith("s") and "no" not in low[:4]:
+        plain = _words(text)
+        dictado = _CARD_DICTATED_RE.search(text)
+        if dictado and dictado.group(1).strip(" \"'«»“”"):
+            state.dedicatoria = dictado.group(1).strip(" \"'«»“”")
+            state.checkout_step = "recipient"
+            return state, _ASK_RECIPIENT, meta
+        respuesta = short_reply(text, weak_yes=_CARD_WEAK_YES, filler=_CARD_FILLER)
+        if _CARD_NONE_RE.match(plain) or respuesta == NO:
+            # Sin tarjeta: la API exige dedicatoria, mandamos un valor explícito.
+            state.dedicatoria = "Sin dedicatoria"
+            state.checkout_step = "recipient"
+            return state, _ASK_RECIPIENT, meta
+        if respuesta == YES or plain == "por favor":
             state.checkout_step = "card_text"
             return state, "¡Genial! ✍️ ¿Qué texto quieres en la tarjeta?", meta
-        # Sin tarjeta: la API exige dedicatoria, mandamos un valor explícito.
-        state.dedicatoria = "Sin dedicatoria"
+        if respuesta != MIXED and is_courtesy_text(text):
+            return _courtesy(state, meta, _pending_question(state, "card"), text=text)
+        if respuesta == MIXED or "?" in text or "¿" in text or len(text) < 3:
+            return _again(
+                state,
+                meta,
+                (
+                    "Para seguir, dime *sí* si quieres incluir la tarjeta con "
+                    "mensaje, o *no* si va sin ella 💌",
+                    "Solo necesito un *sí* o un *no* para la tarjeta 💌",
+                ),
+            )
+        # Escribió directamente lo que quiere que diga: preguntarle "¿qué texto?"
+        # después de que lo acaba de escribir sería no haberlo leído.
+        state.dedicatoria = text
         state.checkout_step = "recipient"
         return state, _ASK_RECIPIENT, meta
 
@@ -658,6 +1120,11 @@ def _advance(
         if is_courtesy_text(text):
             return _courtesy(state, meta, _ASK_RECIPIENT, text=text)
         nombre, apellidos, telefono = parse_recipient(text)
+        # Corrigiendo un solo dato, el otro se conserva: "el teléfono es 999…" no
+        # borra el nombre, ni el nombre borra el teléfono.
+        if not nombre and telefono and state.nombre_destinatario:
+            nombre, apellidos = state.nombre_destinatario, state.apellidos_destinatario
+        telefono = telefono or state.telefono_destinatario
         # Sin al menos un nombre no podemos avanzar con algo útil: repreguntamos.
         if not nombre:
             return _again(
@@ -667,7 +1134,7 @@ def _advance(
                     f"De «{_echo(text)}» no logré sacar el nombre 😅 "
                     f"{_ASK_RECIPIENT}",
                     "Con el *nombre y apellido* del destinatario me basta para "
-                    "seguir 🎁 (el teléfono me lo puedes dar después).",
+                    "seguir 🎁 (si no tienes su teléfono, coordinamos con el tuyo).",
                 ),
             )
         state.nombre_destinatario = nombre
@@ -700,6 +1167,22 @@ def _advance(
         if is_courtesy_text(text):
             return _courtesy(state, meta, _ASK_CONTACT, text=text)
         nombre, apellidos, email = parse_contact(text)
+        # Pueden llegar en dos mensajes, y la API exige los dos: sin nombre el pedido
+        # temporal no se creaba, en silencio y con el chat ya en verde.
+        email = email or state.email_cliente
+        if nombre and "?" not in text and "¿" not in text:
+            state.nombre_cliente = nombre
+            state.apellidos_cliente = apellidos
+        if email and not state.nombre_cliente:
+            state.email_cliente = email
+            return _again(
+                state,
+                meta,
+                (
+                    "¡Gracias! ¿Y a *nombre* de quién va el pedido? ✍️",
+                    "Solo me falta tu *nombre y apellido* para el pedido ✍️",
+                ),
+            )
         if not email:
             return _again(
                 state,
@@ -711,15 +1194,18 @@ def _advance(
                     "(algo como nombre@gmail.com) ✉️",
                 ),
             )
-        state.nombre_cliente = nombre
-        state.apellidos_cliente = apellidos
         state.email_cliente = email
         state.checkout_step = "summary"
-        return state, _summary_message(state) + "\n¿Todo correcto? 😊", meta
+        return state, summary_prompt(state), meta
 
     if step == "summary":
-        low = text.casefold()
-        if any(x in low for x in ("si", "sí", "ok", "dale", "correcto", "perfecto", "yes")):
+        respuesta = short_reply(text)
+        if respuesta == MIXED:
+            return _again(state, meta, _ASK_CONFIRM_AGAIN)
+        if respuesta == YES:
+            aviso = revalidate_delivery(state, today=effective_today, now=now)
+            if aviso:
+                return state, aviso, meta
             state.checkout_step = "payment"
             state.handoff_reason = "cliente listo para pagar / coordinar comprobante"
             meta["escalate"] = True
@@ -729,9 +1215,22 @@ def _advance(
                 "Perfecto 🙌 Un asesor te comparte el link o las cuentas para pagar.",
                 meta,
             )
-        # Corrección → volver a fecha/distrito genérico
-        state.checkout_step = "date"
-        return state, "Sin problema. ¿Qué dato quieres corregir: distrito, fecha u horario?", meta
+        target = _correction_target(text)
+        if target is None and _CORRECTION_PRODUCT_RE.search(_words(text)):
+            release_product(state)
+            return state, "¡Claro! 🎁 ¿Qué te gustaría ver?", meta
+        if target is None:
+            return _again(state, meta, _ASK_WHAT_TO_FIX)
+        state.checkout_step = target
+        state.checkout_return_step = "summary"
+        state.step_retries = 0
+        value = _correction_value(target, text)
+        if value and target == "district":
+            # Validarlo exige consultar la API: lo hace el orquestador.
+            meta["district_value"] = value
+        elif value:
+            return advance_checkout(state, value, today=today, now=now)
+        return state, f"¡Claro! {_pending_question(state, target, now=now)}", meta
 
     if step == "payment":
         meta["escalate"] = True
@@ -752,9 +1251,12 @@ def _summary_message(state: ConversationState) -> str:
     tipo_txt = ""
     if state.tipo is not None:
         tipo_txt = " (oficina)" if state.tipo == 1 else " (casa)"
+    precio = ""
+    if state.chosen_product_price_sol is not None:
+        precio = f" — S/{float(state.chosen_product_price_sol):.2f}"
     lines = [
         "📋 *Resumen del pedido:*",
-        f"· Producto: {product}",
+        f"· Producto: {product}{precio}",
         f"· Distrito: {distrito}{fee}",
         f"· Fecha: {display_fecha(state.date) if state.date else '—'}",
         f"· Horario: {state.time_slot or '—'}",
@@ -763,19 +1265,56 @@ def _summary_message(state: ConversationState) -> str:
     ]
     if state.dedicatoria and state.dedicatoria != "Sin dedicatoria":
         lines.append(f"· Tarjeta: {state.dedicatoria}")
+    total = order_total(state)
+    # Pedir un "¿todo correcto?" sin decir cuánto es deja la duda justo donde se
+    # decide la compra. Sin precio o sin tarifa confirmados no se suma nada: un total
+    # incompleto sería un precio inventado.
+    lines.append(
+        f"*Total: S/{total:.2f}*"
+        if total is not None
+        else "· El total te lo confirmamos al coordinar el pago"
+    )
     return "\n".join(lines)
+
+
+def summary_prompt(state: ConversationState) -> str:
+    return _summary_message(state) + "\n¿Todo correcto? 😊"
+
+
+def payment_handoff_message(state: ConversationState) -> str:
+    """Lo que recibe quien acaba de confirmar: cuánto es y cómo pagarlo.
+
+    Antes solo "te conecto con un asesor", y el cliente con ganas de pagar se quedaba
+    esperando a que alguien le dijera cómo, aunque el dato estuviera a mano. Sin un
+    total confirmado no se le invita a pagar: pagaría una cifra que no conocemos.
+    """
+    total = order_total(state)
+    if total is None:
+        return (
+            "¡Perfecto, pedido anotado! 🙌 Nuestro equipo te confirma el total y "
+            "cómo pagar por este mismo chat."
+        )
+    return (
+        f"¡Perfecto! 🙌 *Total a pagar: S/{total:.2f}*\n\n{payment_instructions()}\n\n"
+        "Si prefieres pagar con tarjeta, escríbelo por aquí y nuestro equipo te pasa "
+        "el enlace 💳"
+    )
 
 
 _PHONE_RE = re.compile(r"(\+?\d[\d\s().\-]{5,}\d)")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _OFFICE_RE = re.compile(r"\boficina\b|\btrabajo\b|\bempresa\b|\bof\.\b", re.I)
-# Muletillas que la gente antepone al dar nombre/teléfono; se limpian antes de
-# separar nombre y apellidos, para no acabar con nombre="telefono".
+# Muletillas que la gente pone al dar nombre/teléfono; se limpian antes de separar
+# nombre y apellidos, para no acabar con nombre="telefono".
 _NAME_NOISE_RE = re.compile(
-    r"\b(tel[eé]fono|telf|cel(?:ular)?|n[uú]mero|numero|contacto|"
-    r"nombre|se\s+llama|es|para|mi|el|la|su|de)\b",
+    r"\b(tel[eé]fono|telf|cel(?:ular)?|n[uú]mero|numero|contacto|nombre|se\s+llama)\b",
     re.I,
 )
+# Los conectores solo sobran en los extremos. Quitarlos en cualquier posición
+# convertía a "Ana de la Cruz" en "Ana Cruz", y ese nombre es el que usa el
+# motorizado para preguntar por el destinatario.
+_NAME_LEADING_RE = re.compile(r"^(?:(?:soy|es|para|mi|el|la|su|de|a)\s+)+", re.I)
+_NAME_TRAILING_RE = re.compile(r"(?:\s+(?:es|para|mi|el|la|su|de|y))+$", re.I)
 
 
 def split_name(full: str) -> tuple[str, str]:
@@ -799,7 +1338,9 @@ def parse_phone(text: str) -> str:
 def _clean_name(text: str) -> str:
     text = _NAME_NOISE_RE.sub(" ", text or "")
     text = re.sub(r"[,;:_/\\\-]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = _NAME_LEADING_RE.sub("", text)
+    return _NAME_TRAILING_RE.sub("", text).strip()
 
 
 def parse_recipient(text: str) -> tuple[str, str, str]:
@@ -848,6 +1389,34 @@ _ORDINALS: dict[str, int] = {
 }
 
 
+def _position_in(user_text: str) -> int | None:
+    """Índice si el cliente señala un puesto de la lista; `None` si no lo hace.
+
+    Una palabra suelta no basta: "quiero dos desayunos" es una cantidad y elegía el
+    segundo producto, y "primero quiero saber el precio" abría el cierre del
+    primero. Hace falta un artículo delante ("el segundo", "la 3", "opción 1") o
+    que sea el mensaje entero ("2"). Con una cita delante, lo que cuenta es la
+    última línea: es la que escribió el cliente.
+    """
+    plain = _words(user_text)
+    lines = [ln for ln in (user_text or "").splitlines() if ln.strip()]
+    last = _words(lines[-1]) if lines else ""
+    for word, index in _ORDINALS.items():
+        if re.search(
+            rf"\b(?:el|la|opcion|numero|nro)\s+{word}\b(?!\s+(?:de|vez)\b)", plain
+        ) or re.fullmatch(rf"{word}(?:\s+(?:por favor|porfa))?", last):
+            return index
+    return None
+
+
+def position_pick(state: ConversationState, text: str) -> bool:
+    """¿El mensaje es solo señalar un puesto de la lista que tiene a la vista?"""
+    if len((text or "").split()) > 4:
+        return False
+    index = _position_in(text)
+    return index is not None and index < len(state.recent_products or [])
+
+
 def resolve_chosen_product(
     state: ConversationState, user_text: str, *, allow_implicit: bool = True
 ) -> tuple[int, str] | None:
@@ -887,12 +1456,10 @@ def resolve_chosen_product(
         return int(matches[0]["id_producto"]), str(matches[0].get("nombre") or "")
 
     # 2. Por ordinal: "el segundo", "la 3".
-    for word, index in _ORDINALS.items():
-        if re.search(rf"\b(?:el|la|opci[oó]n|numero|n[uú]mero)?\s*{word}\b", text):
-            if index < len(recent):
-                chosen = recent[index]
-                return int(chosen["id_producto"]), str(chosen.get("nombre") or "")
-            break
+    index = _position_in(user_text)
+    if index is not None and index < len(recent):
+        chosen = recent[index]
+        return int(chosen["id_producto"]), str(chosen.get("nombre") or "")
 
     # 3. "ese" / "lo quiero" sin más: solo es unívoco si mostramos uno solo.
     if allow_implicit and len(recent) == 1:

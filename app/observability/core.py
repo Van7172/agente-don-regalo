@@ -178,10 +178,34 @@ def collect_turn_usage() -> Iterator[dict[str, int]]:
     veces (rondas de tools), y lo que importa es el total del turno."""
     bucket: dict[str, int] = {"prompt": 0, "completion": 0, "cached": 0, "calls": 0}
     token = _TURN_TOKENS.set(bucket)
+    api_token = _TURN_API.set({"calls": 0, "ms": 0.0})
     try:
         yield bucket
     finally:
+        _TURN_API.reset(api_token)
         _TURN_TOKENS.reset(token)
+
+
+# Llamadas a la API de Don Regalo del turno en curso. Sin esto, la latencia de un turno
+# era un solo número y no había forma de saber si la ponía el modelo o nuestra red.
+_TURN_API: ContextVar[dict[str, float] | None] = ContextVar("donregalo_turn_api", default=None)
+
+
+def record_api_call(backend: str, outcome: str, duration_ms: float) -> None:
+    """Una llamada de red de verdad: `api.rest`, `api.mcp`, `api.images`. Nunca lanza."""
+    record_operation(f"api.{backend}", outcome, duration_ms=duration_ms)
+    bucket = _TURN_API.get()
+    if bucket is not None:
+        bucket["calls"] += 1
+        bucket["ms"] += max(0.0, float(duration_ms))
+
+
+def current_turn_api() -> dict[str, int] | None:
+    """Cuánta red lleva el turno en curso, o None fuera de un turno."""
+    bucket = _TURN_API.get()
+    if bucket is None:
+        return None
+    return {"calls": int(bucket["calls"]), "ms": int(bucket["ms"])}
 
 
 # Qué agente está hablando con el modelo AHORA. Igual que el trace-id: pasarlo
