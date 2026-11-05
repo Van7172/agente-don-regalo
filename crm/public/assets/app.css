@@ -540,17 +540,22 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 .chat-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .chat-body[hidden], .empty-state[hidden], .composer[hidden], .ai-banner[hidden] { display: none; }
 
+/* Densidad del chat (nov-2026): el asesor lee el hilo, no lo admira. Con aire de
+   sobra solo cabían 9 mensajes en un monitor grande y 5 en un portátil. Todo lo de
+   este bloque —cabecera, hilo, burbujas, fotos y barras— se compactó junto, y la
+   medida es cuántos mensajes caben a la vez, no cuánto "respira" cada uno. */
 .chat-head {
-  flex: none; display: flex; align-items: center; gap: 12px;
-  padding: 12px 20px; border-bottom: 1px solid var(--color-divider);
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 7px 16px; border-bottom: 1px solid var(--color-divider);
 }
+.chat-head .avatar { width: 34px; height: 34px; font-size: 12.5px; }
 .chat-head .who { flex: 1; min-width: 0; overflow: hidden; }
 .chat-head .chat-name {
-  font-size: 15px; font-weight: 700;
+  font-size: 14px; font-weight: 700;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .chat-head .chat-state {
-  display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
   color: color-mix(in srgb, var(--color-text) 55%, transparent);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -560,13 +565,13 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 .chat-head .chat-state .dot-sm.is-help { background: var(--color-accent-600); animation: pulseRing 1.6s ease-out infinite; }
 .chat-head .chat-state .dot-sm.is-human { background: var(--color-neutral-700); }
 .chat-head .chat-state .dot-sm.is-ai { background: var(--color-accent-2-600); }
-.chat-head .btn { flex: none; font-size: 12.5px; white-space: nowrap; }
-.chat-actions { display: flex; align-items: center; gap: 8px; }
+.chat-head .btn { flex: none; font-size: 12px; padding: 5px 11px; white-space: nowrap; }
+.chat-actions { display: flex; align-items: center; gap: 6px; }
 .mobile-actions-toggle, .mobile-only-label { display: none; }
 
 .thread {
-  flex: 1; overflow-y: auto; padding: 20px 24px;
-  display: flex; flex-direction: column; gap: 10px;
+  flex: 1; overflow-y: auto; padding: 8px 16px;
+  display: flex; flex-direction: column; gap: 3px;
   background: color-mix(in srgb, var(--color-surface) 35%, transparent);
 }
 
@@ -579,17 +584,17 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 .day-group {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 3px;
 }
 .day-sep {
   display: flex; align-items: center; justify-content: center;
-  margin: 4px 0 0;
+  margin: 6px 0 3px;
   position: sticky; top: 0; z-index: 2;
   pointer-events: none;
 }
 .day-sep span {
-  font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
-  padding: 5px 14px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 2px 10px; border-radius: 999px;
   background: #fff;
   color: #54656f;
   box-shadow: 0 1px 2px rgba(11, 20, 26, 0.12);
@@ -601,26 +606,52 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 .msg-row.is-out { justify-content: flex-end; }
 
 .bubble {
-  max-width: 62%; padding: 7px 11px; border-radius: 16px;
-  font-size: 13.5px; line-height: 1.4;
+  max-width: 68%; padding: 4px 9px 3px; border-radius: 12px;
+  font-size: 12.5px; line-height: 1.35;
   box-shadow: var(--shadow-sm); overflow-wrap: anywhere;
 }
 .bubble.from-contact {
   background: var(--color-surface); color: var(--color-text);
-  border-bottom-left-radius: 4px;
+  border-bottom-left-radius: 3px;
 }
 .bubble.from-bot {
   background: var(--color-accent-2-200); color: var(--color-accent-2-900);
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 3px;
 }
 .bubble.from-agent {
   background: var(--color-accent-500); color: #fff;
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 3px;
 }
 .bubble .who {
-  font-size: 9.5px; letter-spacing: 0.06em; opacity: 0.65;
-  margin-bottom: 2px; font-weight: 700;
+  font-size: 9px; letter-spacing: 0.06em; opacity: 0.65;
+  margin-bottom: 1px; font-weight: 700;
 }
+
+/* La etiqueta (CONTACTO / ASESOR / BOT) solo hace falta al empezar una racha: en
+   el segundo mensaje seguido del mismo emisor repetirla era una línea de relleno
+   por burbuja. Quien escribe sigue siendo evidente —lado y color— y cada día y cada
+   cambio de emisor vuelven a mostrarla. Se distingue por la clase de la burbuja, no
+   por el lado: el bot y el asesor van ambos a la derecha. */
+.msg-row:has(.bubble.from-contact) + .msg-row:has(.bubble.from-contact) .who,
+.msg-row:has(.bubble.from-agent) + .msg-row:has(.bubble.from-agent) .who,
+.msg-row:has(.bubble.from-bot) + .msg-row:has(.bubble.from-bot) .who { display: none; }
+
+/* Aire solo donde cambia quien habla, para que las rachas se lean como bloques. */
+.msg-row:has(.bubble.from-contact) + .msg-row:not(:has(.bubble.from-contact)),
+.msg-row:has(.bubble.from-agent) + .msg-row:not(:has(.bubble.from-agent)),
+.msg-row:has(.bubble.from-bot) + .msg-row:not(:has(.bubble.from-bot)) { margin-top: 5px; }
+
+/* Hora en la misma línea que el texto cuando cabe, como WhatsApp: un "Ya está" o un
+   "Llegué" ocupaba tres líneas (etiqueta, texto, hora). Si el texto es largo ocupa
+   todo el ancho y la hora baja sola a su línea. Las burbujas con foto, audio,
+   documento o ubicación quedan en bloque: ahí la hora siempre va debajo. */
+.bubble:not(.has-media) {
+  display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: 8px;
+}
+.bubble:not(.has-media) > .who,
+.bubble:not(.has-media) > .quoted { flex: 1 0 100%; }
+.bubble:not(.has-media) > .txt { flex: 0 1 auto; min-width: 0; }
+.bubble:not(.has-media) > .at { flex: none; margin-left: auto; }
 /* — mensaje que aún viaja (relojito), como WhatsApp — */
 .bubble.is-pending { opacity: 0.72; }
 .bubble.is-pending .at {
@@ -678,11 +709,11 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
    Es contexto, no el mensaje, así que va más pequeño y recortado. */
 .bubble .quoted {
   border-left: 3px solid currentColor;
-  padding: 4px 8px;
-  margin-bottom: 6px;
+  padding: 3px 7px;
+  margin-bottom: 3px;
   border-radius: 4px;
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 11.5px;
+  line-height: 1.3;
   opacity: 0.72;
   background: color-mix(in srgb, currentColor 8%, transparent);
   overflow-wrap: anywhere;
@@ -694,9 +725,9 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 .bubble .quoted.has-thumb {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   /* La miniatura ya da altura; sin esto la cita queda con aire de más. */
-  padding: 4px 8px 4px 6px;
+  padding: 3px 7px 3px 5px;
 }
 .bubble .quoted-thumb {
   flex: none;
@@ -704,8 +735,8 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
   line-height: 0;
 }
 .bubble .quoted-thumb img {
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   object-fit: cover;
   border-radius: 4px;
   /* A tamaño miniatura la foto compite con el texto: se calma un poco, y al
@@ -724,20 +755,28 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 .bubble .txt .msg-link:hover { opacity: 0.85; }
 /* En la burbuja del contacto (fondo claro) el enlace toma el color de marca. */
 .bubble.from-contact .txt .msg-link { color: var(--color-accent-600, #b45309); }
-.bubble .at { font-size: 10px; opacity: 0.6; margin-top: 3px; text-align: right; }
-.bubble.has-media { max-width: min(340px, 78%); }
+.bubble .at { font-size: 9.5px; opacity: 0.6; margin-top: 1px; text-align: right; }
+.bubble.has-media { max-width: min(270px, 72%); }
 
 /* — medios dentro de la burbuja — */
 .media-link { display: block; }
+/* La foto era lo que más hilo se comía: un comprobante vertical llegaba a 320 px y
+   desplazaba a todo lo demás. Se recorta por abajo (`object-position: top`) porque
+   en un comprobante o una captura lo importante —monto, nombre— va arriba; un clic
+   la abre entera en otra pestaña (`.media-link`). */
+/* `min-width` es lo que hace que se RECORTE en vez de encogerse: sin él, la burbuja
+   se ajusta al ancho de la foto escalada a la altura máxima y un comprobante vertical
+   quedaba como una tira de ~100 px, ilegible. */
 .media-img {
-  display: block; width: 100%; max-height: 320px;
-  object-fit: cover; border-radius: 10px; background: var(--color-neutral-200);
+  display: block; width: 100%; min-width: 150px; max-height: 210px;
+  object-fit: cover; object-position: top center;
+  border-radius: 8px; background: var(--color-neutral-200);
 }
-.media-audio { display: block; width: 100%; min-width: 240px; margin: 2px 0; }
+.media-audio { display: block; width: 100%; min-width: 220px; margin: 1px 0; }
 
 .media-doc {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-radius: 10px; text-decoration: none;
+  padding: 6px 8px; border-radius: 8px; text-decoration: none;
   background: color-mix(in srgb, currentColor 12%, transparent);
   color: inherit; font-size: 13px; overflow-wrap: anywhere;
 }
@@ -746,7 +785,7 @@ html[data-sidebar="simple"] .sidebar-foot { flex-direction: column; }
 
 .media-location {
   display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px;
-  margin: 2px 0; padding: 8px 10px; border-radius: 10px;
+  margin: 1px 0; padding: 6px 8px; border-radius: 8px;
   background: color-mix(in srgb, var(--color-accent-100) 75%, #fff);
   color: var(--color-accent-900);
   text-decoration: none; font-size: 13px; line-height: 1.35;
@@ -774,7 +813,7 @@ a.media-location:hover { filter: brightness(0.98); }
 /* — adjuntos elegidos, aún sin enviar (lista) — */
 .attach-preview {
   display: flex; align-items: flex-start; gap: 8px;
-  margin: 12px 20px 0; padding: 8px 10px;
+  margin: 8px 14px 0; padding: 6px 8px;
   border: 1px solid var(--color-divider); border-radius: var(--radius-md);
   background: var(--color-surface);
 }
@@ -801,7 +840,7 @@ a.media-location:hover { filter: brightness(0.98); }
 /* — grabando — */
 .recording-bar {
   display: flex; align-items: center; gap: 10px;
-  padding: 14px 20px;
+  padding: 8px 14px;
 }
 .recording-bar[hidden] { display: none; }
 .rec-dot {
@@ -815,11 +854,11 @@ a.media-location:hover { filter: brightness(0.98); }
 /* — composer / banner AI — */
 .ai-banner {
   flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 14px 20px; border-top: 1px solid var(--color-divider);
+  padding: 7px 16px; border-top: 1px solid var(--color-divider);
   background: var(--color-accent-100);
 }
-.ai-banner span { font-size: 13px; color: var(--color-accent-800); }
-.ai-banner .btn { flex: none; font-size: 12.5px; }
+.ai-banner span { font-size: 12.5px; color: var(--color-accent-800); }
+.ai-banner .btn { flex: none; font-size: 12px; padding: 5px 14px; }
 
 .keep-human-label {
   display: inline-flex; align-items: center; gap: 6px;
@@ -830,17 +869,17 @@ a.media-location:hover { filter: brightness(0.98); }
 .keep-human-label input { accent-color: var(--color-accent-600); }
 
 .composer {
-  flex: none; display: flex; align-items: flex-end; gap: 10px;
-  padding: 14px 20px; border-top: 1px solid var(--color-divider);
+  flex: none; display: flex; align-items: flex-end; gap: 8px;
+  padding: 8px 14px; border-top: 1px solid var(--color-divider);
 }
 .composer textarea {
-  resize: none; min-height: 42px; max-height: 120px; flex: 1;
+  resize: none; min-height: 36px; max-height: 120px; flex: 1;
   border-radius: var(--radius-md);
 }
 
 /* — mensajes rápidos (/) — */
 .slash-menu {
-  margin: 0 20px;
+  margin: 0 14px;
   max-height: 220px;
   overflow-y: auto;
   border: 1px solid var(--color-divider);
@@ -1221,7 +1260,7 @@ a.media-location:hover { filter: brightness(0.98); }
   .mobile-only-label { display: inline; margin-left: 8px; color: var(--color-text); }
 
   .thread {
-    min-height: 0; padding: 12px 10px; gap: 8px;
+    min-height: 0; padding: 8px 8px; gap: 3px;
     overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
   }
   .bubble { max-width: 88%; }
@@ -1520,11 +1559,11 @@ a.media-location:hover { filter: brightness(0.98); }
 .tag-followup { background: var(--color-accent-2-600); color: #fff; font-weight: 700; }
 
 /* — chips de la cabecera del chat — */
-.chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.chat-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 2px; }
 .chip-assign, .chip-window {
   display: inline-flex; align-items: center;
-  font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
-  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+  padding: 1px 7px; border-radius: 999px; white-space: nowrap;
 }
 .chip-assign[hidden], .chip-window[hidden] { display: none; }
 .chip-assign {
@@ -1540,10 +1579,10 @@ a.media-location:hover { filter: brightness(0.98); }
    Ocupa el ancho del composer porque es un impedimento, no un aviso: el asesor
    no puede escribir hasta que el cliente vuelva. */
 .window-banner {
-  flex: none; display: flex; align-items: flex-start; gap: 10px;
-  padding: 10px 16px; border-bottom: 1px solid var(--color-divider);
+  flex: none; display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 14px; border-bottom: 1px solid var(--color-divider);
   background: color-mix(in srgb, #b3261e 10%, var(--color-bg));
-  font-size: 12.5px; color: #7a1c16;
+  font-size: 12px; color: #7a1c16;
 }
 .window-banner[hidden] { display: none; }
 .window-banner svg { flex: none; margin-top: 1px; }
@@ -1869,8 +1908,8 @@ a.media-location:hover { filter: brightness(0.98); }
 .tag-stage.is-perdido { background: var(--color-neutral-300); color: var(--color-neutral-800); }
 
 .stage-select {
-  width: auto; max-width: 190px; min-height: 0; padding: 2px 6px;
-  border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.4;
+  width: auto; max-width: 190px; min-height: 0; padding: 1px 6px;
+  border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.4;
 }
 .stage-select:disabled { opacity: 1; cursor: not-allowed; }
 .stage-select.is-cotizado { background: var(--color-accent-200); color: var(--color-accent-800); }
