@@ -124,6 +124,7 @@ class AgentResult:
     catalog_approximate: bool = False
     unmet_requirements: list[str] = field(default_factory=list)
     catalog_strategy: str = ""
+    context_action: str = ""
 
     @property
     def product_ids(self) -> list[int]:

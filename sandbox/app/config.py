@@ -115,6 +115,11 @@ class Settings:
         # Clasificador de intención del router: solo se usa cuando las reglas no
         # saben, así que puede ser el modelo más barato disponible.
         self.router_model: str = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
+        self.contextual_delivery_enabled: bool = os.getenv("CONTEXTUAL_DELIVERY_ENABLED", "0") == "1"
+        try:
+            self.contextual_delivery_percent: int = max(0, min(100, int(os.getenv("CONTEXTUAL_DELIVERY_PERCENT", "100"))))
+        except ValueError:
+            self.contextual_delivery_percent = 0
 
         # Proveedor secundario del LLM. Ante una caída sostenida de OpenAI, el
         # retry y el circuit breaker solo consiguen degradar antes: el cliente

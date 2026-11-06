@@ -85,6 +85,7 @@ from app.harness.state import ConversationState, load_state, save_state
 from app.harness.stock import is_available, unavailable_message
 from app.harness import visual_product
 from app.harness import catalog_flow, catalog_rollout
+from app.harness import contextual
 from app.tools.relevance import continue_query, parse_request, wants_more
 from app.harness.taxonomy import (
     MAX_MENU_DEPTH,
@@ -401,9 +402,20 @@ async def _run_master_body(
     if state.budget_amount:
         product_attrs.set_turn_budget((state.budget_amount, state.budget_currency))
 
-    classification = await classify(
-        turn.text, state, has_media=turn.has_media, quoted=turn.quoted
-    )
+    context_plan = None
+    rules = classify_rules(turn.text, state, has_media=turn.has_media, quoted=turn.quoted)
+    if contextual.eligible(turn, state, rules, conversation_id=conversation_id):
+        context_plan = await contextual.interpret(turn, state)
+        if context_plan is None:
+            # Failed interpretation must not revive the same overconfident
+            # keyword guess this boundary replaces. Clarify without mutations.
+            context_plan = contextual.Interpretation("clarify", "coverage", 0)
+    if context_plan is not None:
+        from app.harness.router import Classification
+        classification = Classification(context_plan.intent if context_plan.action == "other" else "coverage",
+                                        context_plan.confidence, "contextual")
+    else:
+        classification = await classify(turn.text, state, has_media=turn.has_media, quoted=turn.quoted)
     intent = classification.intent
     prev_intent = state.intent_last  # antes de sobrescribir: ¿venía de una derivación?
     state.intent_last = intent
@@ -429,6 +441,7 @@ async def _run_master_body(
         turn,
         state,
         prev_intent=prev_intent,
+        context_plan=context_plan,
         wa_id=wa_id,
         contact_id=contact_id,
         conversation_id=conversation_id,
@@ -485,6 +498,7 @@ async def _run_master_body(
         and not state.maps_location_pending
         and not state.delivery_point_pending
         and not state.delivery_time_pending
+        and not result.context_action
     ):
         result.user_facing = f"{result.user_facing}\n\n{pending_question(state)}"
 
@@ -573,6 +587,7 @@ async def _run_master_body(
 
     trace.tools = result.tools_used
     trace.catalog_strategy = result.catalog_strategy
+    trace.context_action = result.context_action or (context_plan.action if context_plan else "")
     trace.product_ids = result.product_ids
     trace.escalated = result.escalate is not None
     trace.handoff_reason = result.escalate.motivo if result.escalate else ""
@@ -633,7 +648,13 @@ async def _handle(
     if intent != "escalate" and asks_for_business_data(turn.text):
         return AgentResult(user_facing=business_data_reply(turn.text))
 
-    if intent != "escalate" and state.checkout_step not in ("card_text", "recipient", "contact"):
+    context_plan = ctx.pop("context_plan", None)
+    if context_plan is not None and context_plan.action != "other":
+        result = await contextual.execute(context_plan, turn, state, **ctx)
+        if result is not None:
+            return result
+
+    if context_plan is None and intent != "escalate" and state.checkout_step not in ("card_text", "recipient", "contact"):
         logistics = await _handle_delivery_request(turn, state, intent=intent, **ctx)
         if logistics is not None:
             return logistics

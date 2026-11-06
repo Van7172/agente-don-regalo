@@ -248,6 +248,9 @@ async def resolve_coverage(
     state: ConversationState,
     *,
     client: httpx.AsyncClient | None = None,
+    location_reference: str | None = None,
+    reception_point: str | None = None,
+    district_query: str | None = None,
 ) -> dict[str, Any]:
     """
     Resuelve cobertura en un solo paso.
@@ -306,11 +309,11 @@ async def resolve_coverage(
                                     "delivery_point": "", "delivery_point_pending": bool(state.delivery_reference)}}
         if resolve_alias(user_text):
             state.maps_district_candidate = ""
-    reference = delivery_reference(user_text)
+    reference = delivery_reference(user_text) if location_reference is None else location_reference
     if reference and not state.maps_location_pending:
         # A reference complements a known district. It is never looked up as
         # the district name, nor assigned a district from general model knowledge.
-        district = reference_district(user_text) or state.district
+        district = district_query or reference_district(user_text) or state.district
         same_district = bool(district and _norm(district) == _norm(state.district))
         if same_district or not district:
             provisional = ConversationState.from_dict(state.to_dict())
@@ -323,7 +326,7 @@ async def resolve_coverage(
                     "structured": {"covered": None, "ambiguity": "delivery_reference"},
                     "state_patch": {"delivery_reference": reference, "delivery_point": "", "delivery_point_pending": True,
                                     "maps_url": "", "maps_location_confirmed": False, "direccion": ""}}
-    point = delivery_point(user_text) if state.delivery_point_pending else ""
+    point = reception_point if reception_point is not None else delivery_point(user_text) if state.delivery_point_pending else ""
     if point and not state.maps_location_pending:
         ask = (
             "¿En qué distrito queda para revisar la cobertura?" if not state.district else
@@ -360,7 +363,7 @@ async def resolve_coverage(
     elif isinstance(raw, list):
         districts = raw
 
-    candidates = extract_place_candidates(user_text)
+    candidates = [district_query] if district_query else extract_place_candidates(user_text)
     # Pregunta general de zonas o de "¿existe el servicio?" (sin lugar
     # concreto). "No hay delivery?" / "¿Hacen entregas a domicilio?" son la
     # misma pregunta que "qué zonas cubren" con otras palabras — antes solo
@@ -577,6 +580,7 @@ def _covered(
             "covered": True,
             "fee_sol": fee_sol_f,
             "fee_usd": fee_usd_f,
+            "coverage_note": " ".join(notas),
             "ambiguity": None,
             "suggest_maps": False,
             "ask": ask,

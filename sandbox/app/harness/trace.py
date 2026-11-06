@@ -32,6 +32,7 @@ class Trace:
     confidence: float = 1.0
     router: str = ""       # rules | llm | fallback
     catalog_strategy: str = ""
+    context_action: str = ""
     # Huella de las instrucciones con las que se atendió el turno. Los prompts
     # son constantes Python: sin esto, un cambio de redacción y un cambio de
     # comportamiento eran indistinguibles al leer los logs. Con ella se puede
