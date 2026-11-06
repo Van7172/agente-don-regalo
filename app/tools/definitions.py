@@ -38,7 +38,9 @@ TOOLS = [
                 "Padre, Dia de la Madre, Navidad o San Valentin. En esos casos usa "
                 "explorar_catalogo y catalogo_categoria; si necesitas semantica dentro "
                 "de la campana, debes enviar categoria_slug con el slug temporal. "
-                "BÚSQUEDA PRINCIPAL de productos. Úsala SIEMPRE que el cliente describa "
+                "Búsqueda por significado cuando no hay un nombre o término específico. "
+                "Para nombres/modelos/características concretas usa primero buscar_productos. "
+                "Úsala cuando el cliente describa "
                 "lo que busca con palabras (intención, estilo, sentimiento, ocasión, "
                 "tipo de producto), ej: 'algo romántico para mi novia', 'un detalle "
                 "para felicitar a mi jefe', 'rosas blancas elegantes', 'desayuno "
@@ -60,7 +62,7 @@ TOOLS = [
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 7,
-                        "description": "Opcional. Filtra por ocasión si el cliente la indicó: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
+                        "description": "Opcional. Preferencia de ocasión para ordenar, sin excluir fichas sin etiqueta: Cumpleaños=1, Aniversario=2, Felicitación=3, Nacimiento=4, Agradecimiento=5, Negocios=6, Otros=7.",
                     },
                     "precio_max": {
                         "type": "number",

@@ -370,10 +370,14 @@ async def test_el_cierre_no_repregunta_el_producto_ya_elegido(harness, monkeypat
 async def test_imagen_de_producto_la_atiende_el_catalogo(harness, monkeypatch):
     """El cliente manda la captura de un producto: el turno va al catálogo (con
     visión + búsqueda), no al concierge, para poder identificarlo."""
-    _mock_llm(monkeypatch, harness, [
-        _tool_call("buscar_semantico", {"q": "Lágrima Fúnebre Blanco"}),
-        _final("¿Te refieres a *Lágrima Fúnebre Blanco*? 😊"),
-    ])
+    _mock_llm(monkeypatch, harness, [_final(json.dumps({"nombre": "Lágrima Fúnebre Blanco", "frases": []}))])
+    product = {"id_producto": 535, "nombre": "Lágrima Fúnebre Blanco", "precio_sol": 120}
+
+    async def execute(name, args):
+        harness["tool_args"].append((name, args))
+        return json.dumps({"data": product if name == "detalle_producto" else [product]})
+
+    monkeypatch.setattr(master_mod, "execute_tool", execute)
 
     msg = {
         "role": "user",
@@ -387,7 +391,9 @@ async def test_imagen_de_producto_la_atiende_el_catalogo(harness, monkeypatch):
     assert reply is not None
     state = await load_state(1)
     assert state.intent_last == "catalog_search"
-    assert "ESPECIALISTA: CATÁLOGO" in harness["systems"][0]
+    assert "Transcribe SOLO texto legible" in harness["systems"][0]
+    assert state.chosen_product_id == 535
+    assert [name for name, _ in harness["tool_args"]] == ["buscar_productos", "detalle_producto"]
 
 
 @pytest.mark.asyncio

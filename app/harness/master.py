@@ -76,6 +76,8 @@ from app.harness.render import render_product_list
 from app.harness.router import classify, classify_rules
 from app.harness.state import ConversationState, load_state, save_state
 from app.harness.stock import is_available, unavailable_message
+from app.harness import visual_product
+from app.tools.relevance import continue_query, parse_request, wants_more
 from app.harness.taxonomy import (
     MAX_MENU_DEPTH,
     _MENU_LINE as _taxonomy_menu_line,
@@ -292,6 +294,7 @@ async def _run_master(
     turn = perceive(messages)
     attr_token = product_attrs.set_turn_text(turn.text)
     budget_token = product_attrs.set_turn_budget(None)
+    excluded_token = product_attrs.set_turn_excluded_ids([])
     try:
         return await _run_master_body(
             turn,
@@ -304,6 +307,7 @@ async def _run_master(
             persist=persist,
         )
     finally:
+        product_attrs.reset_turn_excluded_ids(excluded_token)
         product_attrs.reset_turn_budget(budget_token)
         product_attrs.reset_turn_text(attr_token)
 
@@ -675,6 +679,31 @@ async def _handle(
     politica = (
         _policy_fact_block(turn.text) if intent in _COMMERCIAL_INTENTS else ""
     )
+
+    if intent in _COMMERCIAL_INTENTS and turn.has_media:
+        visual_tools = []
+
+        async def visual_execute(name, args):
+            visual_tools.append(name)
+            return await execute_tool(name, args)
+
+        product = await visual_product.identify(turn.messages, state.catalog_query, visual_execute)
+        if product is None:
+            return AgentResult(user_facing="No pude confirmar qué producto aparece en la imagen. ¿Me envías el enlace o el nombre del producto para darte la ficha correcta? 😊")
+        return AgentResult(
+            user_facing=compose_product_reply("La captura coincide con esta ficha del catálogo 😊", [product]),
+            artifacts=[product],
+            tools_used=visual_tools,
+            state_patch={"chosen_product_id": product.id_producto, "chosen_product_name": product.nombre},
+        )
+
+    if intent == "catalog_search":
+        product_attrs.set_turn_excluded_ids(state.shown_product_ids if wants_more(turn.text) else [])
+        query = continue_query(turn.text, state.catalog_query)
+        request = parse_request(query)
+        if request.category or request.specific:
+            state.catalog_query = request.text
+            product_attrs.set_turn_text(query)
 
     # ── Detalle: el contenido se trae en código, no se le pide al modelo ──
     if intent == "product_detail":
@@ -1843,7 +1872,19 @@ async def _run_specialty(
     # Nunca mostrar dos veces el mismo producto: el cliente lo lee como que no le
     # hicimos caso ("otras, no esas").
     if output_policy == "catalog":
-        result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
+        found_before_dedupe = bool(result.artifacts)
+        if wants_more(turn.text):
+            result.artifacts = dedupe_artifacts(state.shown_product_ids, result.artifacts)
+            if found_before_dedupe and not result.artifacts:
+                result.user_facing = "Por ahora no encontré más opciones distintas que cumplan lo que buscas 😊 ¿Quieres cambiar alguna característica?"
+                return result
+        result.artifacts = result.artifacts[:3]
+        if result.catalog_approximate:
+            terms = ", ".join(str(t)[:30] for t in result.unmet_requirements[:5])
+            result.user_facing = (
+                f"No pude confirmar todas las características pedidas{f' ({terms})' if terms else ''}. "
+                "Estas son alternativas de la categoría, por si alguna te sirve:"
+            )
         if result.artifacts:
             result.artifacts, result.user_facing, importes = _apply_budget(
                 state, result.artifacts, result.user_facing

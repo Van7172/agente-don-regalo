@@ -578,6 +578,7 @@ def forget_stale_turns(
         return state
 
     state.shown_product_ids = []
+    state.catalog_query = ""
     state.recent_options = []
     state.menu_depth = 0
     state.turns_without_products = 0

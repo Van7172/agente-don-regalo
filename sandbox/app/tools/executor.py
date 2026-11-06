@@ -14,7 +14,8 @@ from app.harness.taxonomy import RECIPIENT_WORDS, match_recipient, parse_filtros
 from app.observability import audit_event, record_operation
 from app.services import demand
 from app.tools import adapters, catalog, mcp_client, search
-from app.tools.attributes import colors_from, enforce_attributes, turn_budget, turn_text
+from app.tools.attributes import colors_from, enforce_attributes, turn_budget, turn_text, turn_excluded_ids
+from app.tools.relevance import parse_request, select_products, wants_more
 
 log = logging.getLogger(__name__)
 
@@ -465,6 +466,12 @@ async def _category_fallback(
             resultado["consulta_original"] = q
             if params.get("categoria"):
                 resultado["categoria_ofrecida"] = params["categoria"]
+                # La consulta estructurada demuestra la categoría incluso si
+                # el proveedor no la repite en cada elemento del listado.
+                resultado["data"] = [
+                    {**p, "categoria_slug": p.get("categoria_slug") or p.get("url_categoria") or params["categoria"]}
+                    for p in resultado.get("data") or [] if isinstance(p, dict)
+                ]
             if params.get("filtro"):
                 resultado["filtro_ofrecido"] = params["filtro"]
             return resultado
@@ -506,6 +513,54 @@ def _record_demand(args: dict, result: object) -> None:
         log.warning("[demanda] no pude anotar la carencia: %s", error)
 
 
+async def _specific_catalog_search(client: httpx.AsyncClient, request, args: dict) -> dict:
+    """Literal primero; semántica y rescates acotados solo si no encuentra.
+
+    La ocasión y el destinatario ordenan y validan candidatos, sin excluir las
+    fichas que carecen de esas etiquetas. El núcleo del pedido no se pierde.
+    """
+    literal_args = {"q": request.query}
+    if request.category:
+        literal_args["categoria"] = request.category
+    if args.get("orden"):
+        literal_args["orden"] = args["orden"]
+    result = await _pick("buscar_productos", catalog.buscar_productos)(client, literal_args)
+    items = result.get("data") or []
+    excluded = set([*(args.get("excluir_ids") or []), *turn_excluded_ids()]) if wants_more(request.text) else set()
+    items = [p for p in items if p.get("id_producto") not in excluded]
+    selected, approximate = select_products(items, request, limit=3)
+    if not selected or approximate:
+        semantic_args = {"q": request.text}
+        if request.category:
+            semantic_args["categoria_slug"] = request.category
+        if excluded:
+            semantic_args["excluir_ids"] = list(excluded)
+        budget = turn_budget()
+        if budget:
+            amount, currency = budget
+            semantic_args["precio_max"] = amount if currency == "USD" else round(amount / await adapters.usd_pen_rate(client), 2)
+        semantic = await search.buscar_semantico(client, semantic_args)
+        semantic = {**semantic, "fallback": "api_like_vacia"}
+        semantic = enforce_category(semantic, request.category)
+        candidates, near = select_products(semantic.get("data") or [], request, limit=3)
+        if candidates and (not selected or not near):
+            result, selected, approximate = semantic, candidates, near
+    if not selected:
+        fallback = await _degraded_search(client, literal_args)
+        if fallback is None:
+            fallback = await _category_fallback(client, {"q": request.text, "categoria": request.category})
+        if fallback is not None:
+            result = fallback
+            selected, approximate = select_products(result.get("data") or [], request, limit=3)
+    result = {**result, "data": selected, "total": len(selected), "consulta_usada": result.get("consulta_usada") or request.query,
+              "aproximado": approximate, "requisitos_no_confirmados": list(request.terms) if approximate else []}
+    if approximate:
+        result["consulta_original"] = request.text
+    result = await _resolve_with_color(client, result, {"q": request.text})
+    _record_demand({"q": request.query, "categoria": request.category}, result)
+    return result
+
+
 async def execute_tool(name: str, args: dict) -> str:
     """Ejecuta una herramienta y devuelve el resultado como string JSON."""
     started = time.monotonic()
@@ -516,7 +571,10 @@ async def execute_tool(name: str, args: dict) -> str:
             if turn_budget() and name in ("buscar_productos", "catalogo_categoria"):
                 args = {**(args or {}), "orden": "asc"}
 
-            if name == "buscar_productos":
+            request = parse_request(turn_text() or str((args or {}).get("q") or ""))
+            if name in ("buscar_productos", "catalogo_categoria", "buscar_semantico") and request.specific and not _is_free_campaign_search({"q": request.text}):
+                result = await _specific_catalog_search(client, request, args or {})
+            elif name == "buscar_productos":
                 args = dict(args or {})
                 result = await _pick("buscar_productos", catalog.buscar_productos)(client, args)
                 # LIKE vacío → Qdrant (cubre "ositos panda", typos, sinónimos).
@@ -615,6 +673,8 @@ async def execute_tool(name: str, args: dict) -> str:
 
             elif name == "buscar_semantico":
                 args = dict(args or {})
+                if turn_excluded_ids():
+                    args["excluir_ids"] = list(set([*(args.get("excluir_ids") or []), *turn_excluded_ids()]))
                 # El índice guarda el precio en USD, y convertir no es tarea del
                 # modelo: el tope lo pone el código, venga lo que venga en los args.
                 presupuesto = turn_budget()
@@ -707,6 +767,14 @@ async def execute_tool(name: str, args: dict) -> str:
                 result = await search.buscar_conocimiento(args or {})
             else:
                 result = {"error": f"Herramienta desconocida: {name}"}
+            if name in ("buscar_productos", "buscar_semantico", "catalogo_categoria", "productos_similares", "productos_destacados", "productos_oferta", "productos_por_ocasion") and isinstance(result, dict) and isinstance(result.get("data"), list):
+                if request.specific:
+                    result = enforce_category(result, request.category)
+                selected, approximate = select_products(result["data"], request, limit=3 if request.specific else None)
+                result = {**result, "data": selected, "total": len(selected)}
+                if request.specific:
+                    result["aproximado"] = approximate
+                    result["requisitos_no_confirmados"] = list(request.terms) if approximate else []
         outcome = "ok"
         if isinstance(result, dict) and result.get("blocked"):
             outcome = "blocked"

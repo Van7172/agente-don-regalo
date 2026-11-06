@@ -626,6 +626,8 @@ async def run_specialist(
     seen_ids: set[int] = set()
     tools_used: list[str] = []
     tool_calls_executed = 0
+    catalog_approximate = False
+    unmet_requirements: list[str] = []
     model_name = model or settings.openai_model
     round_limit = (
         settings.max_tool_rounds
@@ -633,12 +635,21 @@ async def run_specialist(
         else max(1, max_tool_rounds)
     )
 
-    def _absorb(raw_result: str) -> None:
+    def _absorb(raw_result: str, tool_name: str) -> None:
+        nonlocal catalog_approximate, unmet_requirements
         try:
             payload = json.loads(raw_result)
         except (TypeError, ValueError):
             return
-        for product in extract_products(payload):
+        products = extract_products(payload)
+        if tool_name in {"buscar_productos", "buscar_semantico", "catalogo_categoria", "productos_similares", "productos_por_ocasion", "productos_destacados", "productos_oferta", "detalle_producto"}:
+            # Una segunda búsqueda/ficha afina la primera. No acumular candidatos
+            # descartados junto al producto que acabamos de verificar.
+            artifacts.clear()
+            seen_ids.clear()
+            catalog_approximate = bool(isinstance(payload, dict) and payload.get("aproximado"))
+            unmet_requirements = list(payload.get("requisitos_no_confirmados") or []) if isinstance(payload, dict) else []
+        for product in products:
             if product.id_producto in seen_ids:
                 continue
             seen_ids.add(product.id_producto)
@@ -752,6 +763,8 @@ async def run_specialist(
                         user_facing=msg.get("content"),
                         artifacts=artifacts,
                         tools_used=tools_used,
+                        catalog_approximate=catalog_approximate,
+                        unmet_requirements=unmet_requirements,
                     )
 
                 messages.append(msg)
@@ -836,12 +849,13 @@ async def run_specialist(
                     continue
 
                 # Presupuesto total del turno, no solo de esta ronda. Para
-                # catálogo vale uno: después del primer resultado el siguiente
-                # completion ya no recibe schemas de herramientas.
+                # Se permite verificar/refinar en otra ronda; nunca ejecutar dos
+                # búsquedas independientes si el especialista es secuencial.
                 if max_tool_calls is not None:
                     remaining = max(0, max_tool_calls - tool_calls_executed)
-                    allowed_by_budget = tool_calls[:remaining]
-                    for call in tool_calls[remaining:]:
+                    permitted = remaining if parallel_tool_calls else min(remaining, 1)
+                    allowed_by_budget = tool_calls[:permitted]
+                    for call in tool_calls[permitted:]:
                         fn = str((call.get("function") or {}).get("name") or "")
                         record_operation("guardrail.tool_budget", "blocked")
                         audit_event(
@@ -1040,7 +1054,8 @@ async def run_specialist(
 
                     results = await asyncio.gather(*[_run_one(c) for c in parallel])
                     for tool_call_id, result in results:
-                        _absorb(result)
+                        call_name = next(c["function"]["name"] for c in parallel if c["id"] == tool_call_id)
+                        _absorb(result, call_name)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
@@ -1068,6 +1083,8 @@ async def run_specialist(
                 user_facing=data["choices"][0]["message"].get("content"),
                 artifacts=artifacts,
                 tools_used=tools_used,
+                catalog_approximate=catalog_approximate,
+                unmet_requirements=unmet_requirements,
             )
     except preempt.TurnAborted:
         # No es un fallo del bucle: el cliente escribió otra vez y este turno se
@@ -1097,7 +1114,8 @@ async def run_specialist(
             error_type=type(e).__name__,
             tool_count=len(tools_used),
         )
-        return AgentResult(user_facing=None, artifacts=artifacts, tools_used=tools_used)
+        return AgentResult(user_facing=None, artifacts=artifacts, tools_used=tools_used,
+                           catalog_approximate=catalog_approximate, unmet_requirements=unmet_requirements)
     finally:
         if early_filler_task and not early_filler_task.done():
             early_filler_task.cancel()

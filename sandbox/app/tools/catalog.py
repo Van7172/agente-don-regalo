@@ -12,6 +12,8 @@ from app.observability import record_api_call, record_operation
 from app.resilience import circuit_breaker
 from app.tools import adapters
 from app.tools.image_validation import valid_products
+from app.tools.attributes import turn_text, turn_excluded_ids
+from app.tools.relevance import rank_candidates
 
 log = logging.getLogger(__name__)
 
@@ -104,9 +106,9 @@ async def _productos(
         return {**normalized, "data": {**detalle, "imagen_url": ""}}
     if not isinstance(normalized.get("data"), list):
         return normalized
-    products = await valid_products(
-        client, normalized["data"], limit=DEFAULT_PER_PAGE
-    )
+    candidates = [p for p in normalized["data"] if p.get("id_producto") not in turn_excluded_ids()]
+    candidates = rank_candidates(candidates, turn_text() or str((params or {}).get("q") or ""))
+    products = await valid_products(client, candidates, limit=DEFAULT_PER_PAGE)
     return {**normalized, "data": products, "total": len(products)}
 
 
