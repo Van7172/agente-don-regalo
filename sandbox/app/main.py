@@ -113,8 +113,10 @@ if WEB_DIR.is_dir():
 @app.get("/health")
 async def health():
     from app.harness import catalog_rollout
+    from app.harness import contextual
     return {
         "status": "ok",
+        "contextual_delivery": contextual.status(),
         "catalog_flow": {k: v for k, v in catalog_rollout.status().items() if k in {"enabled", "percent", "disabled_runtime", "selection"}},
         "stack": "whatsapp-cloud-crm",
         "crm_mode": settings.crm_mode,

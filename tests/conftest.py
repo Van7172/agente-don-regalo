@@ -22,6 +22,12 @@ from app.resilience import reset_circuit_breakers
 
 
 @pytest.fixture(autouse=True)
+def contextual_model_is_explicit_in_tests(monkeypatch):
+    """Unit tests opt in and replace the model; never spend against a live key."""
+    monkeypatch.setattr(app_settings, "contextual_delivery_enabled", False)
+
+
+@pytest.fixture(autouse=True)
 def circuitos_limpios():
     reset_circuit_breakers()
     yield
