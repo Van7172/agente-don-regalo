@@ -196,6 +196,8 @@ def no_third_party_contact(
     reply: str,
     state: ConversationState,
     user_text: str = "",
+    *,
+    artifacts: list[Product] | tuple[Product, ...] = (),
 ) -> Violation | None:
     """Ningún teléfono ni correo que no sea de esta conversación.
 
@@ -214,7 +216,14 @@ def no_third_party_contact(
     Sin esto, el paso del cierre que confirma el número del destinatario se
     marcaría como fuga y se degradaría — rompiendo el cierre.
     """
-    encontrados = set(find_contacts(reply))
+    # Un nombre de archivo de imagen puede contener 9 dígitos que parecen un
+    # teléfono. Excluir solo URLs aportadas por las fichas verificadas, nunca
+    # enlaces arbitrarios de la prosa. El teléfono del caption sigue detectándose.
+    prose = reply
+    for product in artifacts:
+        if product.imagen_url:
+            prose = prose.replace(product.imagen_url, "")
+    encontrados = set(find_contacts(prose))
     if not encontrados:
         return None
 
@@ -444,7 +453,7 @@ def check_reply(
         no_cash_on_delivery(reply),
         no_internal_context(reply),
         no_system_prompt_leak(reply),
-        no_third_party_contact(reply, state, user_text),
+        no_third_party_contact(reply, state, user_text, artifacts=artifacts),
         image_urls_on_own_line(reply),
         prices_are_sourced(reply, artifacts, sourced_prices),
         no_raw_product_ids(reply),

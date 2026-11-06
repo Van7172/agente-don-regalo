@@ -28,6 +28,7 @@ _SAFE_FIELDS = frozenset(
         "agent",
         "backend",
         "cached_tokens",
+        "catalog_strategy",
         "completion_tokens",
         "circuit",
         "conversation_id",

@@ -123,6 +123,7 @@ class AgentResult:
     sourced_prices: list[float] = field(default_factory=list)
     catalog_approximate: bool = False
     unmet_requirements: list[str] = field(default_factory=list)
+    catalog_strategy: str = ""
 
     @property
     def product_ids(self) -> list[int]:

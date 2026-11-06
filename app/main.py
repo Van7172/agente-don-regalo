@@ -112,8 +112,10 @@ if WEB_DIR.is_dir():
 
 @app.get("/health")
 async def health():
+    from app.harness import catalog_rollout
     return {
         "status": "ok",
+        "catalog_flow": {k: v for k, v in catalog_rollout.status().items() if k in {"enabled", "percent", "disabled_runtime", "selection"}},
         "stack": "whatsapp-cloud-crm",
         "crm_mode": settings.crm_mode,
         "crm_base_url": settings.crm_base_url if settings.crm_mode == "external" else None,

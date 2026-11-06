@@ -77,6 +77,7 @@ from app.harness.router import classify, classify_rules
 from app.harness.state import ConversationState, load_state, save_state
 from app.harness.stock import is_available, unavailable_message
 from app.harness import visual_product
+from app.harness import catalog_flow, catalog_rollout
 from app.tools.relevance import continue_query, parse_request, wants_more
 from app.harness.taxonomy import (
     MAX_MENU_DEPTH,
@@ -535,6 +536,7 @@ async def _run_master_body(
             artifacts=result.artifacts,
             tools_used=result.tools_used,
             state_patch=result.state_patch,
+            catalog_strategy=result.catalog_strategy,
             escalate=await perform_handoff(
                 wa_id=wa_id,
                 conversation_id=conversation_id,
@@ -557,6 +559,7 @@ async def _run_master_body(
     state.handoff_offered = _offers_handoff(result.user_facing)
 
     trace.tools = result.tools_used
+    trace.catalog_strategy = result.catalog_strategy
     trace.product_ids = result.product_ids
     trace.escalated = result.escalate is not None
     trace.handoff_reason = result.escalate.motivo if result.escalate else ""
@@ -605,6 +608,9 @@ async def _handle(
     intent: str, turn: Turn, state: ConversationState, *, prev_intent: str = "", **ctx
 ) -> AgentResult:
     """Enruta el turno al especialista o a la máquina de estados que le toca."""
+    was_checkout = checkout_active(state)
+    catalog_fallback = False
+    catalog_eligible = False
 
     # ── RUC, factura y recojo: datos oficiales, sin LLM ──────────
     # Son datos exactos y estables: no vale la pena arriesgar que un modelo
@@ -714,6 +720,18 @@ async def _handle(
     if intent == "catalog_search" and checkout_active(state) and leaves_product(turn.text):
         release_product(state)
 
+    catalog_eligible = intent == "catalog_search" and catalog_flow.eligible(turn, state, extra_system=politica, was_checkout=was_checkout)
+    if catalog_eligible:
+        if catalog_rollout.selected(ctx.get("conversation_id")):
+            record_operation("catalog.rollout", "selected")
+            concrete = await catalog_flow.run(turn, state, execute_tool)
+            if concrete is not None:
+                return concrete
+            catalog_fallback = True
+            record_operation("catalog.rollout", "fallback")
+        else:
+            record_operation("catalog.rollout", "legacy")
+
     # ── ¿Responde a un menú NUESTRO? Se resuelve en código, venga el intent que
     #    venga. Esto colgaba de `intent == "catalog_search"`, y ahí estaba el
     #    agujero: el router mandaba un "4" pelado a `small_talk` → concierge, que
@@ -727,6 +745,8 @@ async def _handle(
     #    menú vivo o si no está claro a qué opción se refiere.
     respondido = await _answer_menu(turn, state)
     if respondido is not None:
+        if catalog_eligible:
+            respondido.catalog_strategy = "legacy_fallback" if catalog_fallback else "legacy"
         return respondido
 
     # ── Se acabaron las preguntas: productos ──────────────────────
@@ -738,10 +758,15 @@ async def _handle(
     ):
         rescate = await _show_something(state, **ctx)
         if rescate is not None:
+            if catalog_eligible:
+                rescate.catalog_strategy = "legacy_fallback" if catalog_fallback else "legacy"
             return rescate
 
     # ── Resto: especialista LLM con toolset acotado ───────────────
-    return await _run_specialty(intent, turn, state, extra_system=politica, **ctx)
+    result = await _run_specialty(intent, turn, state, extra_system=politica, **ctx)
+    if catalog_eligible:
+        result.catalog_strategy = "legacy_fallback" if catalog_fallback else "legacy"
+    return result
 
 
 async def _deterministic_products(
