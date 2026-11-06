@@ -71,6 +71,12 @@ class ConversationState:
     maps_url: str = ""
     maps_district_candidate: str = ""
     maps_location_pending: bool = False
+    maps_location_confirmed: bool = False
+    maps_confirmation_kind: str = ""
+    maps_previous_district: str = ""
+    delivery_reference: str = ""
+    delivery_point: str = ""
+    delivery_point_pending: bool = False
     # Datos que recoge el cierre para crear el pedido temporal en el panel.
     dedicatoria: str = ""
     nombre_destinatario: str = ""

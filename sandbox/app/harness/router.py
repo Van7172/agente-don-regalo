@@ -37,6 +37,7 @@ from app.guardrails.conversation import PERSON_REQUEST_PATTERN, asks_customizati
 from app.harness.aliases import pick_zone
 from app.harness.replies import YES, short_reply
 from app.harness.state import ConversationState
+from app.harness.delivery_location import capture_reference, delivery_point
 from app.harness.taxonomy import looks_like_option_pick
 from app.observability import audit_event, record_llm_usage, record_operation
 from app.payments import cancel_means_payment
@@ -91,7 +92,7 @@ _CATALOG_RE = re.compile(
 # `_CATALOG_RE`, de "¿tienen flores?") apagaba la regla de cobertura de abajo
 # y la pregunta acababa buscando un producto llamado "delivery".
 _DELIVERY_EXISTS_RE = re.compile(
-    r"(?:hay|hacen|tienen|dan)\s+(?:delivery|entregas?|env[ií]os?)|"
+    r"(?:hay|hacen|tienen|dan)\s+(?:deliver(?:y)?\b|entregas?|env[ií]os?)|"
     r"(?:delivery|entregas?|env[ií]os?)\s+a\s+domicilio|"
     r"entregan\s+a\s+domicilio",
     re.I,
@@ -293,6 +294,11 @@ def classify_rules(
 
     if _TRACK_RE.search(norm):
         return Classification("track_order", 0.95, "rules")
+
+    if state.checkout_step not in ("card_text", "recipient", "contact") and (
+        capture_reference(raw, state) or (state.delivery_point_pending and delivery_point(raw))
+    ):
+        return Classification("coverage", 0.98, "rules")
 
     # Cierre en curso: manda el FSM… salvo que el cliente pregunte otra cosa.
     if checkout_active(state):

@@ -33,6 +33,9 @@ _SENSITIVE_KEYS = frozenset(
         "address",
         "correo",
         "direccion",
+        "delivery_reference",
+        "delivery_point",
+        "maps_url",
         "document",
         "documento",
         "dni",
@@ -48,6 +51,9 @@ _KEY_LABELS = {
     "address": "[dirección protegida]",
     "correo": "[correo protegido]",
     "direccion": "[dirección protegida]",
+    "delivery_reference": "[dirección protegida]",
+    "delivery_point": "[dirección protegida]",
+    "maps_url": "[dirección protegida]",
     "document": "[documento protegido]",
     "documento": "[documento protegido]",
     "dni": "[documento protegido]",
@@ -208,6 +214,6 @@ def _category_for_key(key: str) -> str:
         return "email"
     if key in {"phone", "telefono", "telefono_destinatario"}:
         return "phone"
-    if key in {"address", "direccion"}:
+    if key in {"address", "direccion", "delivery_reference", "delivery_point", "maps_url"}:
         return "address"
     return "document"

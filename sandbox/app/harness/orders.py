@@ -189,6 +189,9 @@ def build_body(
     Devuelve `None` si falta algún campo obligatorio que no podemos completar (el
     orquestador simplemente no crea el pedido y deja constancia en el log).
     """
+    from app.harness.delivery_location import delivery_address
+    if state.maps_location_pending or state.delivery_point_pending:
+        return None
     id_dist = id_distrito if id_distrito is not None else state.id_distrito
     fecha = normalize_fecha(state.date)
     hora = hora_entrega_api(state.time_slot)
@@ -214,7 +217,7 @@ def build_body(
         "hora_entrega": hora,
         "dedicatoria": state.dedicatoria or "Sin dedicatoria",
         "id_distrito": id_dist,
-        "direccion": state.direccion,
+        "direccion": delivery_address(state),
         "tipo": state.tipo,
     }
 

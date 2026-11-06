@@ -4,6 +4,26 @@ El flujo distingue evidencia de Maps, distrito confirmado por el cliente, hora
 solicitada y franja aceptada. Un enlace nunca es un nombre de distrito y una hora
 puntual nunca implica aceptar una franja.
 
+## Referencias y pines que completan el destino
+
+Un aeropuerto, hospital, hotel o dirección de calle se guarda como referencia,
+separada del distrito y del punto de recepción. Si el cliente ya indicó Callao,
+«Aeropuerto Jorge Chávez» no se busca como distrito ni exige buscarlo en Maps:
+se reconoce la referencia y se pide el punto de recepción.
+
+Cuando llega un pin sin distrito legible, se utiliza el distrito previamente
+indicado para preguntar si corresponde al destino conversado. Es contexto del
+cliente, no una afirmación de que Maps geocodificó las coordenadas. Si Maps indica
+otro distrito, se pregunta por esa diferencia. En ambos casos la tarifa queda
+pendiente y se consulta nuevamente tras confirmar; los datos anteriores no
+autorizan cobrar automáticamente una entrega nueva.
+
+El pin confirmado y la referencia pasan al resumen y a la dirección del pedido.
+Un punto o pin pendiente bloquea el cierre. Cambiar de distrito o de referencia
+descarta datos de ubicación anteriores para no mezclarlos con el nuevo destino.
+No se agrega un servicio externo de geocodificación ni se inventa cobertura de
+zonas restringidas o interiores de instalaciones.
+
 ## Comportamiento
 
 - Los enlaces HTTPS de Google Maps se leen con redirecciones limitadas a orígenes

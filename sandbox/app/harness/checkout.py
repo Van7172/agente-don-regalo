@@ -21,6 +21,7 @@ from app.harness.aliases import pick_zone
 from app.harness.replies import MIXED, NO, YES, short_reply
 from app.harness.state import ConversationState
 from app.harness.delivery_request import requested_clock_time, time_confirmation_reply
+from app.harness.delivery_location import maps_confirmation_question, point_question, delivery_address
 from app.payments import payment_instructions
 
 _LIMA = ZoneInfo("America/Lima")
@@ -444,10 +445,9 @@ def revalidate_delivery(
     todo lo demás. Devuelve el mensaje para el cliente, o `None` si todo sigue bien.
     """
     if state.maps_location_pending:
-        return (
-            f"Según el enlace de Maps proporcionado, ¿la dirección queda en {state.maps_district_candidate}?"
-            if state.maps_district_candidate else "¿En qué distrito queda la dirección del enlace de Maps?"
-        )
+        return maps_confirmation_question(state)
+    if state.delivery_point_pending:
+        return point_question(state)
     if state.delivery_time_pending or state.delivery_time_requires_team:
         return time_confirmation_reply(state)
     if not state.date:
@@ -696,6 +696,12 @@ def clear_checkout(state: ConversationState) -> ConversationState:
     state.maps_url = ""
     state.maps_district_candidate = ""
     state.maps_location_pending = False
+    state.maps_location_confirmed = False
+    state.maps_confirmation_kind = ""
+    state.maps_previous_district = ""
+    state.delivery_reference = ""
+    state.delivery_point = ""
+    state.delivery_point_pending = False
     state.dedicatoria = ""
     state.nombre_destinatario = ""
     state.apellidos_destinatario = ""
@@ -1183,7 +1189,12 @@ def _advance(
                     "las puedes dar después).",
                 ),
             )
-        state.direccion = direccion
+        # This answer may only add the building type to an earlier point/pin.
+        if state.delivery_reference or state.delivery_point or state.maps_location_confirmed:
+            base_address = delivery_address(state)
+            state.direccion = base_address + (f" | {direccion}" if direccion not in base_address else "")
+        else:
+            state.direccion = direccion
         state.tipo = tipo
         state.checkout_step = "contact"
         return state, _ASK_CONTACT, meta
@@ -1286,7 +1297,7 @@ def _summary_message(state: ConversationState) -> str:
         f"· Fecha: {display_fecha(state.date) if state.date else '—'}",
         f"· Horario: {state.time_slot or '—'}",
         f"· Para: {destinatario}",
-        f"· Dirección: {state.direccion or '—'}{tipo_txt}",
+        f"· Dirección: {delivery_address(state) or '—'}{tipo_txt}",
     ]
     if state.dedicatoria and state.dedicatoria != "Sin dedicatoria":
         lines.append(f"· Tarjeta: {state.dedicatoria}")

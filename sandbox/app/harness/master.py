@@ -72,6 +72,7 @@ from app.harness.delivery_request import (
     is_window_reply, flexible_time_reply,
 )
 from app.harness.maps_location import extract_maps_url
+from app.harness.delivery_location import capture_reference, delivery_point, maps_confirmation_question
 from app.harness.checkout import parse_schedule
 from app.harness.orders import create_from_state as create_temporal_order
 from app.harness.quoting import split_quote
@@ -482,6 +483,7 @@ async def _run_master_body(
         and result.escalate is None
         and (result.user_facing or "").strip()
         and not state.maps_location_pending
+        and not state.delivery_point_pending
         and not state.delivery_time_pending
     ):
         result.user_facing = f"{result.user_facing}\n\n{pending_question(state)}"
@@ -565,7 +567,7 @@ async def _run_master_body(
     # sabrá que está aceptando la derivación y no una charla. Se recalcula cada
     # turno, así que se apaga solo en cuanto el bot deja de ofrecerlo.
     state.handoff_offered = bool(
-        not state.maps_location_pending and not state.delivery_time_pending
+        not state.maps_location_pending and not state.delivery_time_pending and not state.delivery_point_pending
         and _offers_handoff(result.user_facing)
     )
 
@@ -993,6 +995,8 @@ async def _handle_delivery_request(turn: Turn, state: ConversationState, *, inte
     """
     text = turn.text
     maps = extract_maps_url(text)
+    reference = capture_reference(text, state)
+    point = delivery_point(text) if state.delivery_point_pending else ""
     pending_maps = state.maps_location_pending or bool(state.maps_district_candidate)
     answer = short_reply(text)
     logistics = intent == "coverage" or state.checkout_step in ("district", "date", "schedule")
@@ -1006,12 +1010,9 @@ async def _handle_delivery_request(turn: Turn, state: ConversationState, *, inte
         state.delivery_time_pending = True
         state.time_slot = ""
 
-    if maps or (pending_maps and (answer in (YES, NO) or resolve_alias(text) or clock or text.strip() in ("..", "..."))):
+    if maps or reference or point or (pending_maps and (answer in (YES, NO) or resolve_alias(text) or clock or text.strip() in ("..", "..."))):
         if pending_maps and not maps and answer not in (YES, NO) and not resolve_alias(text):
-            reply = (
-                f"Según el enlace de Maps proporcionado, ¿la dirección queda en {state.maps_district_candidate}?"
-                if state.maps_district_candidate else "¿En qué distrito queda la dirección del enlace de Maps?"
-            )
+            reply = maps_confirmation_question(state)
             result = AgentResult(user_facing=reply)
         else:
             result = await _handle_coverage(turn, state, **ctx)
