@@ -1,5 +1,6 @@
 """Delivery location evidence and exact-hour requests across consecutive turns."""
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -10,6 +11,19 @@ from app.harness.contracts import EscalateReason, Turn
 from app.harness.delivery_request import remember_delivery_date, requested_clock_time
 from app.harness.router import classify_rules
 from app.harness.state import ConversationState
+
+
+@pytest.fixture(autouse=True)
+def fixed_delivery_calendar(monkeypatch):
+    from app.harness import checkout, delivery_request
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = datetime(2026, 11, 6, 10, tzinfo=ZoneInfo("America/Lima"))
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+    monkeypatch.setattr(delivery_request, "lima_today", lambda: date(2026, 11, 6))
+    monkeypatch.setattr(checkout, "lima_today", lambda: date(2026, 11, 6))
+    monkeypatch.setattr(checkout, "datetime", FixedDatetime)
 
 
 @pytest.fixture
