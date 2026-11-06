@@ -65,6 +65,12 @@ class ConversationState:
     shipping_fee_usd: Optional[float] = None
     date: str = ""
     time_slot: str = ""
+    requested_delivery_time: str = ""
+    delivery_time_pending: bool = False
+    delivery_time_requires_team: bool = False
+    maps_url: str = ""
+    maps_district_candidate: str = ""
+    maps_location_pending: bool = False
     # Datos que recoge el cierre para crear el pedido temporal en el panel.
     dedicatoria: str = ""
     nombre_destinatario: str = ""

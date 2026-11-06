@@ -58,8 +58,8 @@ def test_las_franjas_de_verdad_siguen_entrando():
         "9 am a 11 am": "09:00 AM a 11:00 AM",
         "de 9 a 11": "09:00 AM a 11:00 AM",
         "mañana": "09:00 AM a 11:00 AM",
-        "a las 5": "04:00 PM a 07:00 PM",
-        "5 pm": "04:00 PM a 07:00 PM",
+        "a las 5": None,
+        "5 pm": None,
     }
     for texto, franja in esperado.items():
         assert parse_schedule(texto, JUEVES) == franja, texto

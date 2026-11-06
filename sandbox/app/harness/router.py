@@ -260,6 +260,19 @@ def classify_rules(
     if _ESCALATE_RE.search(norm):
         return Classification("escalate", 0.95, "rules")
 
+    # The question 'is that exact time essential?' and a Maps district
+    # confirmation are logistics decisions, even when the prior reply mentions
+    # the team. A bare yes must not bypass district confirmation via handoff.
+    if state.maps_location_pending or state.maps_district_candidate or state.delivery_time_pending or state.delivery_time_requires_team:
+        from app.harness.maps_location import extract_maps_url
+        from app.harness.delivery_request import requested_clock_time, is_window_reply, flexible_time_reply
+        from app.harness.replies import NO
+        if (short_reply(raw) in (YES, NO) or requested_clock_time(raw)
+                or (state.delivery_time_pending and (is_window_reply(raw, allow_menu=state.checkout_step == "schedule") or flexible_time_reply(raw)))
+                or explicit_delivery_destination(raw) or extract_maps_url(raw)
+                or raw.strip() in ("..", "...")):
+            return Classification("coverage", 0.98, "rules")
+
     # Cambiarle algo a un producto: solo lo decide una persona. La dedicatoria no se
     # interpreta, y una dirección solo si lo pregunta: "Calle Cambia el Globo 123".
     if asks_customization(norm) and (

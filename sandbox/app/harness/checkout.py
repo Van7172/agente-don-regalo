@@ -20,6 +20,7 @@ from app.guardrails import is_courtesy_text, is_greeting_text
 from app.harness.aliases import pick_zone
 from app.harness.replies import MIXED, NO, YES, short_reply
 from app.harness.state import ConversationState
+from app.harness.delivery_request import requested_clock_time, time_confirmation_reply
 from app.payments import payment_instructions
 
 _LIMA = ZoneInfo("America/Lima")
@@ -179,6 +180,8 @@ def parse_schedule(
 ) -> str | None:
     raw = (text or "").strip()
     if not raw:
+        return None
+    if requested_clock_time(raw):
         return None
     schedule_map = schedule_map_for(delivery_date, breakfast=breakfast, now=now)
     if (
@@ -440,6 +443,13 @@ def revalidate_delivery(
     al resumen y justo antes de confirmar. Se recuerda dónde iba para no repetirle
     todo lo demás. Devuelve el mensaje para el cliente, o `None` si todo sigue bien.
     """
+    if state.maps_location_pending:
+        return (
+            f"Según el enlace de Maps proporcionado, ¿la dirección queda en {state.maps_district_candidate}?"
+            if state.maps_district_candidate else "¿En qué distrito queda la dirección del enlace de Maps?"
+        )
+    if state.delivery_time_pending or state.delivery_time_requires_team:
+        return time_confirmation_reply(state)
     if not state.date:
         return None
     if today is None:
@@ -680,6 +690,12 @@ def clear_checkout(state: ConversationState) -> ConversationState:
     state.shipping_fee_usd = None
     state.date = ""
     state.time_slot = ""
+    state.requested_delivery_time = ""
+    state.delivery_time_pending = False
+    state.delivery_time_requires_team = False
+    state.maps_url = ""
+    state.maps_district_candidate = ""
+    state.maps_location_pending = False
     state.dedicatoria = ""
     state.nombre_destinatario = ""
     state.apellidos_destinatario = ""
@@ -998,6 +1014,12 @@ def _advance(
             return _courtesy(
                 state, meta, f"¿En qué horario te llega mejor? 🕐\n{opciones}", text=text
             )
+        requested = requested_clock_time(text)
+        if requested:
+            state.requested_delivery_time = requested
+            state.delivery_time_pending = True
+            state.time_slot = ""
+            return state, time_confirmation_reply(state), meta
         slot = parse_schedule(text, state.date, **franjas)
         if slot is None:
             # ¿Está contestando a la pregunta ANTERIOR? En WhatsApp se escribe a
@@ -1075,6 +1097,8 @@ def _advance(
                 ),
             )
         state.time_slot = slot
+        state.delivery_time_pending = False
+        state.delivery_time_requires_team = False
         state.checkout_step = "card"
         return state, "¿Quieres incluir una tarjeta con mensaje? 💌", meta
 

@@ -164,7 +164,7 @@ def test_un_saludo_no_se_guarda_como_distrito():
         ("7 a 9", "07:00 AM a 09:00 AM"),
         ("de 9 a 11", "09:00 AM a 11:00 AM"),
         ("entre 11 y 2", "11:00 AM a 02:00 PM"),
-        ("a las 7", "07:00 AM a 09:00 AM"),
+        ("a las 7", None),  # requested clock time needs separate agreement
         ("temprano", "07:00 AM a 09:00 AM"),
         ("en la mañana", "09:00 AM a 11:00 AM"),
         ("al mediodía", "11:00 AM a 02:00 PM"),
