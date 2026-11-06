@@ -280,6 +280,12 @@ class Settings:
         self.pedido_temporal_enabled: bool = (
             os.getenv("PEDIDO_TEMPORAL_ENABLED", "1") == "1"
         )
+        # Catálogo determinista: opt-in y cohorte estable por conversación.
+        self.catalog_flow_enabled = os.getenv("CATALOG_FLOW_ENABLED", "0") == "1"
+        try:
+            self.catalog_flow_percent = max(0, min(100, int(os.getenv("CATALOG_FLOW_PERCENT", "0"))))
+        except ValueError:
+            self.catalog_flow_percent = 0
 
         # Fase 2 — competencia. OPT-IN: apagado por defecto hasta correr 016 y
         # subir el CRM. El crawl es lento a propósito (delay + tope por sitio).

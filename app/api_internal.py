@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
+from app.harness import catalog_rollout
 from app.crm import http_client as crm_http
 from app.observability import metrics_snapshot
 from app.resilience import circuit_breakers_snapshot
@@ -75,6 +76,7 @@ async def operations(
     _check_token(x_agent_token)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "catalog_flow": catalog_rollout.status(),
         "queue": await inbound_queue_operational_stats(),
         "operations": metrics_snapshot(),
         "circuits": circuit_breakers_snapshot(),
@@ -84,6 +86,21 @@ async def operations(
             "interval_seconds": settings.competition_crawl_interval_seconds,
         },
     }
+
+
+@router.get("/catalog-flow/status")
+async def catalog_flow_status(x_agent_token: str | None = Header(default=None)):
+    _check_token(x_agent_token)
+    return catalog_rollout.status()
+
+
+@router.post("/catalog-flow/disable")
+async def catalog_flow_disable(x_agent_token: str | None = Header(default=None)):
+    if not settings.agent_internal_token or settings.agent_internal_token == "dev-agent-token-change-me":
+        raise HTTPException(503, "Control token not configured")
+    _check_token(x_agent_token)
+    catalog_rollout.disable()
+    return catalog_rollout.status()
 
 
 @router.post("/competition/crawl")

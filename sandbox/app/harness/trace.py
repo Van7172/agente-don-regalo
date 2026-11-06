@@ -31,6 +31,7 @@ class Trace:
     agent: str = ""
     confidence: float = 1.0
     router: str = ""       # rules | llm | fallback
+    catalog_strategy: str = ""
     # Huella de las instrucciones con las que se atendió el turno. Los prompts
     # son constantes Python: sin esto, un cambio de redacción y un cambio de
     # comportamiento eran indistinguibles al leer los logs. Con ella se puede
@@ -105,12 +106,19 @@ class Trace:
             outcome,
             duration_ms=self.latency_ms,
         )
+        if self.catalog_strategy in {"legacy", "legacy_fallback", "deterministic"}:
+            record_operation(f"catalog.turn.{self.catalog_strategy}", outcome, duration_ms=self.latency_ms)
+            from app.harness.catalog_rollout import observe
+            observe(self.catalog_strategy, violations=len(self.violations), chat_calls=self.llm_calls,
+                    prompt_tokens=self.prompt_tokens, completion_tokens=self.completion_tokens,
+                    cached_tokens=self.cached_tokens, tool_calls=len(self.tools))
         audit_event(
             "harness.turn",
             outcome,
             conversation_id=self.conversation_id,
             intent=self.intent,
             agent=self.agent,
+            catalog_strategy=self.catalog_strategy,
             router=self.router,
             prompt_version=self.prompt_version,
             tool_count=len(self.tools),

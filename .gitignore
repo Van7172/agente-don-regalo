@@ -2,6 +2,7 @@
 .env
 sandbox/.env
 .venv/
+.venv-langgraph/
 venv/
 env/
 sandbox/.venv/
