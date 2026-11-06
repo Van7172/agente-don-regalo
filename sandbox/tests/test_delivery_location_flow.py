@@ -254,7 +254,7 @@ async def test_maps_new_destination_cannot_reuse_old_fee_or_confirm_sale(monkeyp
     await _turn(state, "https://maps.app.goo.gl/abc")
     assert not state.district and state.id_distrito is None
     assert state.shipping_fee_sol is None and state.maps_location_pending
-    assert "¿En qué distrito" in revalidate_delivery(state)
+    assert "¿Corresponde al punto de entrega" in revalidate_delivery(state)
     result = await _turn(state, "Es en Callao")
     assert state.district == "Callao" and state.shipping_fee_sol == 20
     assert not state.maps_location_pending

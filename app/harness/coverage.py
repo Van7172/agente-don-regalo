@@ -17,6 +17,9 @@ from app.harness.state import ConversationState
 from app.harness.delivery_request import URL_RE
 from app.harness.maps_location import extract_maps_url, resolve_maps_district
 from app.harness.replies import YES, NO, short_reply
+from app.harness.delivery_location import (
+    delivery_reference, delivery_point, point_question, maps_confirmation_question, reference_district,
+)
 from app.tools import catalog
 
 log = logging.getLogger(__name__)
@@ -253,6 +256,7 @@ async def resolve_coverage(
     # Contesta a la zona que se le acaba de preguntar: ya tenemos sus datos.
     maps_url = extract_maps_url(user_text)
     if maps_url:
+        previous_district = state.district or state.maps_previous_district
         # A new destination invalidates the previous district and shipping fee.
         # Nullable fields cannot be cleared through state.patch(None).
         state.district = ""
@@ -260,28 +264,77 @@ async def resolve_coverage(
         state.shipping_fee_sol = None
         state.shipping_fee_usd = None
         state.district_options = []
+        state.direccion = ""
         candidate = await resolve_maps_district(maps_url)
+        context_matches = bool(previous_district and (not candidate or _norm(candidate) == _norm(previous_district)))
+        if context_matches:
+            candidate = previous_district
+            kind = "destination"
+        else:
+            kind = "district"
+        pending_state = ConversationState.from_dict(state.to_dict())
+        pending_state.maps_confirmation_kind = kind
+        pending_state.maps_district_candidate = candidate
         ask = (
-            f"Según el enlace de Maps proporcionado, ¿la dirección queda en {candidate}? "
-            "Con tu confirmación reviso la cobertura y la tarifa."
+            maps_confirmation_question(pending_state) + " Con tu confirmación reviso la cobertura y la tarifa."
             if candidate else
             "Recibí el enlace de Maps, pero no pude identificar el distrito con certeza. "
             "¿En qué distrito queda la dirección? Con eso reviso la cobertura y la tarifa."
         )
+        if candidate and previous_district and not context_matches:
+            ask = f"El enlace de Maps indica {candidate}, pero antes me indicaste {previous_district}. ¿Confirmas que la nueva entrega sería en {candidate}?"
         return {"ok": True, "user_facing": ask, "tools_used": ["google_maps_location"],
                 "structured": {"covered": None, "ambiguity": "maps_confirmation", "resolved_district": None},
                 "state_patch": {"maps_url": maps_url, "maps_district_candidate": candidate,
-                                "maps_location_pending": True}}
+                                "maps_location_pending": True, "maps_location_confirmed": False,
+                                "maps_confirmation_kind": kind, "maps_previous_district": previous_district}}
     pending_maps = state.maps_district_candidate
     if pending_maps:
         if short_reply(user_text) == YES:
             user_text = pending_maps
         elif short_reply(user_text) == NO:
             state.maps_district_candidate = ""
-            return {"ok": True, "user_facing": "Gracias por aclararlo. ¿En qué distrito queda la dirección?",
-                    "structured": {"covered": None}, "state_patch": {"maps_district_candidate": ""}}
+            ask = (
+                "Gracias por aclararlo. ¿En qué distrito queda el nuevo punto de entrega?"
+                if state.maps_confirmation_kind == "destination" else
+                "Gracias por aclararlo. ¿En qué distrito queda la dirección?"
+            )
+            return {"ok": True, "user_facing": ask,
+                    "structured": {"covered": None}, "tools_used": [],
+                    "state_patch": {"maps_district_candidate": "", "maps_confirmation_kind": "district",
+                                    "maps_url": "", "maps_location_confirmed": False,
+                                    "delivery_point": "", "delivery_point_pending": bool(state.delivery_reference)}}
         if resolve_alias(user_text):
             state.maps_district_candidate = ""
+    reference = delivery_reference(user_text)
+    if reference and not state.maps_location_pending:
+        # A reference complements a known district. It is never looked up as
+        # the district name, nor assigned a district from general model knowledge.
+        district = reference_district(user_text) or state.district
+        same_district = bool(district and _norm(district) == _norm(state.district))
+        if same_district or not district:
+            provisional = ConversationState.from_dict(state.to_dict())
+            provisional.delivery_reference = reference
+            ask = (
+                f"Tomo {reference} como referencia para la entrega en {district}. {point_question(provisional)}"
+                if district else f"Tomo {reference} como referencia. ¿En qué distrito queda para revisar la cobertura?"
+            )
+            return {"ok": True, "user_facing": ask, "tools_used": [],
+                    "structured": {"covered": None, "ambiguity": "delivery_reference"},
+                    "state_patch": {"delivery_reference": reference, "delivery_point": "", "delivery_point_pending": True,
+                                    "maps_url": "", "maps_location_confirmed": False, "direccion": ""}}
+    point = delivery_point(user_text) if state.delivery_point_pending else ""
+    if point and not state.maps_location_pending:
+        ask = (
+            "¿En qué distrito queda para revisar la cobertura?" if not state.district else
+            "¿Es una casa o una oficina?" if state.checkout_step == "address" else
+            "¿Para qué fecha lo necesitas? 📅" if state.chosen_product_id and not state.date else
+            "¿En qué rango horario lo necesitas? 🕐" if state.chosen_product_id and not state.time_slot else
+            "¿Qué regalo quieres enviar? 🎁"
+        )
+        return {"ok": True, "user_facing": f"Anotado el punto de entrega: {point}. {ask}", "tools_used": [],
+                "structured": {"covered": None, "ambiguity": "delivery_point"},
+                "state_patch": {"delivery_point": point, "delivery_point_pending": False}}
     if state.district_options:
         zona = pick_zone(user_text, state.district_options)
         if zona is not None:
@@ -317,7 +370,7 @@ async def resolve_coverage(
     if re.search(
         r"qu[eé]\s+zonas|distritos?\s+(cubren|tienen)|lista\s+de\s+distritos|"
         r"cobertura\s+en\s+lima|llegan\s+a\s+lima|"
-        r"(?:hay|hacen|tienen|dan)\s+(?:delivery|entregas?|env[ií]os?)|"
+        r"(?:hay|hacen|tienen|dan)\s+(?:deliver(?:y)?\b|entregas?|env[ií]os?)|"
         r"(?:delivery|entregas?|env[ií]os?)\s+a\s+domicilio|"
         r"entregan\s+a\s+domicilio",
         user_text or "",
@@ -387,6 +440,10 @@ async def resolve_coverage(
             "state_patch": {},
         }
 
+    if reference:
+        state.delivery_reference = reference
+        state.delivery_point_pending = True
+
     # La API repite distritos con tarifa distinta (ATE a $7 y a $15). Quedarse con el
     # primero es adivinar lo que paga el cliente. Si cada zona está descrita, se le
     # pregunta; si no hay con qué distinguirlas, no se da ninguna cifra.
@@ -445,12 +502,21 @@ def _covered(
     # `tarifa_envio_distrito` en USD, y leerla directamente era el bug que hacía
     # que NINGÚN distrito hiciera match.
     name = str(matched.get("nombre") or used_query)
+    previous_district = state.maps_previous_district if state.maps_location_pending else state.district
+    district_changed = bool(previous_district and _norm(previous_district) != _norm(name))
     fee_sol_f = _as_float(matched.get("tarifa_sol") or matched.get("precio_sol")) if fee_known else None
     fee_usd_f = _as_float(matched.get("tarifa_usd") or matched.get("precio_usd")) if fee_known else None
 
     ask = "¿Qué regalo quieres enviar? 🎁"
     if state.chosen_product_name or state.checkout_step not in ("idle", ""):
         ask = "¿En qué rango horario lo necesitas? 🕐" if state.date else "¿Para qué fecha lo necesitas? 📅"
+    if state.checkout_step == "address":
+        ask = "¿Es una casa o una oficina?"
+    if state.delivery_reference and (not district_changed or delivery_reference(used_query)) and (
+        (state.delivery_point_pending and not state.maps_location_pending)
+        or (state.maps_location_pending and not state.maps_url)
+    ):
+        ask = point_question(state)
 
     notas: list[str] = []
     if not fee_known:
@@ -477,7 +543,20 @@ def _covered(
         "intent_last": "coverage",
         "maps_location_pending": False,
         "maps_district_candidate": "",
+        "maps_confirmation_kind": "",
+        "maps_previous_district": "",
     }
+    if state.maps_location_pending:
+        patch["maps_location_confirmed"] = bool(state.maps_url)
+        patch["delivery_point_pending"] = bool(state.delivery_reference and not state.maps_url)
+        patch["delivery_point"] = ""  # confirmed pin is the handoff point
+        if district_changed:
+            patch["delivery_reference"] = ""
+            patch["delivery_point_pending"] = False
+    elif district_changed:
+        patch.update(maps_url="", maps_location_confirmed=False, delivery_point="", direccion="")
+        if not delivery_reference(used_query):
+            patch.update(delivery_reference="", delivery_point_pending=False)
     if state.district_options:
         patch["district_options"] = []
     # `id_distrito` lo exige `POST /pedidos/temporales`; lo guardamos aquí para no

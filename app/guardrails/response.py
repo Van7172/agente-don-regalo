@@ -233,6 +233,8 @@ def no_third_party_contact(
         state.telefono_destinatario,
         state.email_cliente,
         state.direccion,
+        state.delivery_reference,
+        state.delivery_point,
         state.nombre_cliente,
     ):
         conocidos.update(find_contacts(propio))
