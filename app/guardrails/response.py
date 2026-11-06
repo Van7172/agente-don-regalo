@@ -437,6 +437,8 @@ def check_reply(
     reply = reply or ""
     artifacts = artifacts or []
     state = state or ConversationState()
+    # Import diferido: app.tools inicializa su executor, que usa guardrails.
+    from app.tools.relevance import wants_more
 
     candidatas = [
         no_cash_on_delivery(reply),
@@ -450,7 +452,7 @@ def check_reply(
         unsupported_capability_claim(
             reply, tools_used=tools_used, agent=agent
         ),
-        no_repeated_products(state, artifacts),
+        no_repeated_products(state, artifacts) if not user_text or wants_more(user_text) else None,
         no_duplicates_within_reply(artifacts),
     ]
     return [v for v in candidatas if v is not None]

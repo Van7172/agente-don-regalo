@@ -63,6 +63,7 @@ def render_state(state: "ConversationState") -> str:
         "shown_product_ids": state.shown_product_ids[-30:],
         "chosen_product_id": state.chosen_product_id,
         "chosen_product_name": state.chosen_product_name,
+        "catalog_query": state.catalog_query,
     }
     if state.budget_amount:
         datos["presupuesto_del_cliente"] = budget_label(

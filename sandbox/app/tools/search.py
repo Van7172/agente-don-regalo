@@ -14,6 +14,8 @@ import httpx
 from app.config import settings
 from app.resilience import circuit_breaker
 from app.tools.image_validation import valid_products
+from app.tools.attributes import turn_text
+from app.tools.relevance import rank_candidates
 
 log = logging.getLogger(__name__)
 
@@ -124,11 +126,8 @@ def _build_filter(args: dict):
     must: list = []
     if not args.get("incluir_funebre"):
         must.append(FieldCondition(key="es_funebre", match=MatchValue(value=False)))
-    if args.get("id_ocasion"):
-        must.append(FieldCondition(
-            key="ocasiones_ids",
-            match=MatchAny(any=[int(args["id_ocasion"])]),
-        ))
+    # Las fichas sin etiqueta de ocasión siguen siendo candidatas. La ocasión
+    # es una preferencia de ranking: no demuestra que un producto sea incompatible.
     if args.get("precio_max"):
         must.append(FieldCondition(key="precio", range=Range(lte=float(args["precio_max"]))))
     if args.get("categoria_slug"):
@@ -202,6 +201,7 @@ def _hit_to_producto(h) -> dict:
         "imagen_url":        p.get("imagen_url"),
         "url":               p.get("url"),
         "score":             round(h.score, 4),
+        "ocasiones_ids":     p.get("ocasiones_ids") or [],
     }
 
 
@@ -251,9 +251,11 @@ async def buscar_semantico(client: httpx.AsyncClient, args: dict):
     candidatos = []
     for h in hits:
         p = _hit_to_producto(h)
-        p["_rank"] = h.score + _keyword_bonus(terms, p)
+        occasion_bonus = 0.06 if args.get("id_ocasion") in p.get("ocasiones_ids", []) else 0.0
+        p["_rank"] = h.score + _keyword_bonus(terms, p) + occasion_bonus
         candidatos.append(p)
     candidatos.sort(key=lambda p: p["_rank"], reverse=True)
+    candidatos = rank_candidates(candidatos, turn_text() or q)
 
     # Color pedido = límite duro (antes solo era un bonus léxico suave).
     from app.tools.attributes import extract_color_attributes, product_matches_attributes

@@ -5,9 +5,32 @@ import hashlib
 import html
 import json
 import re
+import unicodedata
 from typing import Any
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
+
+
+def infer_occasions(product: dict) -> list[int]:
+    """Solo ocasiones nombradas explícitamente en título/descripción corta.
+
+    Son metadatos derivados del índice; no cambian las etiquetas de la tienda.
+    """
+    text = clean_text(" ".join(str(product.get(k) or "") for k in (
+        "nombre", "nombre_producto", "descripcion_corta", "descripcion_corta_producto"
+    )))
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    patterns = ((1, r"\bcumplean(?:os|ero|era)\b"), (2, r"\baniversario\b"),
+                (3, r"\bfelicitacion(?:es)?\b"), (4, r"\b(?:nacimiento|recien nacido)\b"),
+                (5, r"\bagradecimiento\b"))
+    ids = []
+    for key, pattern in patterns:
+        for match in re.finditer(pattern, text):
+            prefix = text[max(0, match.start() - 30):match.start()]
+            if not re.search(r"\b(no|excepto|excluye)\b[^.!?]{0,25}$", prefix):
+                ids.append(key)
+                break
+    return ids
 
 _SLUG_PARENT = {
     "desayunos-criollos": "desayunos",
@@ -133,6 +156,7 @@ def build_payload(
 ) -> dict:
     category_name, category_slug, category_id = _category(product)
     _, occasion_ids = _occasions(product)
+    inferred_occasions = [key for key in infer_occasions(product) if key not in occasion_ids]
     product_id = int(product.get("id_producto") or product.get("id"))
     images = product.get("imagenes") or []
     image_url = product.get("imagen_url")
@@ -152,7 +176,9 @@ def build_payload(
         "categoria": category_name,
         "categoria_slug": category_slug,
         "categoria_id": category_id,
-        "ocasiones_ids": occasion_ids,
+        "ocasiones_ids": list(dict.fromkeys([*occasion_ids, *inferred_occasions])),
+        "ocasiones_catalogo_ids": occasion_ids,
+        "ocasiones_inferidas_ids": inferred_occasions,
         "es_funebre": category_slug == "arreglos-funebres"
         or bool(product.get("es_funebre")),
         "stock": int(product.get("stock") or product.get("stock_producto") or 0),

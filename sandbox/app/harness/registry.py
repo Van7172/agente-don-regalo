@@ -32,6 +32,7 @@ CATALOG_TOOLS = (
     "productos_destacados",
     "productos_oferta",
     "productos_por_ocasion",
+    "detalle_producto",
 )
 
 
@@ -86,8 +87,8 @@ AGENTS: dict[str, AgentSpec] = {
         playbook=playbooks.CATALOG,
         facts=("catalog_taxonomy", "pricing"),
         tool_names=CATALOG_TOOLS,
-        max_tool_rounds=2,
-        max_tool_calls=1,
+        max_tool_rounds=3,
+        max_tool_calls=2,
         parallel_tool_calls=False,
         output_policy="catalog",
     ),

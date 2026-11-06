@@ -99,6 +99,8 @@ class ConversationState:
     # CLIENTE —seguir sin ver nada—, que es lo que de verdad mata la venta.
     turns_without_products: int = 0
     shown_product_ids: list[int] = field(default_factory=list)
+    # Pedido comercial vigente para afinar «para cumpleaños / otras opciones».
+    catalog_query: str = ""
     # Últimos productos mostrados ({"id_producto", "nombre"}), en orden. Sin los
     # nombres no se puede resolver "quiero el segundo" ni "me gusta el panda".
     recent_products: list[dict] = field(default_factory=list)

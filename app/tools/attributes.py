@@ -32,6 +32,21 @@ def turn_text() -> str:
     return _TURN_TEXT.get()
 
 
+_TURN_EXCLUDED: ContextVar[tuple[int, ...]] = ContextVar("donregalo_excluded_products", default=())
+
+
+def set_turn_excluded_ids(ids):
+    return _TURN_EXCLUDED.set(tuple(ids or []))
+
+
+def reset_turn_excluded_ids(token):
+    _TURN_EXCLUDED.reset(token)
+
+
+def turn_excluded_ids() -> tuple[int, ...]:
+    return _TURN_EXCLUDED.get()
+
+
 # Mismo motivo: el presupuesto es un límite y el modelo no convierte monedas, así que
 # las tools lo leen de aquí en vez de esperar que se lo pasen bien.
 _TURN_BUDGET: ContextVar[tuple[float, str] | None] = ContextVar(

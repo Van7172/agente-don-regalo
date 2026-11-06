@@ -199,11 +199,12 @@ async def test_con_foto_del_producto_no_se_vuelcan_destacados(sin_red, monkeypat
     """Mandó la foto del ramo: enseñar 'lo más pedido' es cambiarle el pedido."""
     llamado = {}
 
-    async def fake_specialty(intent, turn, state, **ctx):
+    async def fake_visual(messages, query, execute):
         llamado["si"] = True
-        return AgentResult(user_facing="Veo el ramo de girasoles de la foto 🌻")
+        from app.harness.contracts import Product
+        return Product(id_producto=22, nombre="Ramo de Girasoles", precio_sol=120)
 
-    monkeypatch.setattr(master, "_run_specialty", fake_specialty)
+    monkeypatch.setattr(master.visual_product, "identify", fake_visual)
     state = ConversationState(
         turns_without_products=master.MAX_TURNS_WITHOUT_PRODUCTS, presented=True
     )

@@ -19,8 +19,8 @@ from app.services import agent as agent_mod
 
 def test_el_contrato_operativo_queda_en_el_registro():
     catalog = AGENTS["catalog"]
-    assert catalog.max_tool_calls == 1
-    assert catalog.max_tool_rounds == 2
+    assert catalog.max_tool_calls == 2
+    assert catalog.max_tool_rounds == 3
     assert catalog.parallel_tool_calls is False
     assert catalog.output_policy == "catalog"
     assert AGENTS["concierge"].model_tier == "fast"

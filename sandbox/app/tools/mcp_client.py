@@ -35,6 +35,8 @@ from app.observability import audit_event, record_api_call, record_operation
 from app.resilience import circuit_breaker
 from app.tools import adapters, catalog
 from app.tools.image_validation import valid_products
+from app.tools.attributes import turn_text, turn_excluded_ids
+from app.tools.relevance import rank_candidates
 
 log = logging.getLogger(__name__)
 
@@ -346,7 +348,8 @@ async def _validated_list(
     items = payload.get("data")
     if not isinstance(items, list):
         raise McpError("respuesta MCP de listado sin `data` array")
-    validated = await valid_products(client, items, limit=limit)
+    items = [p for p in items if p.get("id_producto") not in turn_excluded_ids()]
+    validated = await valid_products(client, rank_candidates(items, turn_text()), limit=limit)
     return {**payload, "data": validated, "total": len(validated)}
 
 
