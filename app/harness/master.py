@@ -67,9 +67,15 @@ from app.harness.contracts import (
     extract_products,
 )
 from app.harness.coverage import resolve_coverage
+from app.harness.delivery_request import (
+    remember_delivery_date, requested_clock_time, time_confirmation_reply,
+    is_window_reply, flexible_time_reply,
+)
+from app.harness.maps_location import extract_maps_url
+from app.harness.checkout import parse_schedule
 from app.harness.orders import create_from_state as create_temporal_order
 from app.harness.quoting import split_quote
-from app.harness.replies import YES, short_reply
+from app.harness.replies import YES, NO, short_reply
 from app.harness.registry import spec_for
 from app.harness.sale import announce as announce_sale
 from app.harness.render import render_product_list
@@ -475,6 +481,8 @@ async def _run_master_body(
         and checkout_active(state)
         and result.escalate is None
         and (result.user_facing or "").strip()
+        and not state.maps_location_pending
+        and not state.delivery_time_pending
     ):
         result.user_facing = f"{result.user_facing}\n\n{pending_question(state)}"
 
@@ -556,7 +564,10 @@ async def _run_master_body(
     # ¿Este turno el bot ofreció un asesor? Si el cliente responde "sí", el router
     # sabrá que está aceptando la derivación y no una charla. Se recalcula cada
     # turno, así que se apaga solo en cuanto el bot deja de ofrecerlo.
-    state.handoff_offered = _offers_handoff(result.user_facing)
+    state.handoff_offered = bool(
+        not state.maps_location_pending and not state.delivery_time_pending
+        and _offers_handoff(result.user_facing)
+    )
 
     trace.tools = result.tools_used
     trace.catalog_strategy = result.catalog_strategy
@@ -619,6 +630,11 @@ async def _handle(
     # RUC?" desde el primer turno.
     if intent != "escalate" and asks_for_business_data(turn.text):
         return AgentResult(user_facing=business_data_reply(turn.text))
+
+    if intent != "escalate" and state.checkout_step not in ("card_text", "recipient", "contact"):
+        logistics = await _handle_delivery_request(turn, state, intent=intent, **ctx)
+        if logistics is not None:
+            return logistics
 
     # ── Primer saludo: presentación determinista ──────────────────
     if intent == "greet" and is_first_contact(state, turn.messages):
@@ -969,6 +985,83 @@ def _coverage_fact(structured: dict) -> str:
     )
 
 
+async def _handle_delivery_request(turn: Turn, state: ConversationState, *, intent: str, **ctx) -> AgentResult | None:
+    """Keep location evidence and requested hours ahead of the one-slot FSM.
+
+    A Maps candidate needs customer confirmation; a requested clock time needs
+    separate agreement to a window or an actual handoff, never silent coercion.
+    """
+    text = turn.text
+    maps = extract_maps_url(text)
+    pending_maps = state.maps_location_pending or bool(state.maps_district_candidate)
+    answer = short_reply(text)
+    logistics = intent == "coverage" or state.checkout_step in ("district", "date", "schedule")
+    clock = requested_clock_time(text) if logistics or re.search(r"entrega|env[ií]o|llegue|delivery", text, re.I) else ""
+    had_pending_time = state.delivery_time_pending or state.delivery_time_requires_team
+    previous_clock = state.requested_delivery_time
+    if (logistics or maps or pending_maps) and (state.checkout_step != "date" or maps or clock or intent == "coverage"):
+        remember_delivery_date(state, text)
+    if clock:
+        state.requested_delivery_time = clock
+        state.delivery_time_pending = True
+        state.time_slot = ""
+
+    if maps or (pending_maps and (answer in (YES, NO) or resolve_alias(text) or clock or text.strip() in ("..", "..."))):
+        if pending_maps and not maps and answer not in (YES, NO) and not resolve_alias(text):
+            reply = (
+                f"Según el enlace de Maps proporcionado, ¿la dirección queda en {state.maps_district_candidate}?"
+                if state.maps_district_candidate else "¿En qué distrito queda la dirección del enlace de Maps?"
+            )
+            result = AgentResult(user_facing=reply)
+        else:
+            result = await _handle_coverage(turn, state, **ctx)
+            state.patch(result.state_patch)
+        if state.delivery_time_pending:
+            result.user_facing = f"{result.user_facing}\n\n{time_confirmation_reply(state)}"
+        return result
+
+    if had_pending_time and not pending_maps:
+        # A yes answers 'is that exact hour essential?'. A no does not yet
+        # accept a particular window: ask explicitly rather than silently book.
+        slot = (
+            parse_schedule(text, state.date or None, breakfast=state.chosen_is_breakfast is True)
+            if is_window_reply(text, allow_menu=state.checkout_step == "schedule") else None
+        )
+        if slot:
+            state.time_slot = slot
+            state.delivery_time_pending = False
+            state.delivery_time_requires_team = False
+            if state.checkout_step == "date" and state.date and state.district:
+                state.checkout_step = "schedule"
+            if state.checkout_step == "schedule":
+                return await _handle_checkout(turn, state, **ctx)
+            return AgentResult(user_facing=f"Perfecto, tomamos el rango de {slot}. La hora exacta dentro de ese rango no está garantizada.")
+        flexible = answer == NO or flexible_time_reply(text)
+        essential = not flexible and (answer == YES or (clock and clock == previous_clock) or bool(re.search(r"indispensable|en\s+punto|exactamente|s[ií][, ]+.*(?:necesito|debe)|tiene\s+que", text, re.I)))
+        if essential:
+            state.delivery_time_requires_team = True
+            state.delivery_time_pending = False
+            state.handoff_reason = f"Confirmar entrega a hora exacta: {state.requested_delivery_time}; fecha {state.date or 'por confirmar'}; distrito {state.district or 'por confirmar'}"
+            escalated = await perform_handoff(
+                wa_id=ctx.get("wa_id"), conversation_id=ctx.get("conversation_id"),
+                motivo=state.handoff_reason, use_external_crm=ctx.get("use_external_crm", False),
+                session=ctx.get("session"), persist=ctx.get("persist"), is_payment=False,
+                message="Entiendo que necesitas esa hora exacta. Te paso con un asesor para que confirme si es posible; todavía no está garantizada.",
+            )
+            return AgentResult(escalate=escalated)
+        if flexible:
+            from app.delivery_windows import schedule_options_for
+            return AgentResult(user_facing="Entendido, no necesitas una hora exacta. ¿Qué rango te sirve?\n" + schedule_options_for(state.date or None, breakfast=state.chosen_is_breakfast is True))
+    if clock:
+        reply = time_confirmation_reply(state)
+        if intent == "coverage" and resolve_alias(text):
+            result = await _handle_coverage(turn, state, **ctx)
+            result.user_facing = f"{result.user_facing}\n\n{reply}"
+            return result
+        return AgentResult(user_facing=reply)
+    return None
+
+
 async def _handle_coverage(turn: Turn, state: ConversationState, **ctx) -> AgentResult:
     """Cobertura — y el producto, si el turno traía las dos cosas.
 
@@ -1006,7 +1099,7 @@ async def _handle_coverage(turn: Turn, state: ConversationState, **ctx) -> Agent
     solo_cobertura = AgentResult(
         user_facing=raw.get("user_facing") or structured.get("ask"),
         state_patch=patch,
-        tools_used=["distritos_cobertura"],
+        tools_used=raw.get("tools_used", ["distritos_cobertura"]),
         sourced_prices=[float(fee)] if fee is not None else [],
     )
 

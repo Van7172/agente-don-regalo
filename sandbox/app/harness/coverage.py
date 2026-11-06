@@ -14,6 +14,9 @@ from app.harness.aliases import PLACE_ALIASES, normalize_place, pick_zone, resol
 from app.harness.render import render_coverage, render_zones
 from app.harness.registry import assert_tool_allowed
 from app.harness.state import ConversationState
+from app.harness.delivery_request import URL_RE
+from app.harness.maps_location import extract_maps_url, resolve_maps_district
+from app.harness.replies import YES, NO, short_reply
 from app.tools import catalog
 
 log = logging.getLogger(__name__)
@@ -181,7 +184,7 @@ def match_district(query: str, districts: list[dict[str, Any]]) -> dict[str, Any
 
 def extract_place_candidates(text: str) -> list[str]:
     """Extrae posibles lugares del mensaje (líneas / frases cortas)."""
-    raw = (text or "").strip()
+    raw = URL_RE.sub("", text or "").strip()
     if not raw:
         return []
     parts = re.split(r"[\n.?!]+", raw)
@@ -206,7 +209,7 @@ def extract_place_candidates(text: str) -> list[str]:
 
 # Verbos y conectores de frase: si aparecen, eso es una oración, no un lugar.
 _NOT_A_PLACE_RE = re.compile(
-    r"\b(quisiera|quiero|puedo|podr[ií]a|ser[ií]a|est[aá]|estoy|tengo|vengan|"
+    r"\b(quisiera|quiero|puedo|podr[aá]|podr[ií]a|puede|hacer|entrega|entregas|ser[ií]a|est[aá]|estoy|tengo|vengan|"
     r"venga|pagar|pago|comprar|enviar|mandar|porque|por\s+que|cu[aá]nto|"
     r"c[oó]mo|qu[eé]|gracias|"
     # "No hay delivery?" no tiene ninguno de los verbos de arriba: se leía
@@ -248,6 +251,37 @@ async def resolve_coverage(
     Retorna dict structured + user_facing + state_patch.
     """
     # Contesta a la zona que se le acaba de preguntar: ya tenemos sus datos.
+    maps_url = extract_maps_url(user_text)
+    if maps_url:
+        # A new destination invalidates the previous district and shipping fee.
+        # Nullable fields cannot be cleared through state.patch(None).
+        state.district = ""
+        state.id_distrito = None
+        state.shipping_fee_sol = None
+        state.shipping_fee_usd = None
+        state.district_options = []
+        candidate = await resolve_maps_district(maps_url)
+        ask = (
+            f"Según el enlace de Maps proporcionado, ¿la dirección queda en {candidate}? "
+            "Con tu confirmación reviso la cobertura y la tarifa."
+            if candidate else
+            "Recibí el enlace de Maps, pero no pude identificar el distrito con certeza. "
+            "¿En qué distrito queda la dirección? Con eso reviso la cobertura y la tarifa."
+        )
+        return {"ok": True, "user_facing": ask, "tools_used": ["google_maps_location"],
+                "structured": {"covered": None, "ambiguity": "maps_confirmation", "resolved_district": None},
+                "state_patch": {"maps_url": maps_url, "maps_district_candidate": candidate,
+                                "maps_location_pending": True}}
+    pending_maps = state.maps_district_candidate
+    if pending_maps:
+        if short_reply(user_text) == YES:
+            user_text = pending_maps
+        elif short_reply(user_text) == NO:
+            state.maps_district_candidate = ""
+            return {"ok": True, "user_facing": "Gracias por aclararlo. ¿En qué distrito queda la dirección?",
+                    "structured": {"covered": None}, "state_patch": {"maps_district_candidate": ""}}
+        if resolve_alias(user_text):
+            state.maps_district_candidate = ""
     if state.district_options:
         zona = pick_zone(user_text, state.district_options)
         if zona is not None:
@@ -416,7 +450,7 @@ def _covered(
 
     ask = "¿Qué regalo quieres enviar? 🎁"
     if state.chosen_product_name or state.checkout_step not in ("idle", ""):
-        ask = "¿Para qué fecha lo necesitas? 📅"
+        ask = "¿En qué rango horario lo necesitas? 🕐" if state.date else "¿Para qué fecha lo necesitas? 📅"
 
     notas: list[str] = []
     if not fee_known:
@@ -441,6 +475,8 @@ def _covered(
         "shipping_fee_sol": fee_sol_f,
         "shipping_fee_usd": fee_usd_f,
         "intent_last": "coverage",
+        "maps_location_pending": False,
+        "maps_district_candidate": "",
     }
     if state.district_options:
         patch["district_options"] = []
@@ -452,7 +488,7 @@ def _covered(
         except (TypeError, ValueError):
             pass
     if state.checkout_step in ("idle", "district"):
-        patch["checkout_step"] = "date" if state.chosen_product_id else "idle"
+        patch["checkout_step"] = ("schedule" if state.date else "date") if state.chosen_product_id else "idle"
 
     return {
         "ok": True,
